@@ -1,10 +1,9 @@
 // lib/ko/commandRouter.ts
 // KarlOps L — Intent classification and field extraction
-// Reads field metadata to build a dynamic prompt for the LLM.
 
 import { createSupabaseAdmin } from '@/lib/supabase-server';
 
-export type IntentType = 'capture_task' | 'question' | 'command' | 'unclear';
+export type IntentType = 'capture_task' | 'capture_tasks' | 'question' | 'command' | 'unclear';
 
 export interface RouterResult {
   intent: IntentType;
@@ -35,36 +34,38 @@ export async function routeCommand(
       .eq('user_id', user_id)
       .in('object_type', ['task', 'meeting', 'completion', 'external_reference']);
 
-    // Build object type summaries for the prompt
     const objectSummaries = buildObjectSummaries(allMeta ?? []);
 
     // ── Call Anthropic ─────────────────────────────────────────────────────
-    const systemPrompt = `You are Karl, an operational assistant. Your job is to classify user input and extract structured data.
+    const systemPrompt = `You are Karl, an operational assistant. Classify user input and extract structured data.
 
-Available object types you can capture:
+Available object types:
 ${objectSummaries}
 
-Classify the input into one of these intents:
-- capture_task: A clear action item or thing to do. Extract a concise title.
-- capture_meeting: References a meeting, call, or scheduled event with someone.
-- capture_completion: Something that was already done or accomplished.
-- capture_reference: A URL, document, or external resource.
-- question: The user is asking for information or analysis.
-- command: An explicit system command (show, list, update, delete, move, etc.)
-- unclear: Ambiguous — could be multiple things or needs more info.
+Classify into one of these intents:
+- capture_task: A single clear action item. Extract a concise title.
+- capture_tasks: Multiple action items in one message (comma-separated list, numbered list, or block of tasks). Extract all titles.
+- question: User is asking for information or analysis.
+- command: Explicit system command (show, list, update, delete, move, etc.)
+- unclear: Ambiguous — needs more info.
 
 Rules:
-- Be conservative. If it could be a question or commentary, classify as question.
-- Only classify as capture_* if there is a clear actionable item or event.
-- Extract the most concise title possible — strip filler words.
-- Never capture philosophical statements, opinions, or meta-commentary about the system.
+- Be conservative. Commentary, opinions, or meta-statements = question or unclear.
+- Only capture_* if there are clear actionable items.
+- Extract the most concise title possible.
+- For capture_tasks, extract ALL distinct tasks from the input.
+- Never capture philosophical statements or system commentary as tasks.
 
-Respond ONLY with valid JSON in this exact format:
-{
-  "intent": "capture_task",
-  "title": "extracted title if capture_task",
-  "response": "Karl's conversational response to show in chat"
-}`;
+Respond ONLY with valid JSON:
+
+For single task:
+{ "intent": "capture_task", "title": "concise task title", "response": "Karl's response" }
+
+For multiple tasks:
+{ "intent": "capture_tasks", "titles": ["task one", "task two"], "summary": "X tasks found", "response": "Karl's response listing what was found" }
+
+For question/command/unclear:
+{ "intent": "question", "response": "Karl's conversational response" }`;
 
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -84,7 +85,6 @@ Respond ONLY with valid JSON in this exact format:
     const data = await res.json();
     const text = data.content?.[0]?.text ?? '';
 
-    // ── Parse response ─────────────────────────────────────────────────────
     let parsed: any;
     try {
       const clean = text.replace(/```json|```/g, '').trim();
@@ -103,7 +103,14 @@ Respond ONLY with valid JSON in this exact format:
       };
     }
 
-    // For questions and commands — return the response directly
+    if (intent === 'capture_tasks') {
+      return {
+        intent: 'capture_tasks',
+        payload: { titles: parsed.titles, summary: parsed.summary ?? `${parsed.titles?.length} tasks` },
+        response: parsed.response ?? `Found ${parsed.titles?.length} tasks. Capture all of them?`,
+      };
+    }
+
     return {
       intent,
       response: parsed.response ?? "I'm not sure what to do with that.",
@@ -121,7 +128,6 @@ function buildObjectSummaries(meta: FieldMeta[]): string {
     if (!byType[f.object_type]) byType[f.object_type] = [];
     byType[f.object_type].push(f);
   }
-
   return Object.entries(byType).map(([type, fields]) => {
     const required = fields
       .filter(f => f.insert_behavior === 'required')

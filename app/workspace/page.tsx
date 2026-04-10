@@ -3,11 +3,15 @@
 import { useEffect, useState, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 
+// ─── TYPES ───────────────────────────────────────────────────────────────────
+
 interface KOUser { id: string; email: string; display_name: string; implementation_type: string; }
 interface Task { id: string; title: string; bucket_key: string; tags: string[]; is_completed: boolean; is_archived: boolean; created_at: string; }
 interface ChatMessage { role: 'user' | 'assistant'; content: string; timestamp: Date; }
 interface BucketDef { key: string; label: string; color: string; accent: string; }
 interface PendingAction { intent: string; payload: Record<string, any>; summary: string; }
+
+// ─── CONSTANTS ───────────────────────────────────────────────────────────────
 
 const BUCKETS: BucketDef[] = [
   { key: 'now',      label: 'On Fire',   color: '#ef4444', accent: '#fca5a5' },
@@ -18,8 +22,10 @@ const BUCKETS: BucketDef[] = [
   { key: 'capture',  label: 'Capture',   color: '#10b981', accent: '#6ee7b7' },
 ];
 
-const CONFIRM_WORDS = ['yes', 'yeah', 'yep', 'yup', 'do it', 'confirm', 'ok', 'sure', 'go', 'capture it', 'add it'];
-const DENY_WORDS = ['no', 'nope', 'cancel', 'stop', 'nevermind', 'never mind', 'nah'];
+const CONFIRM_WORDS = ['yes', 'yeah', 'yep', 'yup', 'do it', 'confirm', 'ok', 'sure', 'go', 'capture it', 'add it', 'capture them', 'add them', 'all of them'];
+const DENY_WORDS    = ['no', 'nope', 'cancel', 'stop', 'nevermind', 'never mind', 'nah'];
+
+// ─── HELPERS ─────────────────────────────────────────────────────────────────
 
 function groupTasksByBucket(tasks: Task[]): Record<string, Task[]> {
   const grouped: Record<string, Task[]> = {};
@@ -46,6 +52,8 @@ function renderMarkdown(text: string): React.ReactNode[] {
   });
 }
 
+// ─── COMPONENTS: TaskPill ────────────────────────────────────────────────────
+
 function TaskPill({ task, bucket }: { task: Task; bucket: BucketDef }) {
   return (
     <div
@@ -64,6 +72,8 @@ function TaskPill({ task, bucket }: { task: Task; bucket: BucketDef }) {
     </div>
   );
 }
+
+// ─── COMPONENTS: BucketSection ───────────────────────────────────────────────
 
 function BucketSection({ bucket, tasks }: { bucket: BucketDef; tasks: Task[] }) {
   const [collapsed, setCollapsed] = useState(false);
@@ -87,12 +97,24 @@ function BucketSection({ bucket, tasks }: { bucket: BucketDef; tasks: Task[] }) 
   );
 }
 
+// ─── COMPONENTS: ChatBubble ──────────────────────────────────────────────────
+
 function ChatBubble({ msg }: { msg: ChatMessage }) {
   const isUser = msg.role === 'user';
-  const lines = msg.content.split('\n');
+  const lines  = msg.content.split('\n');
   return (
-    <div style={{ display: 'flex', justifyContent: isUser ? 'flex-end' : 'flex-start', marginBottom: '0.75rem' }}>
-      <div style={{ maxWidth: '65%', padding: '0.6rem 0.9rem', borderRadius: isUser ? '12px 12px 2px 12px' : '12px 12px 12px 2px', background: isUser ? '#1a2a1a' : '#1a1a1a', border: `1px solid ${isUser ? '#2a4a2a' : '#252525'}`, color: isUser ? '#86efac' : '#d4d4d4', fontSize: '0.82rem', lineHeight: 1.6 }}>
+    <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: '0.75rem', paddingLeft: isUser ? '3rem' : '0' }}>
+      <div style={{
+        maxWidth: '70%',
+        padding: '0.6rem 0.9rem',
+        borderRadius: isUser ? '12px 12px 2px 12px' : '12px 12px 12px 2px',
+        background: isUser ? '#1a2a1a' : '#1a1a1a',
+        border: `1px solid ${isUser ? '#2a4a2a' : '#252525'}`,
+        color: isUser ? '#86efac' : '#d4d4d4',
+        fontSize: '0.82rem',
+        lineHeight: 1.6,
+        marginLeft: isUser ? 'auto' : '0',
+      }}>
         {lines.map((line, i) => (
           <div key={i} style={{ minHeight: line === '' ? '0.6rem' : undefined }}>
             {isUser ? line : renderMarkdown(line)}
@@ -103,15 +125,25 @@ function ChatBubble({ msg }: { msg: ChatMessage }) {
   );
 }
 
-function CaptureModal({ onClose, onCapture }: { onClose: () => void; onCapture: (title: string) => Promise<void> }) {
-  const [title, setTitle] = useState('');
+// ─── COMPONENTS: CaptureModal ────────────────────────────────────────────────
+
+function CaptureModal({ onClose, onCapture }: {
+  onClose: () => void;
+  onCapture: (titles: string[]) => Promise<void>;
+}) {
+  const [value, setValue] = useState('');
   const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState('');
+  const [err, setErr]     = useState('');
+
+  const parseTitles = (raw: string): string[] =>
+    raw.split(',').map(t => t.trim()).filter(t => t.length > 0);
+
+  const previews = parseTitles(value);
 
   const handleSubmit = async () => {
-    if (!title.trim()) { setErr('Title is required'); return; }
+    if (previews.length === 0) { setErr('Enter at least one task'); return; }
     setSaving(true); setErr('');
-    try { await onCapture(title.trim()); onClose(); }
+    try { await onCapture(previews); onClose(); }
     catch (e: any) { setErr(e.message); }
     finally { setSaving(false); }
   };
@@ -123,51 +155,81 @@ function CaptureModal({ onClose, onCapture }: { onClose: () => void; onCapture: 
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 }}>
-      <div style={{ background: '#0d0d0d', border: '1px solid #222', borderRadius: '8px', padding: '1.5rem', width: '480px', fontFamily: 'monospace' }}>
+      <div style={{ background: '#0d0d0d', border: '1px solid #222', borderRadius: '8px', padding: '1.5rem', width: '520px', fontFamily: 'monospace' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem' }}>
           <span style={{ color: '#fff', fontSize: '0.85rem', fontWeight: 600 }}>Quick Capture</span>
           <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: '0.8rem' }}>✕</button>
         </div>
-        <div style={{ marginBottom: '1rem' }}>
-          <div style={{ color: '#555', fontSize: '0.65rem', marginBottom: '0.35rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Task<span style={{ color: '#ef4444' }}>*</span></div>
-          <input
+
+        <div style={{ marginBottom: '0.75rem' }}>
+          <div style={{ color: '#555', fontSize: '0.65rem', marginBottom: '0.35rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            Task(s)<span style={{ color: '#ef4444' }}>*</span>
+            <span style={{ color: '#333', marginLeft: '0.5rem', textTransform: 'none', letterSpacing: 0 }}>— separate multiple with commas</span>
+          </div>
+          <textarea
             autoFocus
-            value={title}
-            onChange={e => setTitle(e.target.value)}
+            value={value}
+            onChange={e => setValue(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="What needs to get done?"
-            style={{ width: '100%', background: '#111', border: '1px solid #333', color: '#e5e5e5', padding: '0.6rem 0.75rem', borderRadius: '6px', fontFamily: 'monospace', fontSize: '0.85rem', outline: 'none', boxSizing: 'border-box' }}
+            placeholder="Call Jennifer, Review Q1 numbers, Fix the login bug..."
+            rows={3}
+            style={{ width: '100%', background: '#111', border: '1px solid #333', color: '#e5e5e5', padding: '0.6rem 0.75rem', borderRadius: '6px', fontFamily: 'monospace', fontSize: '0.85rem', outline: 'none', boxSizing: 'border-box', resize: 'vertical' }}
             onFocus={e => (e.target.style.borderColor = '#555')}
             onBlur={e => (e.target.style.borderColor = '#333')}
           />
         </div>
+
+        {/* Preview parsed tasks */}
+        {previews.length > 0 && (
+          <div style={{ marginBottom: '1rem' }}>
+            <div style={{ color: '#555', fontSize: '0.65rem', marginBottom: '0.35rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              {previews.length} task{previews.length > 1 ? 's' : ''} to capture
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+              {previews.map((t, i) => (
+                <div key={i} style={{ color: '#4ade80', fontSize: '0.75rem', padding: '0.2rem 0.5rem', background: '#0d1a0d', border: '1px solid #1a3a1a', borderRadius: '4px' }}>
+                  {t}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {err && <div style={{ color: '#ef4444', fontSize: '0.72rem', marginBottom: '0.75rem' }}>{err}</div>}
+
         <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
           <button onClick={onClose} style={{ background: 'none', border: '1px solid #333', color: '#666', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer' }}>cancel</button>
-          <button onClick={handleSubmit} disabled={saving || !title.trim()}
-            style={{ background: title.trim() ? '#1a2a1a' : '#111', border: `1px solid ${title.trim() ? '#2a4a2a' : '#1a1a1a'}`, color: title.trim() ? '#4ade80' : '#555', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: title.trim() ? 'pointer' : 'not-allowed' }}
-          >{saving ? '...' : 'capture'}</button>
+          <button onClick={handleSubmit} disabled={saving || previews.length === 0}
+            style={{ background: previews.length > 0 ? '#1a2a1a' : '#111', border: `1px solid ${previews.length > 0 ? '#2a4a2a' : '#1a1a1a'}`, color: previews.length > 0 ? '#4ade80' : '#555', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: previews.length > 0 ? 'pointer' : 'not-allowed' }}
+          >{saving ? '...' : `capture ${previews.length > 1 ? `${previews.length} tasks` : 'task'}`}</button>
         </div>
       </div>
     </div>
   );
 }
 
+// ─── PAGE: WorkspacePage ─────────────────────────────────────────────────────
+
 export default function WorkspacePage() {
-  const [koUser, setKoUser]             = useState<KOUser | null>(null);
-  const [tasks, setTasks]               = useState<Task[]>([]);
-  const [chat, setChat]                 = useState<ChatMessage[]>([]);
-  const [input, setInput]               = useState('');
+
+  // ─── PAGE: State ───────────────────────────────────────────────────────────
+
+  const [koUser, setKoUser]           = useState<KOUser | null>(null);
+  const [tasks, setTasks]             = useState<Task[]>([]);
+  const [chat, setChat]               = useState<ChatMessage[]>([]);
+  const [input, setInput]             = useState('');
   const [sessionReady, setSessionReady] = useState(false);
   const [sessionError, setSessionError] = useState('');
-  const [thinking, setThinking]         = useState(false);
-  const [pending, setPending]           = useState<PendingAction | null>(null);
-  const [accessToken, setAccessToken]   = useState('');
-  const [showCapture, setShowCapture]   = useState(false);
+  const [thinking, setThinking]       = useState(false);
+  const [pending, setPending]         = useState<PendingAction | null>(null);
+  const [accessToken, setAccessToken] = useState('');
+  const [showCapture, setShowCapture] = useState(false);
 
   const chatBottomRef = useRef<HTMLDivElement>(null);
   const inputRef      = useRef<HTMLTextAreaElement>(null);
   const initDone      = useRef(false);
+
+  // ─── PAGE: Auth & Init ─────────────────────────────────────────────────────
 
   useEffect(() => {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
@@ -230,6 +292,15 @@ export default function WorkspacePage() {
     chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chat, thinking]);
 
+  // Auto-focus input when pending action is set
+  useEffect(() => {
+    if (pending) {
+      setTimeout(() => inputRef.current?.focus(), 100);
+    }
+  }, [pending]);
+
+  // ─── PAGE: Handlers ────────────────────────────────────────────────────────
+
   const addMessage = (role: 'user' | 'assistant', content: string) => {
     setChat(prev => [...prev, { role, content, timestamp: new Date() }]);
   };
@@ -243,10 +314,11 @@ export default function WorkspacePage() {
     setThinking(true);
 
     try {
+      // ── Confirm or deny pending action ─────────────────────────────────
       if (pending) {
-        const lower = text.toLowerCase();
+        const lower     = text.toLowerCase();
         const isConfirm = CONFIRM_WORDS.some(w => lower.includes(w));
-        const isDeny = DENY_WORDS.some(w => lower.includes(w));
+        const isDeny    = DENY_WORDS.some(w => lower.includes(w));
 
         if (isConfirm) {
           const res = await fetch('/api/ko/command', {
@@ -257,7 +329,7 @@ export default function WorkspacePage() {
           const data = await res.json();
           setPending(null);
           addMessage('assistant', data.response ?? 'Done.');
-          if (data.task && koUser) await loadTasks(koUser.id);
+          if (koUser) await loadTasks(koUser.id);
           return;
         }
 
@@ -268,6 +340,7 @@ export default function WorkspacePage() {
         }
       }
 
+      // ── Route new input ────────────────────────────────────────────────
       const res = await fetch('/api/ko/command', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
@@ -275,8 +348,8 @@ export default function WorkspacePage() {
       });
       const data = await res.json();
 
-      if (data.intent === 'capture_task' && data.payload) {
-        setPending({ intent: data.intent, payload: data.payload, summary: data.payload.title });
+      if ((data.intent === 'capture_task' || data.intent === 'capture_tasks') && data.payload) {
+        setPending({ intent: data.intent, payload: data.payload, summary: data.payload.summary ?? data.payload.title });
       } else {
         setPending(null);
       }
@@ -299,17 +372,23 @@ export default function WorkspacePage() {
     window.location.href = '/login';
   };
 
-  const handleModalCapture = async (title: string) => {
+  const handleModalCapture = async (titles: string[]) => {
     const res = await fetch('/api/ko/command', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
-      body: JSON.stringify({ confirm: true, pending: { intent: 'capture_task', payload: { title } } }),
+      body: JSON.stringify({ confirm: true, pending: { intent: 'capture_tasks', payload: { titles } } }),
     });
     const data = await res.json();
     if (!data.success) throw new Error(data.error ?? 'Capture failed');
     if (koUser) await loadTasks(koUser.id);
-    addMessage('assistant', `Captured — **${title}** is in your capture bucket.`);
+    addMessage('assistant',
+      titles.length === 1
+        ? `Captured — **${titles[0]}** is in your capture bucket.`
+        : `Captured ${titles.length} tasks into your capture bucket.`
+    );
   };
+
+  // ─── PAGE: Error state ─────────────────────────────────────────────────────
 
   if (sessionError) {
     return (
@@ -326,11 +405,14 @@ export default function WorkspacePage() {
   const grouped   = groupTasksByBucket(tasks);
   const totalOpen = tasks.length;
 
+  // ─── PAGE: Render ──────────────────────────────────────────────────────────
+
   return (
     <div style={{ minHeight: '100vh', height: '100vh', display: 'flex', flexDirection: 'column', background: '#0a0a0a', fontFamily: 'monospace', overflow: 'hidden' }}>
 
       {showCapture && <CaptureModal onClose={() => setShowCapture(false)} onCapture={handleModalCapture} />}
 
+      {/* HEADER */}
       <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 1.25rem', height: '44px', borderBottom: '1px solid #1a1a1a', flexShrink: 0, background: '#0d0d0d' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <span style={{ color: '#ffffff', fontSize: '0.9rem', fontWeight: 700, letterSpacing: '0.02em' }}>KarlOps</span>
@@ -350,7 +432,10 @@ export default function WorkspacePage() {
         </div>
       </header>
 
+      {/* MAIN SPLIT */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+
+        {/* LEFT: BUCKET VIEW */}
         <div style={{ width: '340px', flexShrink: 0, borderRight: '1px solid #1a1a1a', overflowY: 'auto', padding: '1rem', scrollbarWidth: 'thin', scrollbarColor: '#222 transparent' }}>
           {!sessionReady
             ? <div style={{ color: '#aaa', fontSize: '0.75rem', paddingTop: '1rem' }}>Initializing...</div>
@@ -358,7 +443,10 @@ export default function WorkspacePage() {
           }
         </div>
 
+        {/* RIGHT: CHAT */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+
+          {/* Chat history */}
           <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem 1.25rem 0.5rem', scrollbarWidth: 'thin', scrollbarColor: '#222 transparent' }}>
             {chat.map((msg, i) => <ChatBubble key={i} msg={msg} />)}
             {thinking && (
@@ -376,6 +464,7 @@ export default function WorkspacePage() {
             <div ref={chatBottomRef} />
           </div>
 
+          {/* INPUT BAR */}
           <div style={{ borderTop: '1px solid #1a1a1a', padding: '0.75rem 1.25rem', background: '#0d0d0d', flexShrink: 0 }}>
             <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-end' }}>
               <textarea
@@ -400,11 +489,14 @@ export default function WorkspacePage() {
             </div>
             <div style={{ color: '#555', fontSize: '0.65rem', marginTop: '0.4rem' }}>↵ send · shift+↵ newline</div>
           </div>
+
         </div>
       </div>
     </div>
   );
 }
+
+// ─── STYLES ───────────────────────────────────────────────────────────────────
 
 const centeredStyle: React.CSSProperties = { minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0a0a0a' };
 const ghostBtn: React.CSSProperties = { background: 'transparent', border: '1px solid #444', color: '#aaa', padding: '0.3rem 0.6rem', borderRadius: '4px', cursor: 'pointer', fontFamily: 'monospace', fontSize: '0.7rem' };

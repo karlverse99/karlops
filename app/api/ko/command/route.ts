@@ -11,7 +11,6 @@ async function getUser(req: NextRequest) {
   return user;
 }
 
-// POST — classify and route input
 export async function POST(req: NextRequest) {
   const user = await getUser(req);
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -22,6 +21,8 @@ export async function POST(req: NextRequest) {
   try {
     // ── Confirm a pending action ───────────────────────────────────────────
     if (confirm && pending) {
+
+      // Single task capture
       if (pending.intent === 'capture_task') {
         const result = await captureTask(user.id, pending.payload);
         if (!result.success) throw new Error(result.error);
@@ -30,6 +31,27 @@ export async function POST(req: NextRequest) {
           intent: 'capture_task',
           task: result.task,
           response: `Captured — **${result.task?.title}** is in your capture bucket.`,
+        });
+      }
+
+      // Bulk task capture
+      if (pending.intent === 'capture_tasks') {
+        const titles: string[] = pending.payload.titles ?? [];
+        const results = await Promise.all(
+          titles.map(title => captureTask(user.id, { title }))
+        );
+        const failed  = results.filter(r => !r.success);
+        const success = results.filter(r => r.success);
+
+        if (success.length === 0) throw new Error('All captures failed');
+
+        return NextResponse.json({
+          success: true,
+          intent: 'capture_tasks',
+          tasks: success.map(r => r.task),
+          response: failed.length > 0
+            ? `Captured ${success.length} task${success.length > 1 ? 's' : ''}. ${failed.length} failed.`
+            : `Captured ${success.length} task${success.length > 1 ? 's' : ''} into your capture bucket.`,
         });
       }
     }
