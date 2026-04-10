@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase-server';
+import { createSupabaseAdmin } from '@/lib/supabase-server';
 import { initializeUserWorkspace } from '@/lib/ko/initializeUserWorkspace';
 
 export async function POST(req: NextRequest) {
