@@ -82,6 +82,56 @@ function ChatBubble({ msg }: { msg: ChatMessage }) {
   );
 }
 
+function CaptureModal({ onClose, onCapture }: { onClose: () => void; onCapture: (title: string) => Promise<void> }) {
+  const [title, setTitle] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+
+  const handleSubmit = async () => {
+    if (!title.trim()) { setErr('Title is required'); return; }
+    setSaving(true); setErr('');
+    try { await onCapture(title.trim()); onClose(); }
+    catch (e: any) { setErr(e.message); }
+    finally { setSaving(false); }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSubmit(); }
+    if (e.key === 'Escape') onClose();
+  };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 }}>
+      <div style={{ background: '#0d0d0d', border: '1px solid #222', borderRadius: '8px', padding: '1.5rem', width: '480px', fontFamily: 'monospace' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem' }}>
+          <span style={{ color: '#fff', fontSize: '0.85rem', fontWeight: 600 }}>Quick Capture</span>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: '0.8rem' }}>✕</button>
+        </div>
+        <div style={{ marginBottom: '1rem' }}>
+          <div style={{ color: '#555', fontSize: '0.65rem', marginBottom: '0.35rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Task<span style={{ color: '#ef4444' }}>*</span></div>
+          <input
+            autoFocus
+            value={title}
+            onChange={e => setTitle(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="What needs to get done?"
+            style={{ width: '100%', background: '#111', border: '1px solid #333', color: '#e5e5e5', padding: '0.6rem 0.75rem', borderRadius: '6px', fontFamily: 'monospace', fontSize: '0.85rem', outline: 'none', boxSizing: 'border-box' }}
+            onFocus={e => (e.target.style.borderColor = '#555')}
+            onBlur={e => (e.target.style.borderColor = '#333')}
+          />
+        </div>
+        {err && <div style={{ color: '#ef4444', fontSize: '0.72rem', marginBottom: '0.75rem' }}>{err}</div>}
+        <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+          <button onClick={onClose} style={{ background: 'none', border: '1px solid #333', color: '#666', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer' }}>cancel</button>
+          <button onClick={handleSubmit} disabled={saving || !title.trim()}
+            style={{ background: title.trim() ? '#1a2a1a' : '#111', border: `1px solid ${title.trim() ? '#2a4a2a' : '#1a1a1a'}`, color: title.trim() ? '#4ade80' : '#555', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: title.trim() ? 'pointer' : 'not-allowed' }}
+          >{saving ? '...' : 'capture'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function WorkspacePage() {
   const [koUser, setKoUser]             = useState<KOUser | null>(null);
   const [tasks, setTasks]               = useState<Task[]>([]);
@@ -92,6 +142,7 @@ export default function WorkspacePage() {
   const [thinking, setThinking]         = useState(false);
   const [pending, setPending]           = useState<PendingAction | null>(null);
   const [accessToken, setAccessToken]   = useState('');
+  const [showCapture, setShowCapture]   = useState(false);
 
   const chatBottomRef = useRef<HTMLDivElement>(null);
   const inputRef      = useRef<HTMLTextAreaElement>(null);
@@ -171,7 +222,7 @@ export default function WorkspacePage() {
     setThinking(true);
 
     try {
-      // ── Check if user is confirming or denying a pending action ──────────
+      // ── Check if confirming or denying a pending action ──────────────────
       if (pending) {
         const lower = text.toLowerCase();
         const isConfirm = CONFIRM_WORDS.some(w => lower.includes(w));
@@ -229,6 +280,18 @@ export default function WorkspacePage() {
     window.location.href = '/login';
   };
 
+  const handleModalCapture = async (title: string) => {
+    const res = await fetch('/api/ko/command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
+      body: JSON.stringify({ confirm: true, pending: { intent: 'capture_task', payload: { title } } }),
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error ?? 'Capture failed');
+    if (koUser) await loadTasks(koUser.id);
+    addMessage('assistant', `Captured — "${title}" is in your capture bucket.`);
+  };
+
   if (sessionError) {
     return (
       <div style={centeredStyle}>
@@ -246,6 +309,9 @@ export default function WorkspacePage() {
 
   return (
     <div style={{ minHeight: '100vh', height: '100vh', display: 'flex', flexDirection: 'column', background: '#0a0a0a', fontFamily: 'monospace', overflow: 'hidden' }}>
+
+      {showCapture && <CaptureModal onClose={() => setShowCapture(false)} onCapture={handleModalCapture} />}
+
       <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 1.25rem', height: '44px', borderBottom: '1px solid #1a1a1a', flexShrink: 0, background: '#0d0d0d' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <span style={{ color: '#ffffff', fontSize: '0.9rem', fontWeight: 700, letterSpacing: '0.02em' }}>KarlOps</span>
@@ -256,6 +322,7 @@ export default function WorkspacePage() {
           <span style={{ color: '#aaa', fontSize: '0.7rem' }}>{totalOpen} open</span>
           <span style={{ color: '#444', fontSize: '0.7rem' }}>|</span>
           <span style={{ color: '#aaa', fontSize: '0.7rem' }}>{koUser?.display_name ?? '...'}</span>
+          <button onClick={() => setShowCapture(true)} style={{ ...ghostBtn, color: '#4ade80', borderColor: '#2a4a2a' }}>+ capture</button>
           <a href="/admin" style={{ color: '#555', fontSize: '0.7rem', textDecoration: 'none' }}
             onMouseEnter={e => (e.currentTarget.style.color = '#aaa')}
             onMouseLeave={e => (e.currentTarget.style.color = '#555')}
