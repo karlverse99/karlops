@@ -7,6 +7,16 @@ type Tab = 'tag_groups' | 'tags' | 'task_status' | 'defaults' | 'field_meta' | '
 interface Row { [key: string]: any; }
 interface FieldMeta { field: string; label: string; field_type: string; required: boolean; editable: boolean; display_order: number; }
 
+const TAB_CONFIG: Record<string, { table: string; label: string; idField: string; metaKey: string }> = {
+  tag_groups:  { table: 'tag_group',           label: 'Tag Groups',    idField: 'tag_group_id',           metaKey: 'tag_group' },
+  tags:        { table: 'tag',                 label: 'Tags',          idField: 'tag_id',                 metaKey: 'tag' },
+  task_status: { table: 'task_status',         label: 'Task Status',   idField: 'task_status_id',         metaKey: 'task_status' },
+  defaults:    { table: 'ko_default_registry', label: 'Defaults',      idField: 'ko_default_registry_id', metaKey: 'ko_default_registry' },
+  field_meta:  { table: 'ko_field_metadata',   label: 'Field Metadata',idField: 'ko_field_metadata_id',   metaKey: 'ko_field_metadata' },
+  list_config: { table: 'ko_list_view_config', label: 'List Config',   idField: 'ko_list_view_config_id', metaKey: 'ko_list_view_config' },
+  concepts:    { table: 'concept_registry',    label: 'Concepts',      idField: 'concept_registry_id',    metaKey: 'concept_registry' },
+};
+
 // ─── API Helpers ──────────────────────────────────────────────────────────────
 
 async function adminFetch(token: string, table: string) {
@@ -50,7 +60,7 @@ async function adminDelete(token: string, table: string, id_field: string, id_va
   if (!res.ok) throw new Error(json.error ?? 'Delete failed');
 }
 
-// ─── Editable Cell with commit/cancel ────────────────────────────────────────
+// ─── Cells ────────────────────────────────────────────────────────────────────
 
 function EditCell({ value, fieldType, onSave }: { value: any; fieldType: string; onSave: (v: any) => Promise<void> }) {
   const [editing, setEditing] = useState(false);
@@ -84,7 +94,7 @@ function EditCell({ value, fieldType, onSave }: { value: any; fieldType: string;
   if (!editing) {
     return (
       <div onClick={() => setEditing(true)}
-        style={{ cursor: 'text', color: '#ccc', fontSize: '0.75rem', padding: '0.15rem 0.4rem', borderRadius: '3px', minHeight: '1.3rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}
+        style={{ cursor: 'text', color: '#ccc', fontSize: '0.75rem', padding: '0.15rem 0.4rem', borderRadius: '3px', minHeight: '1.3rem', wordBreak: 'break-word' }}
         onMouseEnter={e => (e.currentTarget.style.background = '#1a1a1a')}
         onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
       >
@@ -147,8 +157,8 @@ function MetaTable({ rows, fields, idField, token, table, onRefresh, addForm, fk
   const visibleFields = fields.filter(f => f.display_order < 999).sort((a, b) => a.display_order - b.display_order);
 
   const handleSave = async (id: any, field: string, value: any) => {
-    await adminPatch(token, table, idField, id, { [field]: value });
-    onRefresh();
+    try { await adminPatch(token, table, idField, id, { [field]: value }); onRefresh(); }
+    catch (e: any) { setErr(e.message); }
   };
 
   const handleDelete = async (id: any) => {
@@ -167,7 +177,8 @@ function MetaTable({ rows, fields, idField, token, table, onRefresh, addForm, fk
             <tr>
               {visibleFields.map(f => (
                 <th key={f.field} style={{ textAlign: 'left', color: '#555', fontWeight: 600, padding: '0.3rem 0.5rem', borderBottom: '1px solid #1a1a1a', whiteSpace: 'nowrap', fontSize: '0.7rem' }}>
-                  {f.label}{f.required && <span style={{ color: '#ef4444', marginLeft: '2px' }}>*</span>}
+                  {f.label}
+                  {f.required && <span style={{ color: '#ef4444', marginLeft: '2px' }}>*</span>}
                   {f.editable && <span style={{ color: '#2a4a2a', marginLeft: '3px', fontSize: '0.6rem' }}>✎</span>}
                 </th>
               ))}
@@ -216,11 +227,10 @@ function MetaTable({ rows, fields, idField, token, table, onRefresh, addForm, fk
 function MetaAddForm({ fields, onAdd, overrides }: {
   fields: FieldMeta[];
   onAdd: (record: Row) => Promise<void>;
-  overrides?: Record<string, React.ReactNode>;
+  overrides?: Record<string, { node: React.ReactNode; getValue: () => any }>;
 }) {
   const addFields = fields
-    .filter(f => f.display_order < 999 && f.field_type !== 'uuid' || f.required)
-    .filter(f => !['created_at', 'updated_at'].includes(f.field))
+    .filter(f => f.display_order < 999 && !['created_at', 'updated_at'].includes(f.field))
     .sort((a, b) => a.display_order - b.display_order);
 
   const empty = Object.fromEntries(addFields.map(f => [f.field, f.field_type === 'boolean' ? false : '']));
@@ -229,10 +239,16 @@ function MetaAddForm({ fields, onAdd, overrides }: {
   const [err, setErr] = useState('');
 
   const handleAdd = async () => {
-    const missing = addFields.filter(f => f.required && !draft[f.field] && draft[f.field] !== false);
+    const record: Row = { ...draft };
+    if (overrides) {
+      for (const [field, override] of Object.entries(overrides)) {
+        record[field] = override.getValue();
+      }
+    }
+    const missing = addFields.filter(f => f.required && !record[f.field] && record[f.field] !== false);
     if (missing.length > 0) { setErr(`Required: ${missing.map(f => f.label).join(', ')}`); return; }
     setSaving(true); setErr('');
-    try { await onAdd(draft); setDraft(empty); }
+    try { await onAdd(record); setDraft(empty); }
     catch (e: any) { setErr(e.message); }
     finally { setSaving(false); }
   };
@@ -244,9 +260,12 @@ function MetaAddForm({ fields, onAdd, overrides }: {
           <div style={{ color: f.required ? '#aaa' : '#555', fontSize: '0.63rem', marginBottom: '0.2rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
             {f.label}{f.required && <span style={{ color: '#ef4444' }}>*</span>}
           </div>
-          {overrides?.[f.field] ?? (
+          {overrides?.[f.field]?.node ?? (
             f.field_type === 'boolean'
-              ? <input type="checkbox" checked={!!draft[f.field]} onChange={e => setDraft(d => ({ ...d, [f.field]: e.target.checked }))} style={{ accentColor: '#4ade80' }} />
+              ? <input type="checkbox" checked={!!draft[f.field]}
+                  onChange={e => setDraft(d => ({ ...d, [f.field]: e.target.checked }))}
+                  style={{ accentColor: '#4ade80' }}
+                />
               : <input value={draft[f.field] ?? ''}
                   onChange={e => setDraft(d => ({ ...d, [f.field]: e.target.value }))}
                   style={{ background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.35rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', width: '140px' }}
@@ -285,13 +304,13 @@ function FieldMetaTab({ token }: { token: string }) {
   const sorted = [...filtered].sort((a, b) => a.display_order - b.display_order);
 
   const COLS = [
-    { key: 'object_type', label: 'Object',     editable: false, type: 'text' },
-    { key: 'field',       label: 'Field',      editable: false, type: 'text' },
-    { key: 'field_type',  label: 'Type',       editable: true,  type: 'text' },
-    { key: 'label',       label: 'Label',      editable: true,  type: 'text' },
-    { key: 'required',    label: 'Req',        editable: true,  type: 'boolean' },
-    { key: 'editable',    label: 'Edit',       editable: true,  type: 'boolean' },
-    { key: 'display_order', label: 'Order',    editable: true,  type: 'text' },
+    { key: 'object_type',   label: 'Object',  editable: false, type: 'text' },
+    { key: 'field',         label: 'Field',   editable: false, type: 'text' },
+    { key: 'field_type',    label: 'Type',    editable: true,  type: 'text' },
+    { key: 'label',         label: 'Label',   editable: true,  type: 'text' },
+    { key: 'required',      label: 'Req',     editable: true,  type: 'boolean' },
+    { key: 'editable',      label: 'Edit',    editable: true,  type: 'boolean' },
+    { key: 'display_order', label: 'Order',   editable: true,  type: 'text' },
   ];
 
   const handleSave = async (id: any, field: string, value: any) => {
@@ -378,27 +397,20 @@ export default function AdminPage() {
     });
   }, []);
 
-  const TAB_CONFIG: Record<Tab, { table: string; label: string; idField: string; metaKey: string }> = {
-    tag_groups:  { table: 'tag_group',           label: 'Tag Groups',    idField: 'tag_group_id',           metaKey: 'tag_group' },
-    tags:        { table: 'tag',                 label: 'Tags',          idField: 'tag_id',                 metaKey: 'tag' },
-    task_status: { table: 'task_status',         label: 'Task Status',   idField: 'task_status_id',         metaKey: 'task_status' },
-    defaults:    { table: 'ko_default_registry', label: 'Defaults',      idField: 'ko_default_registry_id', metaKey: 'ko_default_registry' },
-    field_meta:  { table: 'ko_field_metadata',   label: 'Field Metadata',idField: 'ko_field_metadata_id',   metaKey: 'ko_field_metadata' },
-    list_config: { table: 'ko_list_view_config', label: 'List Config',   idField: 'ko_list_view_config_id', metaKey: 'ko_list_view_config' },
-    concepts:    { table: 'concept_registry',    label: 'Concepts',      idField: 'concept_registry_id',    metaKey: 'concept_registry' },
-  };
-
   const loadTab = useCallback(async (t: Tab) => {
     if (!token || t === 'field_meta') return;
     setLoading(true); setError('');
     try {
       const cfg = TAB_CONFIG[t];
-      const [rowData, metaData] = await Promise.all([
+      const [rowData, allMeta] = await Promise.all([
         adminFetch(token, cfg.table),
-        adminFetch(token, 'ko_field_metadata').then(all => all.filter(f => f.object_type === cfg.metaKey)),
+        adminFetch(token, 'ko_field_metadata'),
       ]);
       setRows(rowData);
-      setFields((metaData as FieldMeta[]).sort((a, b) => a.display_order - b.display_order));
+      setFields(
+        (allMeta.filter(f => f.object_type === cfg.metaKey) as unknown as FieldMeta[])
+          .sort((a, b) => a.display_order - b.display_order)
+      );
     } catch (e: any) { setError(e.message); }
     finally { setLoading(false); }
   }, [token]);
@@ -415,6 +427,9 @@ export default function AdminPage() {
   const tabContent = () => {
     if (tab === 'field_meta') return <FieldMetaTab token={token} />;
 
+    // Tag group dropdown state lives here so getValue() can close over it
+    let tagGroupSelected = '';
+
     const addForm = () => {
       if (tab === 'tags') {
         return (
@@ -422,14 +437,19 @@ export default function AdminPage() {
             fields={fields}
             onAdd={r => adminPost(token, 'tag', r).then(() => loadTab('tags'))}
             overrides={{
-              tag_group_id: (
-                <select value={''} onChange={e => {}}
-                  style={{ background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.35rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', minWidth: '140px' }}
-                >
-                  <option value="">— select group —</option>
-                  {tagGroups.map(g => <option key={g.tag_group_id} value={g.tag_group_id}>{g.name}</option>)}
-                </select>
-              ),
+              tag_group_id: {
+                node: (
+                  <select
+                    defaultValue=""
+                    onChange={e => { tagGroupSelected = e.target.value; }}
+                    style={{ background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.35rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', minWidth: '140px' }}
+                  >
+                    <option value="">— select group —</option>
+                    {tagGroups.map(g => <option key={g.tag_group_id} value={g.tag_group_id}>{g.name}</option>)}
+                  </select>
+                ),
+                getValue: () => tagGroupSelected,
+              },
             }}
           />
         );
