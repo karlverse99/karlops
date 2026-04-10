@@ -4,6 +4,7 @@ import { createSupabaseAdmin } from '@/lib/supabase-server';
 const ALLOWED_TABLES = [
   'tag', 'tag_group', 'task_status', 'ko_default_registry',
   'ko_field_metadata', 'ko_list_view_config', 'concept_registry',
+  'context',
 ];
 
 async function getUser(req: NextRequest) {
