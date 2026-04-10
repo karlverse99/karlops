@@ -84,7 +84,7 @@ function TaskPill({ task, bucket }: { task: Task; bucket: BucketDef }) {
           {task.tags.map(tag => (
             <span key={tag} style={{
               fontSize: '0.65rem',
-              color: '#555',
+              color: '#aaa',
               background: '#1e1e1e',
               border: '1px solid #2a2a2a',
               borderRadius: '3px',
@@ -122,19 +122,20 @@ function BucketSection({ bucket, tasks }: { bucket: BucketDef; tasks: Task[] }) 
           flexShrink: 0,
           boxShadow: `0 0 6px ${bucket.color}66`,
         }} />
+        {/* Bucket label — kept as designed */}
         <span style={{ color: bucket.accent, fontSize: '0.7rem', fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
           {bucket.label}
         </span>
-        <span style={{ color: '#333', fontSize: '0.65rem', marginLeft: 'auto' }}>
+        <span style={{ color: '#888', fontSize: '0.65rem', marginLeft: 'auto' }}>
           {tasks.length > 0 ? tasks.length : '—'}
         </span>
-        <span style={{ color: '#333', fontSize: '0.65rem' }}>{collapsed ? '▸' : '▾'}</span>
+        <span style={{ color: '#888', fontSize: '0.65rem' }}>{collapsed ? '▸' : '▾'}</span>
       </div>
 
       {!collapsed && (
         <div>
           {tasks.length === 0 ? (
-            <div style={{ color: '#2a2a2a', fontSize: '0.75rem', paddingLeft: '1rem', paddingBottom: '0.25rem' }}>
+            <div style={{ color: '#444', fontSize: '0.75rem', paddingLeft: '1rem', paddingBottom: '0.25rem' }}>
               empty
             </div>
           ) : (
@@ -266,13 +267,16 @@ export default function WorkspacePage() {
   const loadTasks = async (userId: string) => {
     const { data, error } = await supabase
       .from('task')
-      .select('id, title, bucket_key, tags, is_completed, is_archived, created_at')
+      .select('task_id, title, bucket_key, tags, is_completed, is_archived, created_at')
       .eq('user_id', userId)
       .eq('is_completed', false)
       .eq('is_archived', false)
       .order('created_at', { ascending: false });
 
-    if (!error && data) setTasks(data);
+    if (!error && data) {
+      // map task_id → id for consistency
+      setTasks(data.map((t: any) => ({ ...t, id: t.task_id })));
+    }
   };
 
   // ── Chat scroll ────────────────────────────────────────────────────────────
@@ -291,7 +295,6 @@ export default function WorkspacePage() {
     setThinking(true);
 
     // TODO: route to commandEngine
-    // For now: echo stub so shell is interactive
     setTimeout(() => {
       setChat(prev => [...prev, {
         role: 'assistant',
@@ -318,7 +321,7 @@ export default function WorkspacePage() {
   if (loading) {
     return (
       <div style={centeredStyle}>
-        <span style={{ color: '#333', fontFamily: 'monospace', fontSize: '0.8rem' }}>...</span>
+        <span style={{ color: '#aaa', fontFamily: 'monospace', fontSize: '0.8rem' }}>...</span>
       </div>
     );
   }
@@ -328,7 +331,7 @@ export default function WorkspacePage() {
       <div style={centeredStyle}>
         <div style={{ color: '#ef4444', fontFamily: 'monospace', fontSize: '0.8rem', textAlign: 'center' }}>
           <div style={{ marginBottom: '0.5rem' }}>Session error</div>
-          <div style={{ color: '#666', fontSize: '0.75rem' }}>{sessionError}</div>
+          <div style={{ color: '#aaa', fontSize: '0.75rem' }}>{sessionError}</div>
           <button onClick={() => window.location.reload()} style={ghostBtn}>Retry</button>
         </div>
       </div>
@@ -362,21 +365,21 @@ export default function WorkspacePage() {
         background: '#0d0d0d',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          <span style={{ color: '#fff', fontSize: '0.9rem', fontWeight: 700, letterSpacing: '0.02em' }}>
+          <span style={{ color: '#ffffff', fontSize: '0.9rem', fontWeight: 700, letterSpacing: '0.02em' }}>
             KarlOps
           </span>
-          <span style={{ color: '#2a2a2a', fontSize: '0.7rem' }}>|</span>
-          <span style={{ color: '#444', fontSize: '0.7rem' }}>
+          <span style={{ color: '#444', fontSize: '0.7rem' }}>|</span>
+          <span style={{ color: '#aaa', fontSize: '0.7rem' }}>
             {koUser?.implementation_type ?? 'default'}
           </span>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-          <span style={{ color: '#333', fontSize: '0.7rem' }}>
+          <span style={{ color: '#aaa', fontSize: '0.7rem' }}>
             {totalOpen} open
           </span>
-          <span style={{ color: '#2a2a2a', fontSize: '0.7rem' }}>|</span>
-          <span style={{ color: '#444', fontSize: '0.7rem' }}>
+          <span style={{ color: '#444', fontSize: '0.7rem' }}>|</span>
+          <span style={{ color: '#aaa', fontSize: '0.7rem' }}>
             {koUser?.display_name ?? user?.email}
           </span>
           <button onClick={handleLogout} style={ghostBtn}>
@@ -386,11 +389,7 @@ export default function WorkspacePage() {
       </header>
 
       {/* ── MAIN SPLIT ── */}
-      <div style={{
-        flex: 1,
-        display: 'flex',
-        overflow: 'hidden',
-      }}>
+      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
 
         {/* ── LEFT: BUCKET VIEW ── */}
         <div style={{
@@ -398,12 +397,12 @@ export default function WorkspacePage() {
           flexShrink: 0,
           borderRight: '1px solid #1a1a1a',
           overflowY: 'auto',
-          padding: '1rem 1rem 1rem',
+          padding: '1rem',
           scrollbarWidth: 'thin',
           scrollbarColor: '#222 transparent',
         }}>
           {!sessionReady ? (
-            <div style={{ color: '#2a2a2a', fontSize: '0.75rem', paddingTop: '1rem' }}>
+            <div style={{ color: '#aaa', fontSize: '0.75rem', paddingTop: '1rem' }}>
               Initializing...
             </div>
           ) : (
@@ -418,12 +417,7 @@ export default function WorkspacePage() {
         </div>
 
         {/* ── RIGHT: CHAT ── */}
-        <div style={{
-          flex: 1,
-          display: 'flex',
-          flexDirection: 'column',
-          overflow: 'hidden',
-        }}>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
           {/* Chat history */}
           <div style={{
@@ -443,7 +437,7 @@ export default function WorkspacePage() {
                   borderRadius: '12px 12px 12px 2px',
                   background: '#1a1a1a',
                   border: '1px solid #252525',
-                  color: '#444',
+                  color: '#aaa',
                   fontSize: '0.82rem',
                 }}>
                   ···
@@ -460,17 +454,12 @@ export default function WorkspacePage() {
             background: '#0d0d0d',
             flexShrink: 0,
           }}>
-            <div style={{
-              display: 'flex',
-              gap: '0.75rem',
-              alignItems: 'flex-end',
-            }}>
+            <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-end' }}>
               <textarea
                 ref={inputRef}
                 value={input}
                 onChange={e => {
                   setInput(e.target.value);
-                  // Auto-resize
                   e.target.style.height = 'auto';
                   e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
                 }}
@@ -495,7 +484,7 @@ export default function WorkspacePage() {
                   overflowY: 'auto',
                   transition: 'border-color 0.15s',
                 }}
-                onFocus={e => (e.target.style.borderColor = '#333')}
+                onFocus={e => (e.target.style.borderColor = '#555')}
                 onBlur={e => (e.target.style.borderColor = '#222')}
               />
               <button
@@ -504,7 +493,7 @@ export default function WorkspacePage() {
                 style={{
                   background: input.trim() && sessionReady && !thinking ? '#1a2a1a' : '#111',
                   border: `1px solid ${input.trim() && sessionReady && !thinking ? '#2a4a2a' : '#1a1a1a'}`,
-                  color: input.trim() && sessionReady && !thinking ? '#4ade80' : '#333',
+                  color: input.trim() && sessionReady && !thinking ? '#4ade80' : '#555',
                   borderRadius: '6px',
                   padding: '0.5rem 1rem',
                   fontSize: '0.8rem',
@@ -518,7 +507,7 @@ export default function WorkspacePage() {
                 send
               </button>
             </div>
-            <div style={{ color: '#2a2a2a', fontSize: '0.65rem', marginTop: '0.4rem', paddingLeft: '0.1rem' }}>
+            <div style={{ color: '#555', fontSize: '0.65rem', marginTop: '0.4rem', paddingLeft: '0.1rem' }}>
               ↵ send · shift+↵ newline
             </div>
           </div>
@@ -541,8 +530,8 @@ const centeredStyle: React.CSSProperties = {
 
 const ghostBtn: React.CSSProperties = {
   background: 'transparent',
-  border: '1px solid #222',
-  color: '#555',
+  border: '1px solid #444',
+  color: '#aaa',
   padding: '0.3rem 0.6rem',
   borderRadius: '4px',
   cursor: 'pointer',
