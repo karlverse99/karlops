@@ -1,26 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createServerClient } from '@/lib/supabase-server';
 import { createSupabaseAdmin } from '@/lib/supabase-server';
 import { initializeUserWorkspace } from '@/lib/ko/initializeUserWorkspace';
 
 export async function POST(req: NextRequest) {
   try {
-    // Verify auth token from request header
     const authHeader = req.headers.get('authorization');
     if (!authHeader?.startsWith('Bearer ')) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     const token = authHeader.replace('Bearer ', '');
-    const db = createServerClient();
+    const db = createSupabaseAdmin();
 
-    // Validate token and get user
     const { data: { user }, error: authError } = await db.auth.getUser(token);
     if (authError || !user) {
       return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
     }
 
-    // Run lazy init
     const result = await initializeUserWorkspace(
       user.id,
       user.email ?? '',
@@ -43,6 +39,6 @@ export async function POST(req: NextRequest) {
   }
 }
 
-export async function GET(req: NextRequest) {
+export async function GET() {
   return NextResponse.json({ error: 'Method not allowed' }, { status: 405 });
 }
