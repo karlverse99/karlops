@@ -5,10 +5,10 @@ import { supabase } from '@/lib/supabase';
 
 export default function Home() {
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    supabase.auth.onAuthStateChange((event, session) => {
       if (session?.user) {
         window.location.href = '/workspace';
-      } else {
+      } else if (event === 'INITIAL_SESSION') {
         window.location.href = '/login';
       }
     });
