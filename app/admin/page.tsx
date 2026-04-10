@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 
-type Tab = 'tag_groups' | 'tags' | 'task_status' | 'defaults' | 'field_meta' | 'list_config' | 'concepts';
+type Tab = 'tag_groups' | 'tags' | 'task_status' | 'defaults' | 'field_meta' | 'list_config' | 'concepts' | 'contexts';
 interface Row { [key: string]: any; }
 interface FieldMeta {
   field: string;
@@ -25,9 +25,8 @@ const TAB_CONFIG: Record<string, { table: string; label: string; idField: string
   field_meta:  { table: 'ko_field_metadata',   label: 'Field Metadata',idField: 'ko_field_metadata_id',   metaKey: 'ko_field_metadata' },
   list_config: { table: 'ko_list_view_config', label: 'List Config',   idField: 'ko_list_view_config_id', metaKey: 'ko_list_view_config' },
   concepts:    { table: 'concept_registry',    label: 'Concepts',      idField: 'concept_registry_id',    metaKey: 'concept_registry' },
+  contexts:    { table: 'context',             label: 'Contexts',      idField: 'context_id',             metaKey: 'context' },
 };
-
-const ALLOWED_TABLES = ['tag', 'tag_group', 'task_status', 'ko_default_registry', 'ko_field_metadata', 'ko_list_view_config', 'concept_registry', 'context', 'task_status'];
 
 // ─── API Helpers ──────────────────────────────────────────────────────────────
 
@@ -82,7 +81,6 @@ async function loadFKMaps(token: string, fields: FieldMeta[]): Promise<FKMap> {
   await Promise.all(
     uniqueTables.map(async t => {
       try {
-        // FK tables may not be in ALLOWED_TABLES — fetch via supabase client directly
         const res = await fetch(`/api/ko/admin?table=${t}`, {
           headers: { Authorization: `Bearer ${token}` },
         });
@@ -96,7 +94,6 @@ async function loadFKMaps(token: string, fields: FieldMeta[]): Promise<FKMap> {
   for (const f of fkFields) {
     if (!f.fk_table || !f.fk_label) continue;
     const rows = tableData[f.fk_table] ?? [];
-    // Find PK field — assume it ends with _id
     const pkField = Object.keys(rows[0] ?? {}).find(k => k.endsWith('_id') && k !== 'user_id') ?? 'id';
     const options = rows.map(r => ({ value: r[pkField], label: r[f.fk_label!] ?? r[pkField] }));
     fkMap[f.field] = {
@@ -179,16 +176,14 @@ function FKCell({ value, options, onSave }: { value: any; options: { value: stri
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
 
-  const handleChange = async (v: string) => {
-    setSaving(true); setErr('');
-    try { await onSave(v); }
-    catch (e: any) { setErr(e.message); }
-    finally { setSaving(false); }
-  };
-
   return (
     <div>
-      <select value={value ?? ''} onChange={e => handleChange(e.target.value)} disabled={saving}
+      <select value={value ?? ''} onChange={async e => {
+        setSaving(true);
+        try { await onSave(e.target.value); }
+        catch (e: any) { setErr(e.message); }
+        finally { setSaving(false); }
+      }} disabled={saving}
         style={{ background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.2rem 0.35rem', borderRadius: '3px', fontFamily: 'monospace', fontSize: '0.72rem', cursor: 'pointer' }}
       >
         <option value="">—</option>
@@ -203,16 +198,14 @@ function SelectCell({ value, options, onSave }: { value: any; options: string[];
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
 
-  const handleChange = async (v: string) => {
-    setSaving(true); setErr('');
-    try { await onSave(v); }
-    catch (e: any) { setErr(e.message); }
-    finally { setSaving(false); }
-  };
-
   return (
     <div>
-      <select value={value ?? ''} onChange={e => handleChange(e.target.value)} disabled={saving}
+      <select value={value ?? ''} onChange={async e => {
+        setSaving(true);
+        try { await onSave(e.target.value); }
+        catch (e: any) { setErr(e.message); }
+        finally { setSaving(false); }
+      }} disabled={saving}
         style={{ background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.2rem 0.35rem', borderRadius: '3px', fontFamily: 'monospace', fontSize: '0.72rem', cursor: 'pointer' }}
       >
         {options.map(o => <option key={o} value={o}>{o}</option>)}
@@ -280,13 +273,10 @@ function MetaTable({ rows, fields, idField, token, table, onRefresh, addForm, fk
     const fk = fkMap[f.field];
 
     if (f.update_behavior === 'editable') {
-      if (fk) {
-        return <FKCell value={rawVal} options={fk.options} onSave={v => handleSave(row[idField], f.field, v)} />;
-      }
+      if (fk) return <FKCell value={rawVal} options={fk.options} onSave={v => handleSave(row[idField], f.field, v)} />;
       return <EditCell value={rawVal} fieldType={f.field_type} onSave={v => handleSave(row[idField], f.field, v)} />;
     }
 
-    // Readonly — resolve FK for display
     const displayVal = fk ? fk.resolve(rawVal) : rawVal;
     return <ReadCell value={displayVal} fieldType={f.field_type} />;
   };
@@ -411,6 +401,208 @@ function MetaAddForm({ fields, onAdd, fkMap }: {
   );
 }
 
+// ─── Defaults Add Form ────────────────────────────────────────────────────────
+
+function DefaultsAddForm({ token, onRefresh }: { token: string; onRefresh: () => void }) {
+  const [allMeta, setAllMeta] = useState<FieldMeta[]>([]);
+  const [objectType, setObjectType] = useState('');
+  const [field, setField] = useState('');
+  const [value, setValue] = useState('');
+  const [fkOptions, setFkOptions] = useState<{ value: string; label: string }[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    adminFetch(token, 'ko_field_metadata').then(d => setAllMeta(d as unknown as FieldMeta[])).catch(() => {});
+  }, [token]);
+
+  const objectTypes = Array.from(new Set(allMeta.map(f => f.object_type))).sort();
+  const fieldOptions = allMeta
+    .filter(f => f.object_type === objectType && f.insert_behavior !== 'automatic')
+    .sort((a, b) => a.display_order - b.display_order);
+
+  const selectedField = allMeta.find(f => f.object_type === objectType && f.field === field);
+
+  useEffect(() => {
+    setValue('');
+    setFkOptions([]);
+    if (!selectedField?.fk_table || !selectedField?.fk_label) return;
+    adminFetch(token, selectedField.fk_table).then(rows => {
+      const pkField = Object.keys(rows[0] ?? {}).find(k => k.endsWith('_id') && k !== 'user_id') ?? 'id';
+      setFkOptions(rows.map(r => ({ value: r[pkField], label: r[selectedField.fk_label!] })));
+    }).catch(() => {});
+  }, [field, objectType]);
+
+  const handleAdd = async () => {
+    if (!objectType || !field || !value) { setErr('All fields required'); return; }
+    setSaving(true); setErr('');
+    try {
+      await adminPost(token, 'ko_default_registry', { object_type: objectType, field, value });
+      setObjectType(''); setField(''); setValue('');
+      onRefresh();
+    } catch (e: any) { setErr(e.message); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end', flexWrap: 'wrap', padding: '0.75rem', background: '#0d0d0d', border: '1px solid #1a1a1a', borderRadius: '6px' }}>
+      <div>
+        <div style={{ color: '#aaa', fontSize: '0.63rem', marginBottom: '0.2rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Object<span style={{ color: '#ef4444' }}>*</span></div>
+        <select value={objectType} onChange={e => { setObjectType(e.target.value); setField(''); setValue(''); }}
+          style={{ background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.35rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', minWidth: '140px' }}
+        >
+          <option value="">— select —</option>
+          {objectTypes.map(t => <option key={t} value={t}>{t}</option>)}
+        </select>
+      </div>
+
+      <div>
+        <div style={{ color: '#aaa', fontSize: '0.63rem', marginBottom: '0.2rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Field<span style={{ color: '#ef4444' }}>*</span></div>
+        <select value={field} onChange={e => setField(e.target.value)} disabled={!objectType}
+          style={{ background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.35rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', minWidth: '140px' }}
+        >
+          <option value="">— select —</option>
+          {fieldOptions.map(f => <option key={f.field} value={f.field}>{f.label}</option>)}
+        </select>
+      </div>
+
+      <div>
+        <div style={{ color: '#aaa', fontSize: '0.63rem', marginBottom: '0.2rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Value<span style={{ color: '#ef4444' }}>*</span></div>
+        {fkOptions.length > 0 ? (
+          <select value={value} onChange={e => setValue(e.target.value)}
+            style={{ background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.35rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', minWidth: '140px' }}
+          >
+            <option value="">— select —</option>
+            {fkOptions.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        ) : (
+          <input value={value} onChange={e => setValue(e.target.value)} disabled={!field}
+            style={{ background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.35rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', width: '140px' }}
+          />
+        )}
+      </div>
+
+      <button onClick={handleAdd} disabled={saving}
+        style={{ background: '#1a2a1a', border: '1px solid #2a4a2a', color: '#4ade80', padding: '0.35rem 0.75rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer', height: '30px' }}
+      >{saving ? '...' : '+ Add'}</button>
+      {err && <span style={{ color: '#ef4444', fontSize: '0.72rem' }}>{err}</span>}
+    </div>
+  );
+}
+
+// ─── Defaults Table ───────────────────────────────────────────────────────────
+
+function DefaultsTab({ token }: { token: string }) {
+  const [rows, setRows] = useState<Row[]>([]);
+  const [allMeta, setAllMeta] = useState<FieldMeta[]>([]);
+  const [fkCache, setFkCache] = useState<Record<string, { value: string; label: string }[]>>({});
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState('');
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [data, meta] = await Promise.all([
+        adminFetch(token, 'ko_default_registry'),
+        adminFetch(token, 'ko_field_metadata'),
+      ]);
+      setRows(data);
+      setAllMeta(meta as unknown as FieldMeta[]);
+    } catch (e: any) { setErr(e.message); }
+    finally { setLoading(false); }
+  }, [token]);
+
+  useEffect(() => { load(); }, [load]);
+
+  // Resolve FK values for display
+  useEffect(() => {
+    const fkFields = allMeta.filter(f => f.fk_table && f.fk_label);
+    const uniqueTables = Array.from(new Set(fkFields.map(f => f.fk_table!)));
+    uniqueTables.forEach(async t => {
+      if (fkCache[t]) return;
+      try {
+        const data = await adminFetch(token, t);
+        const pkField = Object.keys(data[0] ?? {}).find(k => k.endsWith('_id') && k !== 'user_id') ?? 'id';
+        const fkMeta = fkFields.find(f => f.fk_table === t);
+        if (!fkMeta?.fk_label) return;
+        setFkCache(c => ({ ...c, [t]: data.map(r => ({ value: r[pkField], label: r[fkMeta.fk_label!] })) }));
+      } catch {}
+    });
+  }, [allMeta]);
+
+  const resolveValue = (row: Row) => {
+    const meta = allMeta.find(f => f.object_type === row.object_type && f.field === row.field);
+    if (!meta?.fk_table) return row.value;
+    const options = fkCache[meta.fk_table] ?? [];
+    return options.find(o => o.value === row.value)?.label ?? row.value;
+  };
+
+  const handleDelete = async (id: any) => {
+    if (!confirm('Delete this default?')) return;
+    try { await adminDelete(token, 'ko_default_registry', 'ko_default_registry_id', id); load(); }
+    catch (e: any) { setErr(e.message); }
+  };
+
+  const handleValueSave = async (row: Row, newVal: string) => {
+    await adminPatch(token, 'ko_default_registry', 'ko_default_registry_id', row.ko_default_registry_id, { value: newVal });
+    load();
+  };
+
+  const getValueEditor = (row: Row) => {
+    const meta = allMeta.find(f => f.object_type === row.object_type && f.field === row.field);
+    if (meta?.fk_table) {
+      const options = fkCache[meta.fk_table] ?? [];
+      return <FKCell value={row.value} options={options} onSave={v => handleValueSave(row, v)} />;
+    }
+    return <EditCell value={row.value} fieldType="text" onSave={v => handleValueSave(row, v)} />;
+  };
+
+  return (
+    <div>
+      {err && <div style={{ color: '#ef4444', fontSize: '0.72rem', marginBottom: '0.5rem' }}>{err}</div>}
+      <div style={{ marginBottom: '1rem' }}>
+        <DefaultsAddForm token={token} onRefresh={load} />
+      </div>
+      {loading ? <div style={{ color: '#444', fontSize: '0.75rem' }}>Loading...</div> : (
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
+            <thead>
+              <tr>
+                {['Object Type', 'Field', 'Value'].map(h => (
+                  <th key={h} style={{ textAlign: 'left', color: '#555', fontWeight: 600, padding: '0.3rem 0.5rem', borderBottom: '1px solid #1a1a1a', fontSize: '0.7rem' }}>{h}</th>
+                ))}
+                <th style={{ width: '32px' }} />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.length === 0 && (
+                <tr><td colSpan={4} style={{ color: '#333', padding: '1rem 0.5rem', fontSize: '0.75rem' }}>No records</td></tr>
+              )}
+              {rows.map(row => (
+                <tr key={row.ko_default_registry_id} style={{ borderBottom: '1px solid #0f0f0f' }}
+                  onMouseEnter={e => (e.currentTarget.style.background = '#0d0d0d')}
+                  onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                >
+                  <td style={{ padding: '0.2rem 0.5rem' }}><ReadCell value={row.object_type} fieldType="text" /></td>
+                  <td style={{ padding: '0.2rem 0.5rem' }}><ReadCell value={row.field} fieldType="text" /></td>
+                  <td style={{ padding: '0.2rem 0.5rem', verticalAlign: 'top' }}>{getValueEditor(row)}</td>
+                  <td style={{ padding: '0.2rem 0.5rem', textAlign: 'right' }}>
+                    <button onClick={() => handleDelete(row.ko_default_registry_id)}
+                      style={{ background: 'none', border: 'none', color: '#2a2a2a', cursor: 'pointer', fontSize: '0.72rem' }}
+                      onMouseEnter={e => (e.currentTarget.style.color = '#ef4444')}
+                      onMouseLeave={e => (e.currentTarget.style.color = '#2a2a2a')}
+                    >✕</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Hardcoded Field Meta Tab ─────────────────────────────────────────────────
 
 function FieldMetaTab({ token }: { token: string }) {
@@ -434,15 +626,15 @@ function FieldMetaTab({ token }: { token: string }) {
   const sorted = [...filtered].sort((a, b) => a.display_order - b.display_order);
 
   const COLS: { key: string; label: string; editable: boolean; type: string; options: string[] }[] = [
-    { key: 'object_type',     label: 'Object',  editable: false, type: 'text',   options: [] },
-    { key: 'field',           label: 'Field',   editable: false, type: 'text',   options: [] },
-    { key: 'field_type',      label: 'Type',    editable: true,  type: 'text',   options: [] },
-    { key: 'label',           label: 'Label',   editable: true,  type: 'text',   options: [] },
-    { key: 'insert_behavior', label: 'Insert',  editable: true,  type: 'select', options: ['required', 'optional', 'automatic'] },
-    { key: 'update_behavior', label: 'Update',  editable: true,  type: 'select', options: ['editable', 'readonly', 'automatic'] },
-    { key: 'fk_table',        label: 'FK Table',editable: true,  type: 'text',   options: [] },
-    { key: 'fk_label',        label: 'FK Label',editable: true,  type: 'text',   options: [] },
-    { key: 'display_order',   label: 'Order',   editable: true,  type: 'text',   options: [] },
+    { key: 'object_type',     label: 'Object',   editable: false, type: 'text',   options: [] },
+    { key: 'field',           label: 'Field',    editable: false, type: 'text',   options: [] },
+    { key: 'field_type',      label: 'Type',     editable: true,  type: 'text',   options: [] },
+    { key: 'label',           label: 'Label',    editable: true,  type: 'text',   options: [] },
+    { key: 'insert_behavior', label: 'Insert',   editable: true,  type: 'select', options: ['required', 'optional', 'automatic'] },
+    { key: 'update_behavior', label: 'Update',   editable: true,  type: 'select', options: ['editable', 'readonly', 'automatic'] },
+    { key: 'fk_table',        label: 'FK Table', editable: true,  type: 'text',   options: [] },
+    { key: 'fk_label',        label: 'FK Label', editable: true,  type: 'text',   options: [] },
+    { key: 'display_order',   label: 'Order',    editable: true,  type: 'text',   options: [] },
   ];
 
   const handleSave = async (id: any, field: string, value: any) => {
@@ -538,7 +730,7 @@ export default function AdminPage() {
   }, []);
 
   const loadTab = useCallback(async (t: Tab) => {
-    if (!token || t === 'field_meta') return;
+    if (!token || t === 'field_meta' || t === 'defaults') return;
     setLoading(true); setError(''); setTagGroupFilter('');
     try {
       const cfg = TAB_CONFIG[t];
@@ -548,14 +740,12 @@ export default function AdminPage() {
       ]);
       const tabFields = (allMeta.filter(f => f.object_type === cfg.metaKey) as unknown as FieldMeta[])
         .sort((a, b) => a.display_order - b.display_order);
-
       const fks = await loadFKMaps(token, tabFields);
 
       setRows(rowData);
       setFields(tabFields);
       setFkMap(fks);
 
-      // Keep tag groups handy for filter
       if (t === 'tags' && fks['tag_group_id']) {
         setTagGroups(fks['tag_group_id'].options.map(o => ({ tag_group_id: o.value, name: o.label })));
       }
@@ -573,6 +763,7 @@ export default function AdminPage() {
 
   const tabContent = () => {
     if (tab === 'field_meta') return <FieldMetaTab token={token} />;
+    if (tab === 'defaults') return <DefaultsTab token={token} />;
 
     const filterNode = tab === 'tags' ? (
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
@@ -587,7 +778,7 @@ export default function AdminPage() {
       </div>
     ) : undefined;
 
-    const canAdd = ['tag_groups', 'tags', 'task_status'].includes(tab);
+    const canAdd = ['tag_groups', 'tags', 'task_status', 'contexts'].includes(tab);
 
     return (
       <MetaTable
@@ -610,6 +801,7 @@ export default function AdminPage() {
   const TABS: { key: Tab; label: string }[] = [
     { key: 'tag_groups',  label: 'Tag Groups' },
     { key: 'tags',        label: 'Tags' },
+    { key: 'contexts',    label: 'Contexts' },
     { key: 'task_status', label: 'Task Status' },
     { key: 'defaults',    label: 'Defaults' },
     { key: 'field_meta',  label: 'Field Metadata' },
