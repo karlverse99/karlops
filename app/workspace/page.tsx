@@ -30,6 +30,22 @@ function groupTasksByBucket(tasks: Task[]): Record<string, Task[]> {
   return grouped;
 }
 
+function renderMarkdown(text: string): React.ReactNode[] {
+  const parts = text.split(/(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g);
+  return parts.map((part, i) => {
+    if (part.startsWith('**') && part.endsWith('**')) {
+      return <strong key={i} style={{ color: '#fff', fontWeight: 700 }}>{part.slice(2, -2)}</strong>;
+    }
+    if (part.startsWith('*') && part.endsWith('*')) {
+      return <em key={i} style={{ color: '#ccc' }}>{part.slice(1, -1)}</em>;
+    }
+    if (part.startsWith('`') && part.endsWith('`')) {
+      return <code key={i} style={{ background: '#1e1e1e', padding: '0.1rem 0.3rem', borderRadius: '3px', fontSize: '0.78rem', color: '#4ade80' }}>{part.slice(1, -1)}</code>;
+    }
+    return <span key={i}>{part}</span>;
+  });
+}
+
 function TaskPill({ task, bucket }: { task: Task; bucket: BucketDef }) {
   return (
     <div
@@ -73,10 +89,15 @@ function BucketSection({ bucket, tasks }: { bucket: BucketDef; tasks: Task[] }) 
 
 function ChatBubble({ msg }: { msg: ChatMessage }) {
   const isUser = msg.role === 'user';
+  const lines = msg.content.split('\n');
   return (
     <div style={{ display: 'flex', justifyContent: isUser ? 'flex-end' : 'flex-start', marginBottom: '0.75rem' }}>
-      <div style={{ maxWidth: '65%', padding: '0.6rem 0.9rem', borderRadius: isUser ? '12px 12px 2px 12px' : '12px 12px 12px 2px', background: isUser ? '#1a2a1a' : '#1a1a1a', border: `1px solid ${isUser ? '#2a4a2a' : '#252525'}`, color: isUser ? '#86efac' : '#d4d4d4', fontSize: '0.82rem', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
-        {msg.content}
+      <div style={{ maxWidth: '65%', padding: '0.6rem 0.9rem', borderRadius: isUser ? '12px 12px 2px 12px' : '12px 12px 12px 2px', background: isUser ? '#1a2a1a' : '#1a1a1a', border: `1px solid ${isUser ? '#2a4a2a' : '#252525'}`, color: isUser ? '#86efac' : '#d4d4d4', fontSize: '0.82rem', lineHeight: 1.6 }}>
+        {lines.map((line, i) => (
+          <div key={i} style={{ minHeight: line === '' ? '0.6rem' : undefined }}>
+            {isUser ? line : renderMarkdown(line)}
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -222,7 +243,6 @@ export default function WorkspacePage() {
     setThinking(true);
 
     try {
-      // ── Check if confirming or denying a pending action ──────────────────
       if (pending) {
         const lower = text.toLowerCase();
         const isConfirm = CONFIRM_WORDS.some(w => lower.includes(w));
@@ -248,7 +268,6 @@ export default function WorkspacePage() {
         }
       }
 
-      // ── Route new input ──────────────────────────────────────────────────
       const res = await fetch('/api/ko/command', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
@@ -289,7 +308,7 @@ export default function WorkspacePage() {
     const data = await res.json();
     if (!data.success) throw new Error(data.error ?? 'Capture failed');
     if (koUser) await loadTasks(koUser.id);
-    addMessage('assistant', `Captured — "${title}" is in your capture bucket.`);
+    addMessage('assistant', `Captured — **${title}** is in your capture bucket.`);
   };
 
   if (sessionError) {
