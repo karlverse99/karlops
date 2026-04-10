@@ -5,7 +5,14 @@ import { supabase } from '@/lib/supabase';
 
 type Tab = 'tag_groups' | 'tags' | 'task_status' | 'defaults' | 'field_meta' | 'list_config' | 'concepts';
 interface Row { [key: string]: any; }
-interface FieldMeta { field: string; label: string; field_type: string; required: boolean; editable: boolean; display_order: number; }
+interface FieldMeta {
+  field: string;
+  label: string;
+  field_type: string;
+  insert_behavior: 'required' | 'optional' | 'automatic';
+  update_behavior: 'editable' | 'readonly' | 'automatic';
+  display_order: number;
+}
 
 const TAB_CONFIG: Record<string, { table: string; label: string; idField: string; metaKey: string }> = {
   tag_groups:  { table: 'tag_group',           label: 'Tag Groups',    idField: 'tag_group_id',           metaKey: 'tag_group' },
@@ -154,7 +161,9 @@ function MetaTable({ rows, fields, idField, token, table, onRefresh, addForm, fk
   fkResolvers?: Record<string, (val: any) => string>;
 }) {
   const [err, setErr] = useState('');
-  const visibleFields = fields.filter(f => f.display_order < 999).sort((a, b) => a.display_order - b.display_order);
+  const visibleFields = fields
+    .filter(f => f.display_order < 999)
+    .sort((a, b) => a.display_order - b.display_order);
 
   const handleSave = async (id: any, field: string, value: any) => {
     try { await adminPatch(token, table, idField, id, { [field]: value }); onRefresh(); }
@@ -165,6 +174,17 @@ function MetaTable({ rows, fields, idField, token, table, onRefresh, addForm, fk
     if (!confirm('Delete this record?')) return;
     try { await adminDelete(token, table, idField, id); onRefresh(); }
     catch (e: any) { setErr(e.message); }
+  };
+
+  const behaviorBadge = (insert: string, update: string) => {
+    const ibColor = insert === 'required' ? '#ef4444' : insert === 'optional' ? '#f97316' : '#333';
+    const ubColor = update === 'editable' ? '#4ade80' : update === 'readonly' ? '#555' : '#333';
+    return (
+      <span style={{ display: 'inline-flex', gap: '0.2rem', marginLeft: '0.3rem' }}>
+        <span style={{ fontSize: '0.55rem', color: ibColor, border: `1px solid ${ibColor}`, borderRadius: '2px', padding: '0 0.2rem' }}>{insert[0].toUpperCase()}</span>
+        <span style={{ fontSize: '0.55rem', color: ubColor, border: `1px solid ${ubColor}`, borderRadius: '2px', padding: '0 0.2rem' }}>{update[0].toUpperCase()}</span>
+      </span>
+    );
   };
 
   return (
@@ -178,8 +198,7 @@ function MetaTable({ rows, fields, idField, token, table, onRefresh, addForm, fk
               {visibleFields.map(f => (
                 <th key={f.field} style={{ textAlign: 'left', color: '#555', fontWeight: 600, padding: '0.3rem 0.5rem', borderBottom: '1px solid #1a1a1a', whiteSpace: 'nowrap', fontSize: '0.7rem' }}>
                   {f.label}
-                  {f.required && <span style={{ color: '#ef4444', marginLeft: '2px' }}>*</span>}
-                  {f.editable && <span style={{ color: '#2a4a2a', marginLeft: '3px', fontSize: '0.6rem' }}>✎</span>}
+                  {behaviorBadge(f.insert_behavior, f.update_behavior)}
                 </th>
               ))}
               <th style={{ width: '32px' }} />
@@ -197,9 +216,10 @@ function MetaTable({ rows, fields, idField, token, table, onRefresh, addForm, fk
                 {visibleFields.map(f => {
                   const rawVal = row[f.field];
                   const displayVal = fkResolvers?.[f.field] ? fkResolvers[f.field](rawVal) : rawVal;
+                  const isEditable = f.update_behavior === 'editable' && !fkResolvers?.[f.field];
                   return (
                     <td key={f.field} style={{ padding: '0.2rem 0.5rem', verticalAlign: 'top' }}>
-                      {f.editable && !fkResolvers?.[f.field]
+                      {isEditable
                         ? <EditCell value={rawVal} fieldType={f.field_type} onSave={v => handleSave(row[idField], f.field, v)} />
                         : <ReadCell value={displayVal} fieldType={f.field_type} />
                       }
@@ -230,7 +250,7 @@ function MetaAddForm({ fields, onAdd, overrides }: {
   overrides?: Record<string, { node: React.ReactNode; getValue: () => any }>;
 }) {
   const addFields = fields
-    .filter(f => f.display_order < 999 && !['created_at', 'updated_at'].includes(f.field))
+    .filter(f => f.insert_behavior !== 'automatic' && f.display_order < 999)
     .sort((a, b) => a.display_order - b.display_order);
 
   const empty = Object.fromEntries(addFields.map(f => [f.field, f.field_type === 'boolean' ? false : '']));
@@ -245,7 +265,7 @@ function MetaAddForm({ fields, onAdd, overrides }: {
         record[field] = override.getValue();
       }
     }
-    const missing = addFields.filter(f => f.required && !record[f.field] && record[f.field] !== false);
+    const missing = addFields.filter(f => f.insert_behavior === 'required' && !record[f.field] && record[f.field] !== false);
     if (missing.length > 0) { setErr(`Required: ${missing.map(f => f.label).join(', ')}`); return; }
     setSaving(true); setErr('');
     try { await onAdd(record); setDraft(empty); }
@@ -257,8 +277,8 @@ function MetaAddForm({ fields, onAdd, overrides }: {
     <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end', flexWrap: 'wrap', padding: '0.75rem', background: '#0d0d0d', border: '1px solid #1a1a1a', borderRadius: '6px' }}>
       {addFields.map(f => (
         <div key={f.field}>
-          <div style={{ color: f.required ? '#aaa' : '#555', fontSize: '0.63rem', marginBottom: '0.2rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-            {f.label}{f.required && <span style={{ color: '#ef4444' }}>*</span>}
+          <div style={{ color: f.insert_behavior === 'required' ? '#aaa' : '#555', fontSize: '0.63rem', marginBottom: '0.2rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            {f.label}{f.insert_behavior === 'required' && <span style={{ color: '#ef4444' }}>*</span>}
           </div>
           {overrides?.[f.field]?.node ?? (
             f.field_type === 'boolean'
@@ -304,13 +324,13 @@ function FieldMetaTab({ token }: { token: string }) {
   const sorted = [...filtered].sort((a, b) => a.display_order - b.display_order);
 
   const COLS = [
-    { key: 'object_type',   label: 'Object',  editable: false, type: 'text' },
-    { key: 'field',         label: 'Field',   editable: false, type: 'text' },
-    { key: 'field_type',    label: 'Type',    editable: true,  type: 'text' },
-    { key: 'label',         label: 'Label',   editable: true,  type: 'text' },
-    { key: 'required',      label: 'Req',     editable: true,  type: 'boolean' },
-    { key: 'editable',      label: 'Edit',    editable: true,  type: 'boolean' },
-    { key: 'display_order', label: 'Order',   editable: true,  type: 'text' },
+    { key: 'object_type',      label: 'Object',   editable: false, type: 'text' },
+    { key: 'field',            label: 'Field',    editable: false, type: 'text' },
+    { key: 'field_type',       label: 'Type',     editable: true,  type: 'text' },
+    { key: 'label',            label: 'Label',    editable: true,  type: 'text' },
+    { key: 'insert_behavior',  label: 'Insert',   editable: true,  type: 'text' },
+    { key: 'update_behavior',  label: 'Update',   editable: true,  type: 'text' },
+    { key: 'display_order',    label: 'Order',    editable: true,  type: 'text' },
   ];
 
   const handleSave = async (id: any, field: string, value: any) => {
@@ -336,6 +356,13 @@ function FieldMetaTab({ token }: { token: string }) {
           {objectTypes.map(t => <option key={t} value={t}>{t}</option>)}
         </select>
         <span style={{ color: '#333', fontSize: '0.7rem' }}>{sorted.length} rows</span>
+        <span style={{ color: '#333', fontSize: '0.65rem', marginLeft: 'auto' }}>
+          <span style={{ color: '#ef4444' }}>R</span>=required&nbsp;
+          <span style={{ color: '#f97316' }}>O</span>=optional&nbsp;
+          <span style={{ color: '#333' }}>A</span>=automatic&nbsp;|&nbsp;
+          <span style={{ color: '#4ade80' }}>E</span>=editable&nbsp;
+          <span style={{ color: '#555' }}>R</span>=readonly
+        </span>
       </div>
       {loading ? <div style={{ color: '#444', fontSize: '0.75rem' }}>Loading...</div> : (
         <div style={{ overflowX: 'auto' }}>
@@ -427,7 +454,6 @@ export default function AdminPage() {
   const tabContent = () => {
     if (tab === 'field_meta') return <FieldMetaTab token={token} />;
 
-    // Tag group dropdown state lives here so getValue() can close over it
     let tagGroupSelected = '';
 
     const addForm = () => {
