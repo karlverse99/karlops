@@ -25,7 +25,7 @@ export async function GET(req: NextRequest) {
   }
 
   const db = createSupabaseAdmin();
-  const { data, error } = await db
+  const { data, error } = await (db as any)
     .from(table)
     .select('*')
     .eq('user_id', user.id)
@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
   }
 
   const db = createSupabaseAdmin();
-  const { data, error } = await db
+  const { data, error } = await (db as any)
     .from(table)
     .insert({ ...record, user_id: user.id })
     .select()
@@ -67,7 +67,7 @@ export async function PATCH(req: NextRequest) {
   }
 
   const db = createSupabaseAdmin();
-  const { data, error } = await db
+  const { data, error } = await (db as any)
     .from(table)
     .update(updates)
     .eq(id_field, id_value)
@@ -90,7 +90,7 @@ export async function DELETE(req: NextRequest) {
   }
 
   const db = createSupabaseAdmin();
-  const { error } = await db
+  const { error } = await (db as any)
     .from(table)
     .delete()
     .eq(id_field, id_value)
