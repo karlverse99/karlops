@@ -191,12 +191,21 @@ export default function WorkspacePage() {
           <span style={{ color: '#444', fontSize: '0.7rem' }}>|</span>
           <span style={{ color: '#aaa', fontSize: '0.7rem' }}>{koUser?.implementation_type ?? '...'}</span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+<div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
           <span style={{ color: '#aaa', fontSize: '0.7rem' }}>{totalOpen} open</span>
           <span style={{ color: '#444', fontSize: '0.7rem' }}>|</span>
           <span style={{ color: '#aaa', fontSize: '0.7rem' }}>{koUser?.display_name ?? '...'}</span>
+          <a href="/admin" style={{ color: '#555', fontSize: '0.7rem', textDecoration: 'none' }}
+            onMouseEnter={e => (e.currentTarget.style.color = '#aaa')}
+            onMouseLeave={e => (e.currentTarget.style.color = '#555')}
+          >admin</a>
           <button onClick={handleLogout} style={ghostBtn}>sign out</button>
         </div>
+
+
+
+
+
       </header>
 
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
