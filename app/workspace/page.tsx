@@ -257,11 +257,12 @@ export default function WorkspacePage() {
     }
   }, []);
 
-  useEffect(() => {
-    if (user && !loading) {
-      initSession(user);
-    }
-  }, [user, loading, initSession]);
+useEffect(() => {
+  if (user && !loading) {
+    initSession(user);
+  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [user, loading]);
 
   // ── Load tasks ─────────────────────────────────────────────────────────────
   const loadTasks = async (userId: string) => {
