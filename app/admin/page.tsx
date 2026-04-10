@@ -6,6 +6,7 @@ import { supabase } from '@/lib/supabase';
 type Tab = 'tag_groups' | 'tags' | 'task_status' | 'defaults' | 'field_meta' | 'list_config' | 'concepts' | 'contexts';
 interface Row { [key: string]: any; }
 interface FieldMeta {
+  object_type: string;
   field: string;
   label: string;
   field_type: string;
