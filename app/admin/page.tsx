@@ -398,7 +398,7 @@ export default function AdminPage() {
         adminFetch(token, 'ko_field_metadata').then(all => all.filter(f => f.object_type === cfg.metaKey)),
       ]);
       setRows(rowData);
-      setFields(metaData.sort((a, b) => a.display_order - b.display_order));
+      setFields((metaData as FieldMeta[]).sort((a, b) => a.display_order - b.display_order));
     } catch (e: any) { setError(e.message); }
     finally { setLoading(false); }
   }, [token]);
