@@ -12,7 +12,10 @@ interface FieldMeta {
   insert_behavior: 'required' | 'optional' | 'automatic';
   update_behavior: 'editable' | 'readonly' | 'automatic';
   display_order: number;
+  fk_table: string | null;
+  fk_label: string | null;
 }
+interface FKMap { [field: string]: { options: { value: string; label: string }[]; resolve: (v: any) => string } }
 
 const TAB_CONFIG: Record<string, { table: string; label: string; idField: string; metaKey: string }> = {
   tag_groups:  { table: 'tag_group',           label: 'Tag Groups',    idField: 'tag_group_id',           metaKey: 'tag_group' },
@@ -23,6 +26,8 @@ const TAB_CONFIG: Record<string, { table: string; label: string; idField: string
   list_config: { table: 'ko_list_view_config', label: 'List Config',   idField: 'ko_list_view_config_id', metaKey: 'ko_list_view_config' },
   concepts:    { table: 'concept_registry',    label: 'Concepts',      idField: 'concept_registry_id',    metaKey: 'concept_registry' },
 };
+
+const ALLOWED_TABLES = ['tag', 'tag_group', 'task_status', 'ko_default_registry', 'ko_field_metadata', 'ko_list_view_config', 'concept_registry', 'context', 'task_status'];
 
 // ─── API Helpers ──────────────────────────────────────────────────────────────
 
@@ -65,6 +70,41 @@ async function adminDelete(token: string, table: string, id_field: string, id_va
   });
   const json = await res.json();
   if (!res.ok) throw new Error(json.error ?? 'Delete failed');
+}
+
+// ─── FK loader ────────────────────────────────────────────────────────────────
+
+async function loadFKMaps(token: string, fields: FieldMeta[]): Promise<FKMap> {
+  const fkFields = fields.filter(f => f.fk_table && f.fk_label);
+  const uniqueTables = Array.from(new Set(fkFields.map(f => f.fk_table!)));
+
+  const tableData: Record<string, Row[]> = {};
+  await Promise.all(
+    uniqueTables.map(async t => {
+      try {
+        // FK tables may not be in ALLOWED_TABLES — fetch via supabase client directly
+        const res = await fetch(`/api/ko/admin?table=${t}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const json = await res.json();
+        if (json.data) tableData[t] = json.data;
+      } catch {}
+    })
+  );
+
+  const fkMap: FKMap = {};
+  for (const f of fkFields) {
+    if (!f.fk_table || !f.fk_label) continue;
+    const rows = tableData[f.fk_table] ?? [];
+    // Find PK field — assume it ends with _id
+    const pkField = Object.keys(rows[0] ?? {}).find(k => k.endsWith('_id') && k !== 'user_id') ?? 'id';
+    const options = rows.map(r => ({ value: r[pkField], label: r[f.fk_label!] ?? r[pkField] }));
+    fkMap[f.field] = {
+      options,
+      resolve: (v: any) => options.find(o => o.value === v)?.label ?? v ?? '—',
+    };
+  }
+  return fkMap;
 }
 
 // ─── Cells ────────────────────────────────────────────────────────────────────
@@ -135,6 +175,30 @@ function EditCell({ value, fieldType, onSave }: { value: any; fieldType: string;
   );
 }
 
+function FKCell({ value, options, onSave }: { value: any; options: { value: string; label: string }[]; onSave: (v: any) => Promise<void> }) {
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+
+  const handleChange = async (v: string) => {
+    setSaving(true); setErr('');
+    try { await onSave(v); }
+    catch (e: any) { setErr(e.message); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div>
+      <select value={value ?? ''} onChange={e => handleChange(e.target.value)} disabled={saving}
+        style={{ background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.2rem 0.35rem', borderRadius: '3px', fontFamily: 'monospace', fontSize: '0.72rem', cursor: 'pointer' }}
+      >
+        <option value="">—</option>
+        {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
+      {err && <div style={{ color: '#ef4444', fontSize: '0.65rem' }}>{err}</div>}
+    </div>
+  );
+}
+
 function SelectCell({ value, options, onSave }: { value: any; options: string[]; onSave: (v: any) => Promise<void> }) {
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState('');
@@ -173,7 +237,7 @@ function ReadCell({ value, fieldType }: { value: any; fieldType: string }) {
 
 // ─── Metadata-driven Table ────────────────────────────────────────────────────
 
-function MetaTable({ rows, fields, idField, token, table, onRefresh, addForm, fkResolvers }: {
+function MetaTable({ rows, fields, idField, token, table, onRefresh, addForm, fkMap, filterNode }: {
   rows: Row[];
   fields: FieldMeta[];
   idField: string;
@@ -181,7 +245,8 @@ function MetaTable({ rows, fields, idField, token, table, onRefresh, addForm, fk
   table: string;
   onRefresh: () => void;
   addForm?: React.ReactNode;
-  fkResolvers?: Record<string, (val: any) => string>;
+  fkMap: FKMap;
+  filterNode?: React.ReactNode;
 }) {
   const [err, setErr] = useState('');
   const visibleFields = fields
@@ -210,9 +275,26 @@ function MetaTable({ rows, fields, idField, token, table, onRefresh, addForm, fk
     );
   };
 
+  const renderCell = (row: Row, f: FieldMeta) => {
+    const rawVal = row[f.field];
+    const fk = fkMap[f.field];
+
+    if (f.update_behavior === 'editable') {
+      if (fk) {
+        return <FKCell value={rawVal} options={fk.options} onSave={v => handleSave(row[idField], f.field, v)} />;
+      }
+      return <EditCell value={rawVal} fieldType={f.field_type} onSave={v => handleSave(row[idField], f.field, v)} />;
+    }
+
+    // Readonly — resolve FK for display
+    const displayVal = fk ? fk.resolve(rawVal) : rawVal;
+    return <ReadCell value={displayVal} fieldType={f.field_type} />;
+  };
+
   return (
     <div>
       {err && <div style={{ color: '#ef4444', fontSize: '0.72rem', marginBottom: '0.5rem' }}>{err}</div>}
+      {filterNode && <div style={{ marginBottom: '1rem' }}>{filterNode}</div>}
       {addForm && <div style={{ marginBottom: '1rem' }}>{addForm}</div>}
       <div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
@@ -236,19 +318,11 @@ function MetaTable({ rows, fields, idField, token, table, onRefresh, addForm, fk
                 onMouseEnter={e => (e.currentTarget.style.background = '#0d0d0d')}
                 onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
               >
-                {visibleFields.map(f => {
-                  const rawVal = row[f.field];
-                  const displayVal = fkResolvers?.[f.field] ? fkResolvers[f.field](rawVal) : rawVal;
-                  const isEditable = f.update_behavior === 'editable' && !fkResolvers?.[f.field];
-                  return (
-                    <td key={f.field} style={{ padding: '0.2rem 0.5rem', verticalAlign: 'top' }}>
-                      {isEditable
-                        ? <EditCell value={rawVal} fieldType={f.field_type} onSave={v => handleSave(row[idField], f.field, v)} />
-                        : <ReadCell value={displayVal} fieldType={f.field_type} />
-                      }
-                    </td>
-                  );
-                })}
+                {visibleFields.map(f => (
+                  <td key={f.field} style={{ padding: '0.2rem 0.5rem', verticalAlign: 'top' }}>
+                    {renderCell(row, f)}
+                  </td>
+                ))}
                 <td style={{ padding: '0.2rem 0.5rem', textAlign: 'right', verticalAlign: 'top' }}>
                   <button onClick={() => handleDelete(row[idField])}
                     style={{ background: 'none', border: 'none', color: '#2a2a2a', cursor: 'pointer', fontSize: '0.72rem' }}
@@ -267,10 +341,10 @@ function MetaTable({ rows, fields, idField, token, table, onRefresh, addForm, fk
 
 // ─── Metadata-driven Add Form ─────────────────────────────────────────────────
 
-function MetaAddForm({ fields, onAdd, overrides }: {
+function MetaAddForm({ fields, onAdd, fkMap }: {
   fields: FieldMeta[];
   onAdd: (record: Row) => Promise<void>;
-  overrides?: Record<string, { node: React.ReactNode; getValue: () => any }>;
+  fkMap: FKMap;
 }) {
   const addFields = fields
     .filter(f => f.insert_behavior !== 'automatic' && f.display_order < 999)
@@ -282,18 +356,41 @@ function MetaAddForm({ fields, onAdd, overrides }: {
   const [err, setErr] = useState('');
 
   const handleAdd = async () => {
-    const record: Row = { ...draft };
-    if (overrides) {
-      for (const [field, override] of Object.entries(overrides)) {
-        record[field] = override.getValue();
-      }
-    }
-    const missing = addFields.filter(f => f.insert_behavior === 'required' && !record[f.field] && record[f.field] !== false);
+    const missing = addFields.filter(f => f.insert_behavior === 'required' && !draft[f.field] && draft[f.field] !== false);
     if (missing.length > 0) { setErr(`Required: ${missing.map(f => f.label).join(', ')}`); return; }
     setSaving(true); setErr('');
-    try { await onAdd(record); setDraft(empty); }
+    try { await onAdd(draft); setDraft(empty); }
     catch (e: any) { setErr(e.message); }
     finally { setSaving(false); }
+  };
+
+  const renderInput = (f: FieldMeta) => {
+    const fk = fkMap[f.field];
+    if (fk) {
+      return (
+        <select value={draft[f.field] ?? ''}
+          onChange={e => setDraft(d => ({ ...d, [f.field]: e.target.value }))}
+          style={{ background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.35rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', minWidth: '140px' }}
+        >
+          <option value="">— select —</option>
+          {fk.options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+      );
+    }
+    if (f.field_type === 'boolean') {
+      return (
+        <input type="checkbox" checked={!!draft[f.field]}
+          onChange={e => setDraft(d => ({ ...d, [f.field]: e.target.checked }))}
+          style={{ accentColor: '#4ade80' }}
+        />
+      );
+    }
+    return (
+      <input value={draft[f.field] ?? ''}
+        onChange={e => setDraft(d => ({ ...d, [f.field]: e.target.value }))}
+        style={{ background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.35rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', width: '140px' }}
+      />
+    );
   };
 
   return (
@@ -303,17 +400,7 @@ function MetaAddForm({ fields, onAdd, overrides }: {
           <div style={{ color: f.insert_behavior === 'required' ? '#aaa' : '#555', fontSize: '0.63rem', marginBottom: '0.2rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
             {f.label}{f.insert_behavior === 'required' && <span style={{ color: '#ef4444' }}>*</span>}
           </div>
-          {overrides?.[f.field]?.node ?? (
-            f.field_type === 'boolean'
-              ? <input type="checkbox" checked={!!draft[f.field]}
-                  onChange={e => setDraft(d => ({ ...d, [f.field]: e.target.checked }))}
-                  style={{ accentColor: '#4ade80' }}
-                />
-              : <input value={draft[f.field] ?? ''}
-                  onChange={e => setDraft(d => ({ ...d, [f.field]: e.target.value }))}
-                  style={{ background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.35rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', width: '140px' }}
-                />
-          )}
+          {renderInput(f)}
         </div>
       ))}
       <button onClick={handleAdd} disabled={saving}
@@ -353,6 +440,8 @@ function FieldMetaTab({ token }: { token: string }) {
     { key: 'label',           label: 'Label',   editable: true,  type: 'text',   options: [] },
     { key: 'insert_behavior', label: 'Insert',  editable: true,  type: 'select', options: ['required', 'optional', 'automatic'] },
     { key: 'update_behavior', label: 'Update',  editable: true,  type: 'select', options: ['editable', 'readonly', 'automatic'] },
+    { key: 'fk_table',        label: 'FK Table',editable: true,  type: 'text',   options: [] },
+    { key: 'fk_label',        label: 'FK Label',editable: true,  type: 'text',   options: [] },
     { key: 'display_order',   label: 'Order',   editable: true,  type: 'text',   options: [] },
   ];
 
@@ -435,9 +524,11 @@ export default function AdminPage() {
   const [tab, setTab] = useState<Tab>('tags');
   const [rows, setRows] = useState<Row[]>([]);
   const [fields, setFields] = useState<FieldMeta[]>([]);
-  const [tagGroups, setTagGroups] = useState<Row[]>([]);
+  const [fkMap, setFkMap] = useState<FKMap>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [tagGroupFilter, setTagGroupFilter] = useState('');
+  const [tagGroups, setTagGroups] = useState<Row[]>([]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -448,83 +539,70 @@ export default function AdminPage() {
 
   const loadTab = useCallback(async (t: Tab) => {
     if (!token || t === 'field_meta') return;
-    setLoading(true); setError('');
+    setLoading(true); setError(''); setTagGroupFilter('');
     try {
       const cfg = TAB_CONFIG[t];
       const [rowData, allMeta] = await Promise.all([
         adminFetch(token, cfg.table),
         adminFetch(token, 'ko_field_metadata'),
       ]);
+      const tabFields = (allMeta.filter(f => f.object_type === cfg.metaKey) as unknown as FieldMeta[])
+        .sort((a, b) => a.display_order - b.display_order);
+
+      const fks = await loadFKMaps(token, tabFields);
+
       setRows(rowData);
-      setFields(
-        (allMeta.filter(f => f.object_type === cfg.metaKey) as unknown as FieldMeta[])
-          .sort((a, b) => a.display_order - b.display_order)
-      );
+      setFields(tabFields);
+      setFkMap(fks);
+
+      // Keep tag groups handy for filter
+      if (t === 'tags' && fks['tag_group_id']) {
+        setTagGroups(fks['tag_group_id'].options.map(o => ({ tag_group_id: o.value, name: o.label })));
+      }
     } catch (e: any) { setError(e.message); }
     finally { setLoading(false); }
-  }, [token]);
-
-  useEffect(() => {
-    if (!token) return;
-    adminFetch(token, 'tag_group').then(setTagGroups).catch(() => {});
   }, [token]);
 
   useEffect(() => { if (token) loadTab(tab); }, [token, tab]);
 
   const cfg = TAB_CONFIG[tab];
 
+  const filteredRows = tab === 'tags' && tagGroupFilter
+    ? rows.filter(r => r.tag_group_id === tagGroupFilter)
+    : rows;
+
   const tabContent = () => {
     if (tab === 'field_meta') return <FieldMetaTab token={token} />;
 
-    let tagGroupSelected = '';
+    const filterNode = tab === 'tags' ? (
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+        <span style={{ color: '#555', fontSize: '0.7rem' }}>Group:</span>
+        <select value={tagGroupFilter} onChange={e => setTagGroupFilter(e.target.value)}
+          style={{ background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.3rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem' }}
+        >
+          <option value="">All</option>
+          {tagGroups.map(g => <option key={g.tag_group_id} value={g.tag_group_id}>{g.name}</option>)}
+        </select>
+        <span style={{ color: '#333', fontSize: '0.7rem' }}>{filteredRows.length} tags</span>
+      </div>
+    ) : undefined;
 
-    const addForm = () => {
-      if (tab === 'tags') {
-        return (
-          <MetaAddForm
-            fields={fields}
-            onAdd={r => adminPost(token, 'tag', r).then(() => loadTab('tags'))}
-            overrides={{
-              tag_group_id: {
-                node: (
-                  <select
-                    defaultValue=""
-                    onChange={e => { tagGroupSelected = e.target.value; }}
-                    style={{ background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.35rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', minWidth: '140px' }}
-                  >
-                    <option value="">— select group —</option>
-                    {tagGroups.map(g => <option key={g.tag_group_id} value={g.tag_group_id}>{g.name}</option>)}
-                  </select>
-                ),
-                getValue: () => tagGroupSelected,
-              },
-            }}
-          />
-        );
-      }
-      return (
-        <MetaAddForm
-          fields={fields}
-          onAdd={r => adminPost(token, cfg.table, r).then(() => loadTab(tab))}
-        />
-      );
-    };
-
-    const fkResolvers: Record<string, (v: any) => string> = {};
-    if (tab === 'tags') {
-      fkResolvers['tag_group_id'] = (v: string) => tagGroups.find(g => g.tag_group_id === v)?.name ?? v;
-    }
+    const canAdd = ['tag_groups', 'tags', 'task_status'].includes(tab);
 
     return (
       <MetaTable
-        rows={rows}
+        rows={filteredRows}
         fields={fields}
         idField={cfg.idField}
         token={token}
         table={cfg.table}
         onRefresh={() => loadTab(tab)}
-        addForm={addForm()}
-        fkResolvers={fkResolvers}
+        fkMap={fkMap}
+        filterNode={filterNode}
+        addForm={canAdd
+          ? <MetaAddForm fields={fields} onAdd={r => adminPost(token, cfg.table, r).then(() => loadTab(tab))} fkMap={fkMap} />
+          : undefined
+        }
       />
     );
   };
