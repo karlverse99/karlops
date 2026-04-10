@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
+import TaskDetailModal from '@/app/components/TaskDetailModal';
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -54,9 +55,10 @@ function renderMarkdown(text: string): React.ReactNode[] {
 
 // ─── COMPONENTS: TaskPill ────────────────────────────────────────────────────
 
-function TaskPill({ task, bucket }: { task: Task; bucket: BucketDef }) {
+function TaskPill({ task, bucket, onClick }: { task: Task; bucket: BucketDef; onClick: () => void }) {
   return (
     <div
+      onClick={onClick}
       style={{ padding: '0.5rem 0.75rem', background: '#161616', border: '1px solid #222', borderLeft: `2px solid ${bucket.color}`, borderRadius: '4px', marginBottom: '0.375rem', cursor: 'pointer', transition: 'background 0.15s' }}
       onMouseEnter={e => (e.currentTarget.style.background = '#1c1c1c')}
       onMouseLeave={e => (e.currentTarget.style.background = '#161616')}
@@ -75,7 +77,7 @@ function TaskPill({ task, bucket }: { task: Task; bucket: BucketDef }) {
 
 // ─── COMPONENTS: BucketSection ───────────────────────────────────────────────
 
-function BucketSection({ bucket, tasks }: { bucket: BucketDef; tasks: Task[] }) {
+function BucketSection({ bucket, tasks, onTaskClick }: { bucket: BucketDef; tasks: Task[]; onTaskClick: (task: Task) => void }) {
   const [collapsed, setCollapsed] = useState(false);
   return (
     <div style={{ marginBottom: '1.25rem' }}>
@@ -89,7 +91,7 @@ function BucketSection({ bucket, tasks }: { bucket: BucketDef; tasks: Task[] }) 
         <div>
           {tasks.length === 0
             ? <div style={{ color: '#444', fontSize: '0.75rem', paddingLeft: '1rem', paddingBottom: '0.25rem' }}>empty</div>
-            : tasks.map(task => <TaskPill key={task.id} task={task} bucket={bucket} />)
+            : tasks.map(task => <TaskPill key={task.id} task={task} bucket={bucket} onClick={() => onTaskClick(task)} />)
           }
         </div>
       )}
@@ -104,17 +106,7 @@ function ChatBubble({ msg }: { msg: ChatMessage }) {
   const lines  = msg.content.split('\n');
   return (
     <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: '0.75rem', paddingLeft: isUser ? '3rem' : '0' }}>
-      <div style={{
-        maxWidth: '70%',
-        padding: '0.6rem 0.9rem',
-        borderRadius: isUser ? '12px 12px 2px 12px' : '12px 12px 12px 2px',
-        background: isUser ? '#1a2a1a' : '#1a1a1a',
-        border: `1px solid ${isUser ? '#2a4a2a' : '#252525'}`,
-        color: isUser ? '#86efac' : '#d4d4d4',
-        fontSize: '0.82rem',
-        lineHeight: 1.6,
-        marginLeft: isUser ? 'auto' : '0',
-      }}>
+      <div style={{ maxWidth: '70%', padding: '0.6rem 0.9rem', borderRadius: isUser ? '12px 12px 2px 12px' : '12px 12px 12px 2px', background: isUser ? '#1a2a1a' : '#1a1a1a', border: `1px solid ${isUser ? '#2a4a2a' : '#252525'}`, color: isUser ? '#86efac' : '#d4d4d4', fontSize: '0.82rem', lineHeight: 1.6, marginLeft: isUser ? 'auto' : '0' }}>
         {lines.map((line, i) => (
           <div key={i} style={{ minHeight: line === '' ? '0.6rem' : undefined }}>
             {isUser ? line : renderMarkdown(line)}
@@ -127,10 +119,7 @@ function ChatBubble({ msg }: { msg: ChatMessage }) {
 
 // ─── COMPONENTS: CaptureModal ────────────────────────────────────────────────
 
-function CaptureModal({ onClose, onCapture }: {
-  onClose: () => void;
-  onCapture: (titles: string[]) => Promise<void>;
-}) {
+function CaptureModal({ onClose, onCapture }: { onClose: () => void; onCapture: (titles: string[]) => Promise<void> }) {
   const [value, setValue] = useState('');
   const [saving, setSaving] = useState(false);
   const [err, setErr]     = useState('');
@@ -160,7 +149,6 @@ function CaptureModal({ onClose, onCapture }: {
           <span style={{ color: '#fff', fontSize: '0.85rem', fontWeight: 600 }}>Quick Capture</span>
           <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: '0.8rem' }}>✕</button>
         </div>
-
         <div style={{ marginBottom: '0.75rem' }}>
           <div style={{ color: '#555', fontSize: '0.65rem', marginBottom: '0.35rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
             Task(s)<span style={{ color: '#ef4444' }}>*</span>
@@ -178,8 +166,6 @@ function CaptureModal({ onClose, onCapture }: {
             onBlur={e => (e.target.style.borderColor = '#333')}
           />
         </div>
-
-        {/* Preview parsed tasks */}
         {previews.length > 0 && (
           <div style={{ marginBottom: '1rem' }}>
             <div style={{ color: '#555', fontSize: '0.65rem', marginBottom: '0.35rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
@@ -187,16 +173,12 @@ function CaptureModal({ onClose, onCapture }: {
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
               {previews.map((t, i) => (
-                <div key={i} style={{ color: '#4ade80', fontSize: '0.75rem', padding: '0.2rem 0.5rem', background: '#0d1a0d', border: '1px solid #1a3a1a', borderRadius: '4px' }}>
-                  {t}
-                </div>
+                <div key={i} style={{ color: '#4ade80', fontSize: '0.75rem', padding: '0.2rem 0.5rem', background: '#0d1a0d', border: '1px solid #1a3a1a', borderRadius: '4px' }}>{t}</div>
               ))}
             </div>
           </div>
         )}
-
         {err && <div style={{ color: '#ef4444', fontSize: '0.72rem', marginBottom: '0.75rem' }}>{err}</div>}
-
         <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
           <button onClick={onClose} style={{ background: 'none', border: '1px solid #333', color: '#666', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer' }}>cancel</button>
           <button onClick={handleSubmit} disabled={saving || previews.length === 0}
@@ -214,16 +196,17 @@ export default function WorkspacePage() {
 
   // ─── PAGE: State ───────────────────────────────────────────────────────────
 
-  const [koUser, setKoUser]           = useState<KOUser | null>(null);
-  const [tasks, setTasks]             = useState<Task[]>([]);
-  const [chat, setChat]               = useState<ChatMessage[]>([]);
-  const [input, setInput]             = useState('');
-  const [sessionReady, setSessionReady] = useState(false);
-  const [sessionError, setSessionError] = useState('');
-  const [thinking, setThinking]       = useState(false);
-  const [pending, setPending]         = useState<PendingAction | null>(null);
-  const [accessToken, setAccessToken] = useState('');
-  const [showCapture, setShowCapture] = useState(false);
+  const [koUser, setKoUser]               = useState<KOUser | null>(null);
+  const [tasks, setTasks]                 = useState<Task[]>([]);
+  const [chat, setChat]                   = useState<ChatMessage[]>([]);
+  const [input, setInput]                 = useState('');
+  const [sessionReady, setSessionReady]   = useState(false);
+  const [sessionError, setSessionError]   = useState('');
+  const [thinking, setThinking]           = useState(false);
+  const [pending, setPending]             = useState<PendingAction | null>(null);
+  const [accessToken, setAccessToken]     = useState('');
+  const [showCapture, setShowCapture]     = useState(false);
+  const [selectedTask, setSelectedTask]   = useState<Task | null>(null);
 
   const chatBottomRef = useRef<HTMLDivElement>(null);
   const inputRef      = useRef<HTMLTextAreaElement>(null);
@@ -292,11 +275,8 @@ export default function WorkspacePage() {
     chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chat, thinking]);
 
-  // Auto-focus input when pending action is set
   useEffect(() => {
-    if (pending) {
-      setTimeout(() => inputRef.current?.focus(), 100);
-    }
+    if (pending) setTimeout(() => inputRef.current?.focus(), 100);
   }, [pending]);
 
   // ─── PAGE: Handlers ────────────────────────────────────────────────────────
@@ -314,7 +294,6 @@ export default function WorkspacePage() {
     setThinking(true);
 
     try {
-      // ── Confirm or deny pending action ─────────────────────────────────
       if (pending) {
         const lower     = text.toLowerCase();
         const isConfirm = CONFIRM_WORDS.some(w => lower.includes(w));
@@ -340,7 +319,6 @@ export default function WorkspacePage() {
         }
       }
 
-      // ── Route new input ────────────────────────────────────────────────
       const res = await fetch('/api/ko/command', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
@@ -410,7 +388,17 @@ export default function WorkspacePage() {
   return (
     <div style={{ minHeight: '100vh', height: '100vh', display: 'flex', flexDirection: 'column', background: '#0a0a0a', fontFamily: 'monospace', overflow: 'hidden' }}>
 
+      {/* MODALS */}
       {showCapture && <CaptureModal onClose={() => setShowCapture(false)} onCapture={handleModalCapture} />}
+      {selectedTask && koUser && (
+        <TaskDetailModal
+          taskId={selectedTask.id}
+          userId={koUser.id}
+          accessToken={accessToken}
+          onClose={() => setSelectedTask(null)}
+          onSaved={() => { loadTasks(koUser.id); setSelectedTask(null); }}
+        />
+      )}
 
       {/* HEADER */}
       <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 1.25rem', height: '44px', borderBottom: '1px solid #1a1a1a', flexShrink: 0, background: '#0d0d0d' }}>
@@ -439,7 +427,14 @@ export default function WorkspacePage() {
         <div style={{ width: '340px', flexShrink: 0, borderRight: '1px solid #1a1a1a', overflowY: 'auto', padding: '1rem', scrollbarWidth: 'thin', scrollbarColor: '#222 transparent' }}>
           {!sessionReady
             ? <div style={{ color: '#aaa', fontSize: '0.75rem', paddingTop: '1rem' }}>Initializing...</div>
-            : BUCKETS.map(bucket => <BucketSection key={bucket.key} bucket={bucket} tasks={grouped[bucket.key] ?? []} />)
+            : BUCKETS.map(bucket => (
+                <BucketSection
+                  key={bucket.key}
+                  bucket={bucket}
+                  tasks={grouped[bucket.key] ?? []}
+                  onTaskClick={task => setSelectedTask(task)}
+                />
+              ))
           }
         </div>
 
