@@ -135,6 +135,29 @@ function EditCell({ value, fieldType, onSave }: { value: any; fieldType: string;
   );
 }
 
+function SelectCell({ value, options, onSave }: { value: any; options: string[]; onSave: (v: any) => Promise<void> }) {
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState('');
+
+  const handleChange = async (v: string) => {
+    setSaving(true); setErr('');
+    try { await onSave(v); }
+    catch (e: any) { setErr(e.message); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div>
+      <select value={value ?? ''} onChange={e => handleChange(e.target.value)} disabled={saving}
+        style={{ background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.2rem 0.35rem', borderRadius: '3px', fontFamily: 'monospace', fontSize: '0.72rem', cursor: 'pointer' }}
+      >
+        {options.map(o => <option key={o} value={o}>{o}</option>)}
+      </select>
+      {err && <div style={{ color: '#ef4444', fontSize: '0.65rem' }}>{err}</div>}
+    </div>
+  );
+}
+
 function ReadCell({ value, fieldType }: { value: any; fieldType: string }) {
   if (value === null || value === undefined || value === '') {
     return <span style={{ color: '#333', fontSize: '0.75rem' }}>—</span>;
@@ -323,14 +346,14 @@ function FieldMetaTab({ token }: { token: string }) {
   const filtered = filter ? rows.filter(r => r.object_type === filter) : rows;
   const sorted = [...filtered].sort((a, b) => a.display_order - b.display_order);
 
-  const COLS = [
-    { key: 'object_type',      label: 'Object',   editable: false, type: 'text' },
-    { key: 'field',            label: 'Field',    editable: false, type: 'text' },
-    { key: 'field_type',       label: 'Type',     editable: true,  type: 'text' },
-    { key: 'label',            label: 'Label',    editable: true,  type: 'text' },
-    { key: 'insert_behavior',  label: 'Insert',   editable: true,  type: 'text' },
-    { key: 'update_behavior',  label: 'Update',   editable: true,  type: 'text' },
-    { key: 'display_order',    label: 'Order',    editable: true,  type: 'text' },
+  const COLS: { key: string; label: string; editable: boolean; type: string; options: string[] }[] = [
+    { key: 'object_type',     label: 'Object',  editable: false, type: 'text',   options: [] },
+    { key: 'field',           label: 'Field',   editable: false, type: 'text',   options: [] },
+    { key: 'field_type',      label: 'Type',    editable: true,  type: 'text',   options: [] },
+    { key: 'label',           label: 'Label',   editable: true,  type: 'text',   options: [] },
+    { key: 'insert_behavior', label: 'Insert',  editable: true,  type: 'select', options: ['required', 'optional', 'automatic'] },
+    { key: 'update_behavior', label: 'Update',  editable: true,  type: 'select', options: ['editable', 'readonly', 'automatic'] },
+    { key: 'display_order',   label: 'Order',   editable: true,  type: 'text',   options: [] },
   ];
 
   const handleSave = async (id: any, field: string, value: any) => {
@@ -356,12 +379,9 @@ function FieldMetaTab({ token }: { token: string }) {
           {objectTypes.map(t => <option key={t} value={t}>{t}</option>)}
         </select>
         <span style={{ color: '#333', fontSize: '0.7rem' }}>{sorted.length} rows</span>
-        <span style={{ color: '#333', fontSize: '0.65rem', marginLeft: 'auto' }}>
-          <span style={{ color: '#ef4444' }}>R</span>=required&nbsp;
-          <span style={{ color: '#f97316' }}>O</span>=optional&nbsp;
-          <span style={{ color: '#333' }}>A</span>=automatic&nbsp;|&nbsp;
-          <span style={{ color: '#4ade80' }}>E</span>=editable&nbsp;
-          <span style={{ color: '#555' }}>R</span>=readonly
+        <span style={{ color: '#444', fontSize: '0.65rem', marginLeft: 'auto' }}>
+          insert: <span style={{ color: '#ef4444' }}>required</span> · <span style={{ color: '#f97316' }}>optional</span> · <span style={{ color: '#333' }}>automatic</span>
+          &nbsp;&nbsp;update: <span style={{ color: '#4ade80' }}>editable</span> · <span style={{ color: '#555' }}>readonly</span> · <span style={{ color: '#333' }}>automatic</span>
         </span>
       </div>
       {loading ? <div style={{ color: '#444', fontSize: '0.75rem' }}>Loading...</div> : (
@@ -384,7 +404,9 @@ function FieldMetaTab({ token }: { token: string }) {
                   {COLS.map(c => (
                     <td key={c.key} style={{ padding: '0.2rem 0.5rem', verticalAlign: 'top' }}>
                       {c.editable
-                        ? <EditCell value={row[c.key]} fieldType={c.type} onSave={v => handleSave(row.ko_field_metadata_id, c.key, v)} />
+                        ? c.type === 'select'
+                          ? <SelectCell value={row[c.key]} options={c.options} onSave={v => handleSave(row.ko_field_metadata_id, c.key, v)} />
+                          : <EditCell value={row[c.key]} fieldType={c.type} onSave={v => handleSave(row.ko_field_metadata_id, c.key, v)} />
                         : <ReadCell value={row[c.key]} fieldType={c.type} />
                       }
                     </td>
