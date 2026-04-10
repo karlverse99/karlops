@@ -7,6 +7,7 @@ interface KOUser { id: string; email: string; display_name: string; implementati
 interface Task { id: string; title: string; bucket_key: string; tags: string[]; is_completed: boolean; is_archived: boolean; created_at: string; }
 interface ChatMessage { role: 'user' | 'assistant'; content: string; timestamp: Date; }
 interface BucketDef { key: string; label: string; color: string; accent: string; }
+interface PendingAction { intent: string; payload: Record<string, any>; summary: string; }
 
 const BUCKETS: BucketDef[] = [
   { key: 'now',      label: 'On Fire',   color: '#ef4444', accent: '#fca5a5' },
@@ -16,6 +17,9 @@ const BUCKETS: BucketDef[] = [
   { key: 'delegate', label: 'Delegated', color: '#8b5cf6', accent: '#c4b5fd' },
   { key: 'capture',  label: 'Capture',   color: '#10b981', accent: '#6ee7b7' },
 ];
+
+const CONFIRM_WORDS = ['yes', 'yeah', 'yep', 'yup', 'do it', 'confirm', 'ok', 'sure', 'go', 'capture it', 'add it'];
+const DENY_WORDS = ['no', 'nope', 'cancel', 'stop', 'nevermind', 'never mind', 'nah'];
 
 function groupTasksByBucket(tasks: Task[]): Record<string, Task[]> {
   const grouped: Record<string, Task[]> = {};
@@ -71,7 +75,7 @@ function ChatBubble({ msg }: { msg: ChatMessage }) {
   const isUser = msg.role === 'user';
   return (
     <div style={{ display: 'flex', justifyContent: isUser ? 'flex-end' : 'flex-start', marginBottom: '0.75rem' }}>
-      <div style={{ maxWidth: '80%', padding: '0.6rem 0.9rem', borderRadius: isUser ? '12px 12px 2px 12px' : '12px 12px 12px 2px', background: isUser ? '#1a2a1a' : '#1a1a1a', border: `1px solid ${isUser ? '#2a4a2a' : '#252525'}`, color: isUser ? '#86efac' : '#d4d4d4', fontSize: '0.82rem', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
+      <div style={{ maxWidth: '65%', padding: '0.6rem 0.9rem', borderRadius: isUser ? '12px 12px 2px 12px' : '12px 12px 12px 2px', background: isUser ? '#1a2a1a' : '#1a1a1a', border: `1px solid ${isUser ? '#2a4a2a' : '#252525'}`, color: isUser ? '#86efac' : '#d4d4d4', fontSize: '0.82rem', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
         {msg.content}
       </div>
     </div>
@@ -86,6 +90,8 @@ export default function WorkspacePage() {
   const [sessionReady, setSessionReady] = useState(false);
   const [sessionError, setSessionError] = useState('');
   const [thinking, setThinking]         = useState(false);
+  const [pending, setPending]           = useState<PendingAction | null>(null);
+  const [accessToken, setAccessToken]   = useState('');
 
   const chatBottomRef = useRef<HTMLDivElement>(null);
   const inputRef      = useRef<HTMLTextAreaElement>(null);
@@ -97,6 +103,7 @@ export default function WorkspacePage() {
       if (!session?.user) { window.location.href = '/login'; return; }
       if (initDone.current) return;
       initDone.current = true;
+      setAccessToken(session.access_token);
 
       try {
         const res = await fetch('/api/ko/session', {
@@ -124,15 +131,7 @@ export default function WorkspacePage() {
           timestamp: new Date(),
         }]);
 
-        const { data: taskData } = await supabase
-          .from('task')
-          .select('task_id, title, bucket_key, tags, is_completed, is_archived, created_at')
-          .eq('user_id', session.user.id)
-          .eq('is_completed', false)
-          .eq('is_archived', false)
-          .order('created_at', { ascending: false });
-
-        if (taskData) setTasks(taskData.map((t: any) => ({ ...t, id: t.task_id })));
+        await loadTasks(session.user.id);
 
       } catch (err: any) {
         console.error('[WorkspacePage init]', err);
@@ -143,20 +142,82 @@ export default function WorkspacePage() {
     return () => subscription.unsubscribe();
   }, []);
 
+  const loadTasks = async (userId: string) => {
+    const { data: taskData } = await supabase
+      .from('task')
+      .select('task_id, title, bucket_key, tags, is_completed, is_archived, created_at')
+      .eq('user_id', userId)
+      .eq('is_completed', false)
+      .eq('is_archived', false)
+      .order('created_at', { ascending: false });
+
+    if (taskData) setTasks(taskData.map((t: any) => ({ ...t, id: t.task_id })));
+  };
+
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chat, thinking]);
 
+  const addMessage = (role: 'user' | 'assistant', content: string) => {
+    setChat(prev => [...prev, { role, content, timestamp: new Date() }]);
+  };
+
   const handleSubmit = async () => {
     const text = input.trim();
     if (!text || !sessionReady) return;
-    setChat(prev => [...prev, { role: 'user', content: text, timestamp: new Date() }]);
+
+    addMessage('user', text);
     setInput('');
     setThinking(true);
-    setTimeout(() => {
-      setChat(prev => [...prev, { role: 'assistant', content: `Got it: "${text}"\n\nCommand routing coming next.`, timestamp: new Date() }]);
+
+    try {
+      // ── Check if user is confirming or denying a pending action ──────────
+      if (pending) {
+        const lower = text.toLowerCase();
+        const isConfirm = CONFIRM_WORDS.some(w => lower.includes(w));
+        const isDeny = DENY_WORDS.some(w => lower.includes(w));
+
+        if (isConfirm) {
+          const res = await fetch('/api/ko/command', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
+            body: JSON.stringify({ confirm: true, pending }),
+          });
+          const data = await res.json();
+          setPending(null);
+          addMessage('assistant', data.response ?? 'Done.');
+          if (data.task && koUser) await loadTasks(koUser.id);
+          return;
+        }
+
+        if (isDeny) {
+          setPending(null);
+          addMessage('assistant', 'Got it — cancelled.');
+          return;
+        }
+      }
+
+      // ── Route new input ──────────────────────────────────────────────────
+      const res = await fetch('/api/ko/command', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
+        body: JSON.stringify({ input: text }),
+      });
+      const data = await res.json();
+
+      if (data.intent === 'capture_task' && data.payload) {
+        setPending({ intent: data.intent, payload: data.payload, summary: data.payload.title });
+      } else {
+        setPending(null);
+      }
+
+      addMessage('assistant', data.response ?? "I'm not sure what to do with that.");
+
+    } catch (err: any) {
+      addMessage('assistant', 'Something went wrong. Try again.');
+    } finally {
       setThinking(false);
-    }, 600);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -191,7 +252,7 @@ export default function WorkspacePage() {
           <span style={{ color: '#444', fontSize: '0.7rem' }}>|</span>
           <span style={{ color: '#aaa', fontSize: '0.7rem' }}>{koUser?.implementation_type ?? '...'}</span>
         </div>
-<div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
           <span style={{ color: '#aaa', fontSize: '0.7rem' }}>{totalOpen} open</span>
           <span style={{ color: '#444', fontSize: '0.7rem' }}>|</span>
           <span style={{ color: '#aaa', fontSize: '0.7rem' }}>{koUser?.display_name ?? '...'}</span>
@@ -201,11 +262,6 @@ export default function WorkspacePage() {
           >admin</a>
           <button onClick={handleLogout} style={ghostBtn}>sign out</button>
         </div>
-
-
-
-
-
       </header>
 
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
@@ -224,6 +280,13 @@ export default function WorkspacePage() {
                 <div style={{ padding: '0.6rem 0.9rem', borderRadius: '12px 12px 12px 2px', background: '#1a1a1a', border: '1px solid #252525', color: '#aaa', fontSize: '0.82rem' }}>···</div>
               </div>
             )}
+            {pending && (
+              <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: '0.75rem' }}>
+                <div style={{ padding: '0.5rem 0.75rem', background: '#0d1a0d', border: '1px solid #1a3a1a', borderRadius: '8px', fontSize: '0.75rem', color: '#4ade80' }}>
+                  Pending: <strong>{pending.summary}</strong> — say <em>yes</em> to capture or <em>no</em> to cancel
+                </div>
+              </div>
+            )}
             <div ref={chatBottomRef} />
           </div>
 
@@ -234,7 +297,7 @@ export default function WorkspacePage() {
                 value={input}
                 onChange={e => { setInput(e.target.value); e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px'; }}
                 onKeyDown={handleKeyDown}
-                placeholder={sessionReady ? 'Drop a task, ask something, or give an order...' : 'Starting up...'}
+                placeholder={sessionReady ? (pending ? 'yes to confirm, no to cancel...' : 'Drop a task, ask something, or give an order...') : 'Starting up...'}
                 disabled={!sessionReady || thinking}
                 rows={1}
                 style={{ flex: 1, background: '#111', border: '1px solid #222', borderRadius: '6px', color: '#e5e5e5', fontSize: '0.85rem', padding: '0.6rem 0.75rem', fontFamily: 'monospace', resize: 'none', outline: 'none', lineHeight: 1.5, minHeight: '36px', maxHeight: '120px', overflowY: 'auto', transition: 'border-color 0.15s' }}
