@@ -18,7 +18,7 @@ interface Completion {
 }
 
 interface FieldMeta {
-  field_name: string;
+  field: string;
   label: string;
   display_order: number;
   insert_behavior: string;
@@ -133,15 +133,16 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
     if (tags) setAllTags(tags);
   };
 
-const loadFieldMeta = async () => {
-  const { data } = await supabase
-    .from('ko_field_metadata')
-    .select('field_name, label, display_order, insert_behavior, update_behavior')
-    .eq('object_type', 'completion')
-    .lt('display_order', 999)
-    .order('display_order');
-  if (data) setFieldMeta(data);
-};
+  const loadFieldMeta = async () => {
+    const { data } = await supabase
+      .from('ko_field_metadata')
+      .select('field, label, display_order, insert_behavior, update_behavior')
+      .eq('user_id', userId)
+      .eq('object_type', 'completion')
+      .lt('display_order', 999)
+      .order('display_order');
+    if (data) setFieldMeta(data);
+  };
 
   useEffect(() => {
     loadCompletions();
@@ -269,9 +270,7 @@ const loadFieldMeta = async () => {
 
     if (isReadonly) return null;
 
-    const required = isAdd
-      ? meta.insert_behavior === 'required'
-      : false;
+    const required = isAdd ? meta.insert_behavior === 'required' : false;
 
     const label = (
       <div style={labelStyle}>
@@ -279,7 +278,7 @@ const loadFieldMeta = async () => {
       </div>
     );
 
-    switch (meta.field_name) {
+    switch (meta.field) {
 
       case 'title':
         return (
@@ -398,7 +397,6 @@ const loadFieldMeta = async () => {
           </div>
         );
 
-      // task_id and meeting_id are readonly on update — skip in form
       default:
         return null;
     }
@@ -512,7 +510,7 @@ const loadFieldMeta = async () => {
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 100 }}>
       <div ref={modalRef} style={{ ...modalStyle, background: '#ffffff', border: '2px solid #f97316', borderRadius: '8px', display: 'flex', flexDirection: 'column', fontFamily: 'monospace', boxShadow: '0 20px 60px rgba(0,0,0,0.3)', overflow: 'hidden' }}>
 
-        {/* Header — orange bg, black text, drag handle */}
+        {/* Header */}
         <div
           onMouseDown={e => {
             dragging.current = true;
