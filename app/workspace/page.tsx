@@ -6,6 +6,7 @@ import TaskDetailModal from '@/app/components/TaskDetailModal';
 import CompletionsModal from '@/app/components/CompletionsModal';
 import MeetingsModal from '@/app/components/MeetingsModal';
 import ReferencesModal from '@/app/components/ReferencesModal';
+import TaskListModal from '@/app/components/TaskListModal';
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -299,6 +300,7 @@ export default function WorkspacePage() {
   const [showCompletions, setShowCompletions] = useState(false);
   const [showMeetings, setShowMeetings]       = useState(false);
   const [showReferences, setShowReferences]   = useState(false);
+  const [showTaskList, setShowTaskList]       = useState(false);
   const [completionCount, setCompletionCount] = useState(0);
   const [meetingCount, setMeetingCount]       = useState(0);
   const [referenceCount, setReferenceCount]   = useState(0);
@@ -615,6 +617,14 @@ export default function WorkspacePage() {
           onCountChange={setReferenceCount}
         />
       )}
+      {showTaskList && koUser && (
+        <TaskListModal
+          userId={koUser.id}
+          accessToken={accessToken}
+          onClose={() => setShowTaskList(false)}
+          onSaved={() => loadTasks(koUser.id)}
+        />
+      )}
       {selectedTask && koUser && (
         <TaskDetailModal
           taskId={selectedTask.id}
@@ -675,8 +685,13 @@ export default function WorkspacePage() {
 
           <span style={{ color: '#333', fontSize: '0.7rem' }}>|</span>
 
-          {/* open(n) */}
-          <span style={{ color: '#ffffff', fontSize: '0.7rem' }}>
+          {/* open(n) — clickable → TaskListModal */}
+          <span
+            onClick={() => setShowTaskList(true)}
+            style={{ color: '#ffffff', fontSize: '0.7rem', cursor: 'pointer' }}
+            onMouseEnter={e => (e.currentTarget.style.color = '#fbbf24')}
+            onMouseLeave={e => (e.currentTarget.style.color = '#ffffff')}
+          >
             open(<span style={{ color: '#fbbf24', fontWeight: 600 }}>{contextFilter ? totalFiltered : totalOpen}</span>)
             {contextFilter && totalOpen !== totalFiltered && (
               <span style={{ color: '#888' }}> / {totalOpen}</span>
