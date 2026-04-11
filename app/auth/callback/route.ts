@@ -26,7 +26,7 @@
 
       const { error } = await supabase.auth.exchangeCodeForSession(code);
 if (!error) {
-  return NextResponse.redirect(`${origin}/`);
+  return NextResponse.redirect(`${origin}/workspace`);
 }
       console.error('[auth/callback] exchangeCodeForSession error:', error);
     }
