@@ -5,6 +5,7 @@ import { supabase } from '@/lib/supabase';
 import TaskDetailModal from '@/app/components/TaskDetailModal';
 import CompletionsModal from '@/app/components/CompletionsModal';
 import MeetingsModal from '@/app/components/MeetingsModal';
+import ReferencesModal from '@/app/components/ReferencesModal';
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -113,6 +114,7 @@ function TaskPill({ task, bucket, statusLabel, taskIndex, onClick }: {
     </div>
   );
 }
+
 // ─── COMPONENTS: BucketSection ───────────────────────────────────────────────
 
 function BucketSection({ bucket, tasks, statusMap, onTaskClick }: {
@@ -182,6 +184,7 @@ function ContextFilter({ contexts, selected, onChange }: {
     </div>
   );
 }
+
 // ─── COMPONENTS: ChatBubble ──────────────────────────────────────────────────
 
 function ChatBubble({ msg }: { msg: ChatMessage }) {
@@ -295,8 +298,10 @@ export default function WorkspacePage() {
   const [showCapture, setShowCapture]         = useState(false);
   const [showCompletions, setShowCompletions] = useState(false);
   const [showMeetings, setShowMeetings]       = useState(false);
+  const [showReferences, setShowReferences]   = useState(false);
   const [completionCount, setCompletionCount] = useState(0);
   const [meetingCount, setMeetingCount]       = useState(0);
+  const [referenceCount, setReferenceCount]   = useState(0);
   const [selectedTask, setSelectedTask]       = useState<Task | null>(null);
 
   const chatBottomRef = useRef<HTMLDivElement>(null);
@@ -337,6 +342,7 @@ export default function WorkspacePage() {
         await loadStatuses(session.user.id);
         await loadCompletionCount(session.user.id);
         await loadMeetingCount(session.user.id);
+        await loadReferenceCount(session.user.id);
         setSessionReady(true);
 
         setChat([{
@@ -388,20 +394,12 @@ export default function WorkspacePage() {
   };
 
   const loadContexts = async (userId: string) => {
-    const { data } = await supabase
-      .from('context')
-      .select('context_id, name')
-      .eq('user_id', userId)
-      .eq('is_archived', false)
-      .order('name');
+    const { data } = await supabase.from('context').select('context_id, name').eq('user_id', userId).eq('is_archived', false).order('name');
     if (data) setContexts(data);
   };
 
   const loadStatuses = async (userId: string) => {
-    const { data } = await supabase
-      .from('task_status')
-      .select('task_status_id, label')
-      .eq('user_id', userId);
+    const { data } = await supabase.from('task_status').select('task_status_id, label').eq('user_id', userId);
     if (data) {
       const map: Record<string, string> = {};
       for (const s of data) map[s.task_status_id] = s.label;
@@ -429,14 +427,23 @@ export default function WorkspacePage() {
     if (count !== null) setCompletionCount(count);
   };
 
-const loadMeetingCount = async (userId: string) => {
-  const { count } = await supabase
-    .from('meeting')
-    .select('meeting_id', { count: 'exact', head: true })
-    .eq('user_id', userId)
-    .eq('is_completed', false);
-  if (count !== null) setMeetingCount(count);
-};
+  const loadMeetingCount = async (userId: string) => {
+    const { count } = await supabase
+      .from('meeting')
+      .select('meeting_id', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .eq('is_completed', false);
+    if (count !== null) setMeetingCount(count);
+  };
+
+  const loadReferenceCount = async (userId: string) => {
+    const { count } = await supabase
+      .from('external_reference')
+      .select('external_reference_id', { count: 'exact', head: true })
+      .eq('user_id', userId);
+    if (count !== null) setReferenceCount(count);
+  };
+
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chat, thinking]);
@@ -496,6 +503,7 @@ const loadMeetingCount = async (userId: string) => {
             await loadTasks(koUser.id);
             await loadCompletionCount(koUser.id);
             await loadMeetingCount(koUser.id);
+            await loadReferenceCount(koUser.id);
           }
           return;
         }
@@ -599,6 +607,14 @@ const loadMeetingCount = async (userId: string) => {
           onCountChange={setMeetingCount}
         />
       )}
+      {showReferences && koUser && (
+        <ReferencesModal
+          userId={koUser.id}
+          accessToken={accessToken}
+          onClose={() => setShowReferences(false)}
+          onCountChange={setReferenceCount}
+        />
+      )}
       {selectedTask && koUser && (
         <TaskDetailModal
           taskId={selectedTask.id}
@@ -609,12 +625,10 @@ const loadMeetingCount = async (userId: string) => {
         />
       )}
 
-  // ─── PAGE: Header ──────────────────────────────────────────────────────────
-
-{/* HEADER */}
+      {/* HEADER */}
       <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 1.25rem', height: '44px', borderBottom: '1px solid #1a1a1a', flexShrink: 0, background: '#0d0d0d' }}>
 
-{/* LEFT: brand + user */}
+        {/* LEFT: brand + user */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <img src="/ko-icon.svg" alt="KO" style={{ width: '28px', height: '28px' }} />
           <span style={{ color: '#ffffff', fontSize: '0.9rem', fontWeight: 700, letterSpacing: '0.02em' }}>KarlOps</span>
@@ -636,32 +650,32 @@ const loadMeetingCount = async (userId: string) => {
               onMouseLeave={e => (e.currentTarget.style.background = '#0d1a0d')}
             >+capture</button>
 
-            {/* +complete(n) — parens orange, number white */}
+            {/* +complete(n) */}
             <button onClick={() => setShowCompletions(true)}
               style={{ background: '#1a0e00', border: '1px solid #4a2a00', color: '#f97316', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
               onMouseEnter={e => (e.currentTarget.style.background = '#2a1800')}
               onMouseLeave={e => (e.currentTarget.style.background = '#1a0e00')}
-              ><span style={{ color: '#f97316' }}>+complete</span><span style={{ color: '#ffffff' }}>({completionCount})</span></button>
+            ><span style={{ color: '#f97316' }}>+complete</span><span style={{ color: '#ffffff' }}>({completionCount})</span></button>
 
-            {/* +meeting(n) — parens blue, number white */}
+            {/* +meeting(n) */}
             <button onClick={() => setShowMeetings(true)}
               style={{ background: '#0a0f1a', border: '1px solid #1a3060', color: '#3b82f6', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
               onMouseEnter={e => (e.currentTarget.style.background = '#0f1a2a')}
               onMouseLeave={e => (e.currentTarget.style.background = '#0a0f1a')}
             ><span style={{ color: '#3b82f6' }}>+meeting</span><span style={{ color: '#ffffff' }}>({meetingCount})</span></button>
 
-            {/* +reference */}
-            <button onClick={() => {}}
+            {/* +reference(n) */}
+            <button onClick={() => setShowReferences(true)}
               style={{ background: '#120a1a', border: '1px solid #3a1a5a', color: '#8b5cf6', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
               onMouseEnter={e => (e.currentTarget.style.background = '#1e1030')}
               onMouseLeave={e => (e.currentTarget.style.background = '#120a1a')}
-            >+reference</button>
+            ><span style={{ color: '#8b5cf6' }}>+reference</span><span style={{ color: '#ffffff' }}>({referenceCount})</span></button>
 
           </div>
 
           <span style={{ color: '#333', fontSize: '0.7rem' }}>|</span>
 
-          {/* open(n) — white text, yellow number+parens */}
+          {/* open(n) */}
           <span style={{ color: '#ffffff', fontSize: '0.7rem' }}>
             open(<span style={{ color: '#fbbf24', fontWeight: 600 }}>{contextFilter ? totalFiltered : totalOpen}</span>)
             {contextFilter && totalOpen !== totalFiltered && (
@@ -685,6 +699,7 @@ const loadMeetingCount = async (userId: string) => {
 
         </div>
       </header>
+
       {/* MAIN SPLIT */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
 
