@@ -133,16 +133,15 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
     if (tags) setAllTags(tags);
   };
 
-  const loadFieldMeta = async () => {
-    const { data } = await supabase
-      .from('ko_field_metadata')
-      .select('field_name, label, display_order, insert_behavior, update_behavior')
-      .eq('user_id', userId)
-      .eq('object_type', 'completion')
-      .lt('display_order', 999)
-      .order('display_order');
-    if (data) setFieldMeta(data);
-  };
+const loadFieldMeta = async () => {
+  const { data } = await supabase
+    .from('ko_field_metadata')
+    .select('field_name, label, display_order, insert_behavior, update_behavior')
+    .eq('object_type', 'completion')
+    .lt('display_order', 999)
+    .order('display_order');
+  if (data) setFieldMeta(data);
+};
 
   useEffect(() => {
     loadCompletions();
