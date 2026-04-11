@@ -126,8 +126,8 @@ function BucketSection({ bucket, tasks, statusMap, onTaskClick }: {
     <div style={{ marginBottom: '1.25rem' }}>
       <div onClick={() => setCollapsed(c => !c)} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem', cursor: 'pointer', userSelect: 'none' }}>
         <span style={{ fontSize: '0.75rem' }}>{bucket.icon}</span>
+        <span style={{ color: bucket.accent, fontSize: '0.7rem', fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase' }}>{bucket.label}</span>
         <span style={{ color: bucket.accent, fontSize: '0.72rem', fontWeight: 600, marginLeft: 'auto' }}>{tasks.length > 0 ? tasks.length : '—'}</span>
-        <span style={{ color: '#888', fontSize: '0.65rem', marginLeft: 'auto' }}>{tasks.length > 0 ? tasks.length : '—'}</span>
         <span style={{ color: '#888', fontSize: '0.65rem' }}>{collapsed ? '▸' : '▾'}</span>
       </div>
       {!collapsed && (
