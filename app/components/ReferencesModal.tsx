@@ -8,14 +8,15 @@ import { supabase } from '@/lib/supabase';
 interface Reference {
   external_reference_id: string;
   title: string;
+  filename: string | null;
+  location: string | null;
   ref_type: string | null;
-  url: string | null;
   description: string | null;
   notes: string | null;
   tags: string[] | null;
   context: { name: string; context_id: string } | null;
-  task: { title: string } | null;
-  meeting: { title: string } | null;
+  task: { title: string; task_id: string } | null;
+  meeting: { title: string; meeting_id: string } | null;
 }
 
 interface FieldMeta {
@@ -29,6 +30,8 @@ interface FieldMeta {
 interface Context { context_id: string; name: string; }
 interface Tag { tag_id: string; name: string; tag_group_id: string; }
 interface TagGroup { tag_group_id: string; name: string; }
+interface TaskOption { task_id: string; title: string; }
+interface MeetingOption { meeting_id: string; title: string; }
 
 interface ReferencesModalProps {
   userId: string;
@@ -40,11 +43,11 @@ interface ReferencesModalProps {
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 
 function exportAsCSV(refs: Reference[]): void {
-  const headers = ['Title', 'Type', 'URL', 'Description', 'Notes', 'Tags', 'Context', 'Task', 'Meeting'];
+  const headers = ['Title', 'Filename', 'Location', 'Description', 'Notes', 'Tags', 'Context', 'Task', 'Meeting'];
   const rows = refs.map(r => [
     `"${r.title.replace(/"/g, '""')}"`,
-    r.ref_type ?? '',
-    r.url ?? '',
+    r.filename ?? '',
+    r.location ?? '',
     `"${(r.description ?? '').replace(/"/g, '""')}"`,
     `"${(r.notes ?? '').replace(/"/g, '""')}"`,
     `"${(r.tags ?? []).join(', ')}"`,
@@ -64,8 +67,8 @@ function exportAsMD(refs: Reference[]): void {
   const lines = ['# External References', ''];
   for (const r of refs) {
     lines.push(`## ${r.title}`);
-    if (r.ref_type) lines.push(`**Type:** ${r.ref_type}`);
-    if (r.url) lines.push(`**URL:** ${r.url}`);
+    if (r.filename) lines.push(`**Filename:** ${r.filename}`);
+    if (r.location) lines.push(`**Location:** ${r.location}`);
     if (r.context) lines.push(`**Context:** ${r.context.name}`);
     if (r.tags?.length) lines.push(`**Tags:** ${r.tags.join(', ')}`);
     if (r.description) { lines.push(''); lines.push('**Description:**'); lines.push(r.description); }
@@ -89,16 +92,18 @@ const ACCENT_BORDER = '#ddd6fe';
 // ─── COMPONENT ───────────────────────────────────────────────────────────────
 
 export default function ReferencesModal({ userId, accessToken, onClose, onCountChange }: ReferencesModalProps) {
-  const [mode, setMode]             = useState<'empty' | 'edit' | 'add'>('empty');
-  const [refs, setRefs]             = useState<Reference[]>([]);
-  const [loading, setLoading]       = useState(true);
-  const [selected, setSelected]     = useState<Reference | null>(null);
-  const [contexts, setContexts]     = useState<Context[]>([]);
-  const [allTags, setAllTags]       = useState<Tag[]>([]);
-  const [tagGroups, setTagGroups]   = useState<TagGroup[]>([]);
-  const [fieldMeta, setFieldMeta]   = useState<FieldMeta[]>([]);
-  const [saving, setSaving]         = useState(false);
-  const [err, setErr]               = useState('');
+  const [mode, setMode]           = useState<'empty' | 'edit' | 'add'>('empty');
+  const [refs, setRefs]           = useState<Reference[]>([]);
+  const [loading, setLoading]     = useState(true);
+  const [selected, setSelected]   = useState<Reference | null>(null);
+  const [contexts, setContexts]   = useState<Context[]>([]);
+  const [allTags, setAllTags]     = useState<Tag[]>([]);
+  const [tagGroups, setTagGroups] = useState<TagGroup[]>([]);
+  const [fieldMeta, setFieldMeta] = useState<FieldMeta[]>([]);
+  const [tasks, setTasks]         = useState<TaskOption[]>([]);
+  const [meetings, setMeetings]   = useState<MeetingOption[]>([]);
+  const [saving, setSaving]       = useState(false);
+  const [err, setErr]             = useState('');
   const [showExportMenu, setShowExportMenu] = useState(false);
 
   // ─── Search/filter ─────────────────────────────────────────────────────────
@@ -108,7 +113,7 @@ export default function ReferencesModal({ userId, accessToken, onClose, onCountC
 
   // ─── Drag/resize ───────────────────────────────────────────────────────────
   const [pos, setPos]           = useState({ x: 0, y: 0 });
-  const [size, setSize]         = useState({ w: 1000, h: 720 });
+  const [size, setSize]         = useState({ w: 1000, h: 850 });
   const [centered, setCentered] = useState(true);
   const dragging                = useRef(false);
   const resizing                = useRef(false);
@@ -119,12 +124,14 @@ export default function ReferencesModal({ userId, accessToken, onClose, onCountC
   // ─── Form state ────────────────────────────────────────────────────────────
   const [editId, setEditId]                   = useState<string | null>(null);
   const [formTitle, setFormTitle]             = useState('');
-  const [formRefType, setFormRefType]         = useState('');
-  const [formUrl, setFormUrl]                 = useState('');
+  const [formFilename, setFormFilename]       = useState('');
+  const [formLocation, setFormLocation]       = useState('');
   const [formDescription, setFormDescription] = useState('');
   const [formNotes, setFormNotes]             = useState('');
   const [formTags, setFormTags]               = useState<string[]>([]);
   const [formContextId, setFormContextId]     = useState('');
+  const [formTaskId, setFormTaskId]           = useState('');
+  const [formMeetingId, setFormMeetingId]     = useState('');
   const [tagSearch, setTagSearch]             = useState('');
   const [selectedGroupId, setSelectedGroupId] = useState('');
   const [showTagDrop, setShowTagDrop]         = useState(false);
@@ -135,10 +142,10 @@ export default function ReferencesModal({ userId, accessToken, onClose, onCountC
     setLoading(true);
     const { data } = await supabase
       .from('external_reference')
-      .select(`external_reference_id, title, ref_type, url, description, notes, tags,
+      .select(`external_reference_id, title, filename, location, ref_type, description, notes, tags,
         context:context_id ( name, context_id ),
-        task:task_id ( title ),
-        meeting:meeting_id ( title )`)
+        task:task_id ( title, task_id ),
+        meeting:meeting_id ( title, meeting_id )`)
       .eq('user_id', userId)
       .order('created_at', { ascending: false });
     if (data) { setRefs(data as any); onCountChange(data.length); }
@@ -168,7 +175,30 @@ export default function ReferencesModal({ userId, accessToken, onClose, onCountC
     if (data) setFieldMeta(data);
   };
 
-  useEffect(() => { loadRefs(); loadContexts(); loadTags(); loadFieldMeta(); }, []);
+  const loadTasks = async () => {
+    const { data } = await supabase
+      .from('task')
+      .select('task_id, title')
+      .eq('user_id', userId)
+      .eq('is_completed', false)
+      .eq('is_archived', false)
+      .order('title');
+    if (data) setTasks(data);
+  };
+
+  const loadMeetings = async () => {
+    const { data } = await supabase
+      .from('meeting')
+      .select('meeting_id, title')
+      .eq('user_id', userId)
+      .eq('is_completed', false)
+      .order('title');
+    if (data) setMeetings(data);
+  };
+
+  useEffect(() => {
+    loadRefs(); loadContexts(); loadTags(); loadFieldMeta(); loadTasks(); loadMeetings();
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
@@ -190,7 +220,9 @@ export default function ReferencesModal({ userId, accessToken, onClose, onCountC
   // ─── Filtered list ─────────────────────────────────────────────────────────
 
   const filtered = refs.filter(r => {
-    if (search && !r.title.toLowerCase().includes(search.toLowerCase()) && !(r.url ?? '').toLowerCase().includes(search.toLowerCase()) && !(r.description ?? '').toLowerCase().includes(search.toLowerCase())) return false;
+    if (search && !r.title.toLowerCase().includes(search.toLowerCase()) &&
+        !(r.filename ?? '').toLowerCase().includes(search.toLowerCase()) &&
+        !(r.description ?? '').toLowerCase().includes(search.toLowerCase())) return false;
     if (filterTag && !(r.tags ?? []).includes(filterTag)) return false;
     if (filterContext && r.context?.context_id !== filterContext) return false;
     return true;
@@ -201,19 +233,22 @@ export default function ReferencesModal({ userId, accessToken, onClose, onCountC
   const loadIntoForm = (r: Reference) => {
     setEditId(r.external_reference_id);
     setFormTitle(r.title);
-    setFormRefType(r.ref_type ?? '');
-    setFormUrl(r.url ?? '');
+    setFormFilename(r.filename ?? '');
+    setFormLocation(r.location ?? '');
     setFormDescription(r.description ?? '');
     setFormNotes(r.notes ?? '');
     setFormTags(r.tags ?? []);
     setFormContextId(r.context?.context_id ?? '');
+    setFormTaskId(r.task?.task_id ?? '');
+    setFormMeetingId(r.meeting?.meeting_id ?? '');
     setTagSearch(''); setSelectedGroupId(''); setErr('');
     setSelected(r); setMode('edit');
   };
 
   const openAdd = () => {
-    setEditId(null); setFormTitle(''); setFormRefType(''); setFormUrl('');
-    setFormDescription(''); setFormNotes(''); setFormTags([]); setFormContextId('');
+    setEditId(null); setFormTitle(''); setFormFilename(''); setFormLocation('');
+    setFormDescription(''); setFormNotes(''); setFormTags([]);
+    setFormContextId(''); setFormTaskId(''); setFormMeetingId('');
     setTagSearch(''); setSelectedGroupId(''); setErr('');
     setSelected(null); setMode('add');
   };
@@ -224,12 +259,14 @@ export default function ReferencesModal({ userId, accessToken, onClose, onCountC
 
     const payload: any = {
       title:       formTitle.trim(),
-      ref_type:    formRefType.trim() || null,
-      url:         formUrl.trim() || null,
+      filename:    formFilename.trim() || null,
+      location:    formLocation.trim() || null,
       description: formDescription.trim() || null,
       notes:       formNotes.trim() || null,
       tags:        formTags.length > 0 ? formTags : null,
       context_id:  formContextId || null,
+      task_id:     formTaskId || null,
+      meeting_id:  formMeetingId || null,
     };
 
     try {
@@ -263,19 +300,22 @@ export default function ReferencesModal({ userId, accessToken, onClose, onCountC
       : meta.update_behavior === 'readonly' || meta.update_behavior === 'automatic';
     if (isReadonly) return null;
 
-    // ref_type is always optional in the form regardless of metadata
     const required = isAdd && meta.insert_behavior === 'required' && meta.field === 'title';
     const label = <div style={formLabelStyle}>{meta.label}{required && <span style={{ color: '#ef4444' }}>*</span>}</div>;
 
     switch (meta.field) {
+
       case 'title':
         return <div key="title" style={{ marginBottom: '0.85rem' }}>{label}<input value={formTitle} onChange={e => setFormTitle(e.target.value)} style={inputStyle} onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} /></div>;
 
-      case 'ref_type':
-        return <div key="ref_type" style={{ marginBottom: '0.85rem' }}>{label}<input value={formRefType} onChange={e => setFormRefType(e.target.value)} placeholder="link, doc, video, file..." style={inputStyle} onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} /></div>;
+      case 'filename':
+        return <div key="filename" style={{ marginBottom: '0.85rem' }}>{label}<input value={formFilename} onChange={e => setFormFilename(e.target.value)} placeholder="report.pdf, lease-agreement.docx..." style={inputStyle} onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} /></div>;
 
-      case 'url':
-        return <div key="url" style={{ marginBottom: '0.85rem' }}>{label}<input value={formUrl} onChange={e => setFormUrl(e.target.value)} placeholder="https://..." style={inputStyle} onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} /></div>;
+      case 'location':
+        return <div key="location" style={{ marginBottom: '0.85rem' }}>{label}<input value={formLocation} onChange={e => setFormLocation(e.target.value)} placeholder="https://... or Dropbox / Drive / file path..." style={inputStyle} onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} /></div>;
+
+      case 'ref_type':
+        return null; // retired — filename handles this
 
       case 'description':
         return <div key="description" style={{ marginBottom: '0.85rem' }}>{label}<textarea value={formDescription} onChange={e => setFormDescription(e.target.value)} rows={1} style={{ ...inputStyle, resize: 'vertical' }} onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} /></div>;
@@ -323,7 +363,32 @@ export default function ReferencesModal({ userId, accessToken, onClose, onCountC
           </div>
         );
 
-      default: return null;
+      case 'task_id':
+        return (
+          <div key="task_id" style={{ marginBottom: '0.85rem' }}>{label}
+            <select value={formTaskId} onChange={e => setFormTaskId(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }} onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')}>
+              <option value="">— none —</option>
+              {tasks.map(t => <option key={t.task_id} value={t.task_id}>{t.title}</option>)}
+            </select>
+          </div>
+        );
+
+      case 'meeting_id':
+        return (
+          <div key="meeting_id" style={{ marginBottom: '0.85rem' }}>{label}
+            <select value={formMeetingId} onChange={e => setFormMeetingId(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }} onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')}>
+              <option value="">— none —</option>
+              {meetings.map(m => <option key={m.meeting_id} value={m.meeting_id}>{m.title}</option>)}
+            </select>
+          </div>
+        );
+
+      case 'document_template_id':
+        // Future — template table not yet implemented
+        return null;
+
+      default:
+        return null;
     }
   };
 
@@ -332,7 +397,7 @@ export default function ReferencesModal({ userId, accessToken, onClose, onCountC
   const renderLeft = () => (
     <div style={{ width: '340px', flexShrink: 0, display: 'flex', flexDirection: 'column', borderRight: `1px solid ${ACCENT_BORDER}`, height: '100%' }}>
       <div style={{ padding: '0.75rem', borderBottom: `1px solid ${ACCENT_BORDER}`, display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search title, URL, description..."
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search title, filename, description..."
           style={{ ...inputStyle, fontSize: '0.75rem', padding: '0.4rem 0.6rem' }}
           onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')}
         />
@@ -366,7 +431,7 @@ export default function ReferencesModal({ userId, accessToken, onClose, onCountC
                 onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = 'transparent'; }}
               >
                 <span style={{ color: ACCENT, fontSize: '0.65rem', fontWeight: 700, opacity: 0.6, flexShrink: 0, fontFamily: 'monospace' }}>{identifier}</span>
-                {r.ref_type && <span style={{ color: ACCENT, fontSize: '0.65rem', flexShrink: 0, fontFamily: 'monospace', fontWeight: 500, opacity: 0.8 }}>{r.ref_type}</span>}
+                {r.filename && <span style={{ color: ACCENT, fontSize: '0.65rem', flexShrink: 0, fontFamily: 'monospace', opacity: 0.8 }}>{r.filename}</span>}
                 <span style={{ color: '#111', fontSize: '0.82rem', flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontFamily: 'monospace', fontWeight: 500 }}>{r.title}</span>
               </div>
             );
@@ -398,14 +463,14 @@ export default function ReferencesModal({ userId, accessToken, onClose, onCountC
           {isAdd ? 'New Reference' : `Editing ${identifier}`}
         </div>
 
-        {/* URL quick-open if present */}
-        {!isAdd && selected?.url && (
+        {/* Location quick-open if present */}
+        {!isAdd && selected?.location && (
           <div style={{ marginBottom: '1rem' }}>
-            <a href={selected.url} target="_blank" rel="noopener noreferrer"
+            <a href={selected.location} target="_blank" rel="noopener noreferrer"
               style={{ color: ACCENT, fontSize: '0.75rem', fontFamily: 'monospace', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
               onMouseEnter={e => (e.currentTarget.style.color = ACCENT_DARK)}
               onMouseLeave={e => (e.currentTarget.style.color = ACCENT)}
-            >↗ {selected.url.length > 60 ? selected.url.slice(0, 60) + '...' : selected.url}</a>
+            >↗ {selected.location.length > 60 ? selected.location.slice(0, 60) + '...' : selected.location}</a>
           </div>
         )}
 
