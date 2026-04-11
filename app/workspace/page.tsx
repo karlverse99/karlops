@@ -429,14 +429,14 @@ export default function WorkspacePage() {
     if (count !== null) setCompletionCount(count);
   };
 
-  const loadMeetingCount = async (userId: string) => {
-    const { count } = await supabase
-      .from('meeting')
-      .select('meeting_id', { count: 'exact', head: true })
-      .eq('user_id', userId);
-    if (count !== null) setMeetingCount(count);
-  };
-
+const loadMeetingCount = async (userId: string) => {
+  const { count } = await supabase
+    .from('meeting')
+    .select('meeting_id', { count: 'exact', head: true })
+    .eq('user_id', userId)
+    .eq('is_completed', false);
+  if (count !== null) setMeetingCount(count);
+};
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chat, thinking]);
@@ -641,14 +641,14 @@ export default function WorkspacePage() {
               style={{ background: '#1a0e00', border: '1px solid #4a2a00', color: '#f97316', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
               onMouseEnter={e => (e.currentTarget.style.background = '#2a1800')}
               onMouseLeave={e => (e.currentTarget.style.background = '#1a0e00')}
-            >+complete(<span style={{ color: '#ffffff', fontWeight: 600 }}>{completionCount}</span>)</button>
+              ><span style={{ color: '#f97316' }}>+complete</span><span style={{ color: '#ffffff' }}>({completionCount})</span></button>
 
             {/* +meeting(n) — parens blue, number white */}
             <button onClick={() => setShowMeetings(true)}
               style={{ background: '#0a0f1a', border: '1px solid #1a3060', color: '#3b82f6', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
               onMouseEnter={e => (e.currentTarget.style.background = '#0f1a2a')}
               onMouseLeave={e => (e.currentTarget.style.background = '#0a0f1a')}
-            >+meeting(<span style={{ color: '#ffffff', fontWeight: 600 }}>{meetingCount}</span>)</button>
+            ><span style={{ color: '#3b82f6' }}>+meeting</span><span style={{ color: '#ffffff' }}>({meetingCount})</span></button>
 
             {/* +reference */}
             <button onClick={() => {}}
