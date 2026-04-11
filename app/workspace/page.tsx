@@ -3,6 +3,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import TaskDetailModal from '@/app/components/TaskDetailModal';
+import CompletionsModal from '@/app/components/CompletionsModal';
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -111,9 +112,7 @@ function TaskPill({ task, bucket, statusLabel, taskIndex, onClick }: {
             </span>
           )}
           {task.target_date && (
-            <span style={{ fontSize: '0.62rem', color: '#666' }}>
-              {formatDate(task.target_date)}
-            </span>
+            <span style={{ fontSize: '0.62rem', color: '#666' }}>{formatDate(task.target_date)}</span>
           )}
           {task.tags?.length > 0 && (
             <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
@@ -290,21 +289,23 @@ export default function WorkspacePage() {
 
   // ─── PAGE: State ───────────────────────────────────────────────────────────
 
-  const [koUser, setKoUser]               = useState<KOUser | null>(null);
-  const [tasks, setTasks]                 = useState<Task[]>([]);
-  const [buckets, setBuckets]             = useState<BucketDef[]>([]);
-  const [contexts, setContexts]           = useState<Context[]>([]);
-  const [statusMap, setStatusMap]         = useState<Record<string, string>>({});
-  const [contextFilter, setContextFilter] = useState<string | null>(null);
-  const [chat, setChat]                   = useState<ChatMessage[]>([]);
-  const [input, setInput]                 = useState('');
-  const [sessionReady, setSessionReady]   = useState(false);
-  const [sessionError, setSessionError]   = useState('');
-  const [thinking, setThinking]           = useState(false);
-  const [pending, setPending]             = useState<PendingAction | null>(null);
-  const [accessToken, setAccessToken]     = useState('');
-  const [showCapture, setShowCapture]     = useState(false);
-  const [selectedTask, setSelectedTask]   = useState<Task | null>(null);
+  const [koUser, setKoUser]                   = useState<KOUser | null>(null);
+  const [tasks, setTasks]                     = useState<Task[]>([]);
+  const [buckets, setBuckets]                 = useState<BucketDef[]>([]);
+  const [contexts, setContexts]               = useState<Context[]>([]);
+  const [statusMap, setStatusMap]             = useState<Record<string, string>>({});
+  const [contextFilter, setContextFilter]     = useState<string | null>(null);
+  const [chat, setChat]                       = useState<ChatMessage[]>([]);
+  const [input, setInput]                     = useState('');
+  const [sessionReady, setSessionReady]       = useState(false);
+  const [sessionError, setSessionError]       = useState('');
+  const [thinking, setThinking]               = useState(false);
+  const [pending, setPending]                 = useState<PendingAction | null>(null);
+  const [accessToken, setAccessToken]         = useState('');
+  const [showCapture, setShowCapture]         = useState(false);
+  const [showCompletions, setShowCompletions] = useState(false);
+  const [completionCount, setCompletionCount] = useState(0);
+  const [selectedTask, setSelectedTask]       = useState<Task | null>(null);
 
   const chatBottomRef = useRef<HTMLDivElement>(null);
   const inputRef      = useRef<HTMLTextAreaElement>(null);
@@ -342,6 +343,7 @@ export default function WorkspacePage() {
         await loadBuckets(koUserData.implementation_type);
         await loadContexts(session.user.id);
         await loadStatuses(session.user.id);
+        await loadCompletionCount(session.user.id);
         setSessionReady(true);
 
         setChat([{
@@ -431,6 +433,14 @@ export default function WorkspacePage() {
     if (taskData) setTasks(taskData.map((t: any) => ({ ...t, id: t.task_id })));
   };
 
+  const loadCompletionCount = async (userId: string) => {
+    const { count } = await supabase
+      .from('completion')
+      .select('completion_id', { count: 'exact', head: true })
+      .eq('user_id', userId);
+    if (count !== null) setCompletionCount(count);
+  };
+
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chat, thinking]);
@@ -486,7 +496,7 @@ export default function WorkspacePage() {
           const data = await res.json();
           setPending(null);
           addMessage('assistant', data.response ?? 'Done.');
-          if (koUser) await loadTasks(koUser.id);
+          if (koUser) { await loadTasks(koUser.id); await loadCompletionCount(koUser.id); }
           return;
         }
 
@@ -573,6 +583,14 @@ export default function WorkspacePage() {
 
       {/* MODALS */}
       {showCapture && <CaptureModal onClose={() => setShowCapture(false)} onCapture={handleModalCapture} />}
+      {showCompletions && koUser && (
+        <CompletionsModal
+          userId={koUser.id}
+          accessToken={accessToken}
+          onClose={() => setShowCompletions(false)}
+          onCountChange={setCompletionCount}
+        />
+      )}
       {selectedTask && koUser && (
         <TaskDetailModal
           taskId={selectedTask.id}
@@ -594,35 +612,50 @@ export default function WorkspacePage() {
           <span style={{ color: '#555', fontSize: '0.7rem' }}>{koUser?.implementation_type ?? '...'}</span>
         </div>
 
-        {/* RIGHT: FC buttons + status + user + admin */}
+        {/* RIGHT: FC buttons + counts + user + admin */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
 
-          {/* FC object buttons */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+
+            {/* +capture */}
             <button onClick={() => setShowCapture(true)}
               style={{ background: '#0d1a0d', border: '1px solid #2a4a2a', color: '#4ade80', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
               onMouseEnter={e => (e.currentTarget.style.background = '#1a2a1a')}
               onMouseLeave={e => (e.currentTarget.style.background = '#0d1a0d')}
             >+capture</button>
-            <button onClick={() => {}}
+
+            {/* +complete */}
+            <button onClick={() => setShowCompletions(true)}
               style={{ background: '#1a0e00', border: '1px solid #4a2a00', color: '#f97316', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
               onMouseEnter={e => (e.currentTarget.style.background = '#2a1800')}
               onMouseLeave={e => (e.currentTarget.style.background = '#1a0e00')}
             >+complete</button>
+
+            {/* done count */}
+            <span>
+              <span style={{ color: '#f97316', fontSize: '0.7rem', fontWeight: 600, opacity: 0.8 }}>{completionCount}</span>
+              <span style={{ color: '#444', fontSize: '0.7rem' }}> done</span>
+            </span>
+
+            {/* +meeting */}
             <button onClick={() => {}}
               style={{ background: '#0a0f1a', border: '1px solid #1a3060', color: '#3b82f6', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
               onMouseEnter={e => (e.currentTarget.style.background = '#0f1a2a')}
               onMouseLeave={e => (e.currentTarget.style.background = '#0a0f1a')}
             >+meeting</button>
+
+            {/* +reference */}
             <button onClick={() => {}}
               style={{ background: '#120a1a', border: '1px solid #3a1a5a', color: '#8b5cf6', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
               onMouseEnter={e => (e.currentTarget.style.background = '#1e1030')}
               onMouseLeave={e => (e.currentTarget.style.background = '#120a1a')}
             >+reference</button>
+
           </div>
 
           <span style={{ color: '#333', fontSize: '0.7rem' }}>|</span>
 
+          {/* open count */}
           <span>
             <span style={{ color: '#e5e5e5', fontSize: '0.7rem', fontWeight: 600 }}>{contextFilter ? totalFiltered : totalOpen}</span>
             <span style={{ color: '#444', fontSize: '0.7rem' }}> open</span>
