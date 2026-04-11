@@ -27,7 +27,6 @@ interface PendingAction { intent: string; payload: Record<string, any>; summary:
 
 // ─── CONSTANTS ───────────────────────────────────────────────────────────────
 
-// Colors stay hardcoded — design decision, not data
 const BUCKET_COLORS: Record<string, { color: string; accent: string }> = {
   now:      { color: '#ef4444', accent: '#fca5a5' },
   soon:     { color: '#f97316', accent: '#fdba74' },
@@ -37,7 +36,6 @@ const BUCKET_COLORS: Record<string, { color: string; accent: string }> = {
   capture:  { color: '#10b981', accent: '#6ee7b7' },
 };
 
-// Task identifiers — stable, hardcoded, matches Karl's internal references
 const BUCKET_ID: Record<string, string> = {
   now:      'N',
   soon:     'S',
@@ -107,21 +105,16 @@ function TaskPill({ task, bucket, statusLabel, taskIndex, onClick }: {
 
       {!isCaptured && (
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.3rem', flexWrap: 'wrap' }}>
-          {/* Status */}
           {statusLabel && statusLabel !== 'Open' && (
             <span style={{ fontSize: '0.62rem', color: '#888', background: '#1a1a1a', border: '1px solid #2a2a2a', borderRadius: '3px', padding: '0.1rem 0.35rem' }}>
               {statusLabel}
             </span>
           )}
-
-          {/* Target date */}
           {task.target_date && (
-            <span style={{ fontSize: '0.62rem', color: '#666', marginLeft: statusLabel && statusLabel !== 'Open' ? '0' : '0' }}>
+            <span style={{ fontSize: '0.62rem', color: '#666' }}>
               {formatDate(task.target_date)}
             </span>
           )}
-
-          {/* Tags */}
           {task.tags?.length > 0 && (
             <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
               {task.tags.map(tag => (
@@ -313,79 +306,76 @@ export default function WorkspacePage() {
   const [showCapture, setShowCapture]     = useState(false);
   const [selectedTask, setSelectedTask]   = useState<Task | null>(null);
 
-  const chatBottomRef  = useRef<HTMLDivElement>(null);
-  const inputRef       = useRef<HTMLTextAreaElement>(null);
-  const initDone       = useRef(false);
-  const [splitW, setSplitW]       = useState(340);
-  const splitDragging              = useRef(false);
-  const splitStartX                = useRef(0);
-  const splitStartW                = useRef(340);
+  const chatBottomRef = useRef<HTMLDivElement>(null);
+  const inputRef      = useRef<HTMLTextAreaElement>(null);
+  const initDone      = useRef(false);
+  const [splitW, setSplitW]   = useState(340);
+  const splitDragging          = useRef(false);
+  const splitStartX            = useRef(0);
+  const splitStartW            = useRef(340);
 
   // ─── PAGE: Auth & Init ─────────────────────────────────────────────────────
 
-useEffect(() => {
-  const init = async (session: any) => {
-    if (!session?.user) { window.location.href = '/login'; return; }
-    if (initDone.current) return;
-    initDone.current = true;
-    setAccessToken(session.access_token);
+  useEffect(() => {
+    const init = async (session: any) => {
+      if (!session?.user) { await supabase.auth.signOut(); window.location.href = '/login'; return; }
+      if (initDone.current) return;
+      initDone.current = true;
+      setAccessToken(session.access_token);
 
-    try {
-      const res = await fetch('/api/ko/session', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}` },
-      });
-      const data = await res.json();
-      if (!data.success) throw new Error(data.error ?? 'Session init failed');
+      try {
+        const res = await fetch('/api/ko/session', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}` },
+        });
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error ?? 'Session init failed');
 
-      const { data: koUserData, error: koErr } = await supabase
-        .from('ko_user')
-        .select('id, email, display_name, implementation_type')
-        .eq('id', session.user.id)
-        .single();
-      if (koErr) throw koErr;
+        const { data: koUserData, error: koErr } = await supabase
+          .from('ko_user')
+          .select('id, email, display_name, implementation_type')
+          .eq('id', session.user.id)
+          .single();
+        if (koErr) throw koErr;
 
-      setKoUser(koUserData);
-      await loadBuckets(koUserData.implementation_type);
-      await loadContexts(session.user.id);
-      await loadStatuses(session.user.id);
-      setSessionReady(true);
+        setKoUser(koUserData);
+        await loadBuckets(koUserData.implementation_type);
+        await loadContexts(session.user.id);
+        await loadStatuses(session.user.id);
+        setSessionReady(true);
 
-      setChat([{
-        role: 'assistant',
-        content: data.is_new_user
-          ? `Welcome. I'm Karl.\n\nDrop anything here — tasks, notes, things on your mind. I'll help you sort it.\n\nWhat's on the board right now?`
-          : `Back at it. What's changed?`,
-        timestamp: new Date(),
-      }]);
+        setChat([{
+          role: 'assistant',
+          content: data.is_new_user
+            ? `Welcome. I'm Karl.\n\nDrop anything here — tasks, notes, things on your mind. I'll help you sort it.\n\nWhat's on the board right now?`
+            : `Back at it. What's changed?`,
+          timestamp: new Date(),
+        }]);
 
-      await loadTasks(session.user.id);
+        await loadTasks(session.user.id);
 
-    } catch (err: any) {
-      console.error('[WorkspacePage init]', err);
-      setSessionError(err.message ?? 'Failed to initialize');
-    }
-  };
+      } catch (err: any) {
+        console.error('[WorkspacePage init]', err);
+        setSessionError(err.message ?? 'Failed to initialize');
+      }
+    };
 
-  // Try getSession first — catches cookie set by server-side callback
-  supabase.auth.getSession().then(({ data: { session } }) => {
-    if (session?.user) {
-      init(session);
-    } else {
-      // Fall back to listener in case session arrives async
-      const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-        if (event === 'INITIAL_SESSION' || event === 'SIGNED_IN') {
-          init(session);
-        }
-      });
-      return () => subscription.unsubscribe();
-    }
-  });
-}, []);
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user) {
+        init(session);
+      } else {
+        const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+          if (event === 'INITIAL_SESSION' || event === 'SIGNED_IN') {
+            init(session);
+          }
+        });
+        return () => subscription.unsubscribe();
+      }
+    });
+  }, []);
 
   // ─── PAGE: Data loaders ────────────────────────────────────────────────────
 
-  // Buckets now filtered by implementation_type — concept_registry is a system table
   const loadBuckets = async (implementationType: string) => {
     const { data } = await supabase
       .from('concept_registry')
@@ -450,6 +440,7 @@ useEffect(() => {
   }, [pending]);
 
   // ─── Split resize ──────────────────────────────────────────────────────────
+
   useEffect(() => {
     const onMouseMove = (e: MouseEvent) => {
       if (!splitDragging.current) return;
@@ -570,10 +561,10 @@ useEffect(() => {
 
   // ─── PAGE: Derived state ───────────────────────────────────────────────────
 
-  const filteredTasks  = contextFilter ? tasks.filter(t => t.context_id === contextFilter) : tasks;
-  const grouped        = groupTasksByBucket(filteredTasks);
-  const totalOpen      = tasks.length;
-  const totalFiltered  = filteredTasks.length;
+  const filteredTasks = contextFilter ? tasks.filter(t => t.context_id === contextFilter) : tasks;
+  const grouped       = groupTasksByBucket(filteredTasks);
+  const totalOpen     = tasks.length;
+  const totalFiltered = filteredTasks.length;
 
   // ─── PAGE: Render ──────────────────────────────────────────────────────────
 
@@ -592,61 +583,72 @@ useEffect(() => {
         />
       )}
 
-{/* RIGHT: FC buttons + status + user + admin */}
-<div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-  
-  {/* FC object buttons */}
-  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-    <button onClick={() => setShowCapture(true)}
-      style={{ background: '#0d1a0d', border: '1px solid #2a4a2a', color: '#4ade80', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
-      onMouseEnter={e => (e.currentTarget.style.background = '#1a2a1a')}
-      onMouseLeave={e => (e.currentTarget.style.background = '#0d1a0d')}
-    >+capture</button>
-    <button onClick={() => {/* setShowCompletions(true) */}}
-      style={{ background: '#1a0e00', border: '1px solid #4a2a00', color: '#f97316', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
-      onMouseEnter={e => (e.currentTarget.style.background = '#2a1800')}
-      onMouseLeave={e => (e.currentTarget.style.background = '#1a0e00')}
-    >+complete</button>
-    <button onClick={() => {/* setShowMeetings(true) */}}
-      style={{ background: '#0a0f1a', border: '1px solid #1a3060', color: '#3b82f6', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
-      onMouseEnter={e => (e.currentTarget.style.background = '#0f1a2a')}
-      onMouseLeave={e => (e.currentTarget.style.background = '#0a0f1a')}
-    >+meeting</button>
-    <button onClick={() => {/* setShowReferences(true) */}}
-      style={{ background: '#120a1a', border: '1px solid #3a1a5a', color: '#8b5cf6', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
-      onMouseEnter={e => (e.currentTarget.style.background = '#1e1030')}
-      onMouseLeave={e => (e.currentTarget.style.background = '#120a1a')}
-    >+reference</button>
-  </div>
+      {/* HEADER */}
+      <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 1.25rem', height: '44px', borderBottom: '1px solid #1a1a1a', flexShrink: 0, background: '#0d0d0d' }}>
 
-  <span style={{ color: '#333', fontSize: '0.7rem' }}>|</span>
+        {/* LEFT: brand */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+          <img src="/ko-icon.svg" alt="KO" style={{ width: '28px', height: '28px' }} />
+          <span style={{ color: '#ffffff', fontSize: '0.9rem', fontWeight: 700, letterSpacing: '0.02em' }}>KarlOps</span>
+          <span style={{ color: '#333', fontSize: '0.7rem' }}>|</span>
+          <span style={{ color: '#555', fontSize: '0.7rem' }}>{koUser?.implementation_type ?? '...'}</span>
+        </div>
 
-  <span>
-    <span style={{ color: '#e5e5e5', fontSize: '0.7rem', fontWeight: 600 }}>{contextFilter ? totalFiltered : totalOpen}</span>
-    <span style={{ color: '#444', fontSize: '0.7rem' }}> open</span>
-    {contextFilter && totalOpen !== totalFiltered && (
-      <span style={{ color: '#333', fontSize: '0.7rem' }}> / {totalOpen}</span>
-    )}
-  </span>
+        {/* RIGHT: FC buttons + status + user + admin */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
 
-  <span style={{ color: '#333', fontSize: '0.7rem' }}>|</span>
-  <span style={{ color: '#555', fontSize: '0.7rem' }}>{koUser?.display_name ?? '...'}</span>
-  <span style={{ color: '#333', fontSize: '0.7rem' }}>|</span>
+          {/* FC object buttons */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <button onClick={() => setShowCapture(true)}
+              style={{ background: '#0d1a0d', border: '1px solid #2a4a2a', color: '#4ade80', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
+              onMouseEnter={e => (e.currentTarget.style.background = '#1a2a1a')}
+              onMouseLeave={e => (e.currentTarget.style.background = '#0d1a0d')}
+            >+capture</button>
+            <button onClick={() => {}}
+              style={{ background: '#1a0e00', border: '1px solid #4a2a00', color: '#f97316', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
+              onMouseEnter={e => (e.currentTarget.style.background = '#2a1800')}
+              onMouseLeave={e => (e.currentTarget.style.background = '#1a0e00')}
+            >+complete</button>
+            <button onClick={() => {}}
+              style={{ background: '#0a0f1a', border: '1px solid #1a3060', color: '#3b82f6', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
+              onMouseEnter={e => (e.currentTarget.style.background = '#0f1a2a')}
+              onMouseLeave={e => (e.currentTarget.style.background = '#0a0f1a')}
+            >+meeting</button>
+            <button onClick={() => {}}
+              style={{ background: '#120a1a', border: '1px solid #3a1a5a', color: '#8b5cf6', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
+              onMouseEnter={e => (e.currentTarget.style.background = '#1e1030')}
+              onMouseLeave={e => (e.currentTarget.style.background = '#120a1a')}
+            >+reference</button>
+          </div>
 
-  <a href="/admin"
-    style={{ color: '#555', fontSize: '0.7rem', textDecoration: 'none', fontFamily: 'monospace' }}
-    onMouseEnter={e => (e.currentTarget.style.color = '#aaa')}
-    onMouseLeave={e => (e.currentTarget.style.color = '#555')}
-  >admin</a>
+          <span style={{ color: '#333', fontSize: '0.7rem' }}>|</span>
 
-  <button onClick={handleLogout}
-    style={{ background: 'none', border: 'none', color: '#555', fontSize: '0.7rem', fontFamily: 'monospace', cursor: 'pointer', padding: 0 }}
-    onMouseEnter={e => (e.currentTarget.style.color = '#aaa')}
-    onMouseLeave={e => (e.currentTarget.style.color = '#555')}
-  >sign out</button>
+          <span>
+            <span style={{ color: '#e5e5e5', fontSize: '0.7rem', fontWeight: 600 }}>{contextFilter ? totalFiltered : totalOpen}</span>
+            <span style={{ color: '#444', fontSize: '0.7rem' }}> open</span>
+            {contextFilter && totalOpen !== totalFiltered && (
+              <span style={{ color: '#333', fontSize: '0.7rem' }}> / {totalOpen}</span>
+            )}
+          </span>
 
-</div>
+          <span style={{ color: '#333', fontSize: '0.7rem' }}>|</span>
+          <span style={{ color: '#555', fontSize: '0.7rem' }}>{koUser?.display_name ?? '...'}</span>
+          <span style={{ color: '#333', fontSize: '0.7rem' }}>|</span>
 
+          <a href="/admin"
+            style={{ color: '#555', fontSize: '0.7rem', textDecoration: 'none', fontFamily: 'monospace' }}
+            onMouseEnter={e => (e.currentTarget.style.color = '#aaa')}
+            onMouseLeave={e => (e.currentTarget.style.color = '#555')}
+          >admin</a>
+
+          <button onClick={handleLogout}
+            style={{ background: 'none', border: 'none', color: '#555', fontSize: '0.7rem', fontFamily: 'monospace', cursor: 'pointer', padding: 0 }}
+            onMouseEnter={e => (e.currentTarget.style.color = '#aaa')}
+            onMouseLeave={e => (e.currentTarget.style.color = '#555')}
+          >sign out</button>
+
+        </div>
+      </header>
 
       {/* MAIN SPLIT */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>

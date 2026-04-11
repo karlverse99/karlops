@@ -1,0 +1,31 @@
+<svg width="200" height="200" viewBox="0 0 680 680" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .ring  { fill: none; stroke: #8B2500; stroke-width: 18; }
+    .ring2 { fill: none; stroke: #CC4400; stroke-width: 6; }
+    .cross { stroke: #CC4400; stroke-width: 4; stroke-linecap: round; }
+    .k { font-family: Arial Narrow, Arial, sans-serif; font-weight: 700; font-size: 210px; fill: #ffffff; font-style: italic; letter-spacing: -10px; }
+    .o { font-family: Arial Narrow, Arial, sans-serif; font-weight: 700; font-size: 210px; fill: #FF6B1A; font-style: italic; }
+  </style>
+
+  <circle cx="340" cy="340" r="300" fill="#1a1a1a"/>
+  <circle cx="340" cy="340" r="280" class="ring"/>
+  <circle cx="340" cy="340" r="240" class="ring2"/>
+
+  <line x1="40"  y1="340" x2="180" y2="340" class="cross"/>
+  <line x1="500" y1="340" x2="640" y2="340" class="cross"/>
+  <line x1="340" y1="40"  x2="340" y2="180" class="cross"/>
+  <line x1="340" y1="500" x2="340" y2="640" class="cross"/>
+
+  <line x1="142" y1="142" x2="168" y2="168" class="cross"/>
+  <line x1="538" y1="142" x2="512" y2="168" class="cross"/>
+  <line x1="142" y1="538" x2="168" y2="512" class="cross"/>
+  <line x1="538" y1="538" x2="512" y2="512" class="cross"/>
+
+  <circle cx="340" cy="62"  r="8" fill="#CC4400"/>
+  <circle cx="340" cy="618" r="8" fill="#CC4400"/>
+  <circle cx="62"  cy="340" r="8" fill="#CC4400"/>
+  <circle cx="618" cy="340" r="8" fill="#CC4400"/>
+
+  <text x="255" y="430" text-anchor="middle" class="k">K</text>
+  <text x="415" y="430" text-anchor="middle" class="o">O</text>
+</svg>
