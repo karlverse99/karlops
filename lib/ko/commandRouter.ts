@@ -2,6 +2,12 @@
 // KarlOps L — Intent classification and field extraction
 
 import { createSupabaseAdmin } from '@/lib/supabase-server';
+import {
+  buildKarlContext,
+  buildKarlDeepContext,
+  formatContextForPrompt,
+  appendSessionMessage,
+} from '@/lib/ko/buildKarlContext';
 
 export type IntentType = 'capture_task' | 'capture_tasks' | 'question' | 'command' | 'unclear';
 
@@ -20,6 +26,19 @@ interface FieldMeta {
   insert_behavior: string;
 }
 
+// Analysis keywords — trigger deep context pull
+const ANALYSIS_TRIGGERS = [
+  'analyze', 'analysis', 'review', 'summarize', 'summary',
+  'make the case', 'what have i done', 'show me', 'evidence',
+  'how am i doing', 'what does it look like', 'this week', 'this month',
+  'against my', 'pip', 'requirement', 'progress',
+];
+
+function isAnalysisRequest(input: string): boolean {
+  const lower = input.toLowerCase();
+  return ANALYSIS_TRIGGERS.some(t => lower.includes(t));
+}
+
 export async function routeCommand(
   user_id: string,
   input: string
@@ -36,36 +55,67 @@ export async function routeCommand(
 
     const objectSummaries = buildObjectSummaries(allMeta ?? []);
 
+    // ── Build context bundle ───────────────────────────────────────────────
+    const isDeep = isAnalysisRequest(input);
+    const bundle = isDeep
+      ? await buildKarlDeepContext(user_id)
+      : await buildKarlContext(user_id);
+
+    const contextBlock = formatContextForPrompt(bundle);
+
+    // ── Build conversation history for Anthropic messages array ───────────
+    // Seed with history first, then current input at the end
+    const anthropicMessages: { role: 'user' | 'assistant'; content: string }[] = [
+      ...bundle.recentMessages.map(m => ({
+        role: (m.role === 'karl' ? 'assistant' : 'user') as 'user' | 'assistant',
+        content: m.content,
+      })),
+      { role: 'user', content: input },
+    ];
+
     // ── Call Anthropic ─────────────────────────────────────────────────────
-    const systemPrompt = `You are Karl, an operational assistant. Classify user input and extract structured data.
-
-Available object types:
-${objectSummaries}
-
-Classify into one of these intents:
-- capture_task: A single clear action item. Extract a concise title.
-- capture_tasks: Multiple action items in one message (comma-separated list, numbered list, or block of tasks). Extract all titles.
-- question: User is asking for information or analysis.
-- command: Explicit system command (show, list, update, delete, move, etc.)
-- unclear: Ambiguous — needs more info.
-
-Rules:
-- Be conservative. Commentary, opinions, or meta-statements = question or unclear.
-- Only capture_* if there are clear actionable items.
-- Extract the most concise title possible.
-- For capture_tasks, extract ALL distinct tasks from the input.
-- Never capture philosophical statements or system commentary as tasks.
-
-Respond ONLY with valid JSON:
-
-For single task:
-{ "intent": "capture_task", "title": "concise task title", "response": "Karl's response" }
-
-For multiple tasks:
-{ "intent": "capture_tasks", "titles": ["task one", "task two"], "summary": "X tasks found", "response": "Karl's response listing what was found" }
-
-For question/command/unclear:
-{ "intent": "question", "response": "Karl's conversational response" }`;
+    const systemPrompt = [
+      'You are Karl, an operational assistant inside KarlOps — a personal pressure system for getting things done.',
+      '',
+      contextBlock,
+      '',
+      '## Your Job',
+      'Classify user input and extract structured data, informed by the user\'s situation and history above.',
+      '',
+      '## Available Object Types',
+      objectSummaries,
+      '',
+      '## Intent Classification',
+      'Classify into one of these intents:',
+      '- capture_task: A single clear action item. Extract a concise title.',
+      '- capture_tasks: Multiple action items in one message. Extract all titles.',
+      '- question: User is asking for information or analysis. Answer using their situation and history.',
+      '- command: Explicit system command (show, list, update, delete, move, etc.)',
+      '- unclear: Ambiguous — needs more info.',
+      '',
+      '## Rules',
+      '- Be conservative. Commentary, opinions, or meta-statements = question or unclear.',
+      '- Only capture_* if there are clear actionable items.',
+      '- Extract the most concise title possible.',
+      '- For capture_tasks, extract ALL distinct tasks from the input.',
+      '- Never capture philosophical statements or system commentary as tasks.',
+      '- For questions and analysis, use the user\'s situation brief and history to give situated, specific answers.',
+      '- Pattern for analysis: "Based on what I see — [fact from data]. My read — [inference]."',
+      '- Never pretend inference is fact.',
+      '- If the user has no situation brief, gently prompt them to write one.',
+      '',
+      '## Response Format',
+      'Respond ONLY with valid JSON.',
+      '',
+      'For single task:',
+      '{ "intent": "capture_task", "title": "concise task title", "response": "Karl\'s response" }',
+      '',
+      'For multiple tasks:',
+      '{ "intent": "capture_tasks", "titles": ["task one", "task two"], "summary": "X tasks found", "response": "Karl\'s response listing what was found" }',
+      '',
+      'For question/command/unclear:',
+      '{ "intent": "question", "response": "Karl\'s conversational response" }',
+    ].join('\n');
 
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -76,9 +126,9 @@ For question/command/unclear:
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 500,
+        max_tokens: isDeep ? 1500 : 500,
         system: systemPrompt,
-        messages: [{ role: 'user', content: input }],
+        messages: anthropicMessages,
       }),
     });
 
@@ -94,12 +144,18 @@ For question/command/unclear:
     }
 
     const intent = parsed.intent as IntentType;
+    const karlResponse = parsed.response ?? "I'm not sure what to do with that.";
 
+    // ── Persist exchange to session history ────────────────────────────────
+    await appendSessionMessage(user_id, 'user', input);
+    await appendSessionMessage(user_id, 'karl', karlResponse);
+
+    // ── Return result ──────────────────────────────────────────────────────
     if (intent === 'capture_task') {
       return {
         intent: 'capture_task',
         payload: { title: parsed.title },
-        response: parsed.response ?? `Got it — **${parsed.title}**. Capture it?`,
+        response: karlResponse,
       };
     }
 
@@ -107,13 +163,13 @@ For question/command/unclear:
       return {
         intent: 'capture_tasks',
         payload: { titles: parsed.titles, summary: parsed.summary ?? `${parsed.titles?.length} tasks` },
-        response: parsed.response ?? `Found ${parsed.titles?.length} tasks. Capture all of them?`,
+        response: karlResponse,
       };
     }
 
     return {
       intent,
-      response: parsed.response ?? "I'm not sure what to do with that.",
+      response: karlResponse,
     };
 
   } catch (err: any) {
