@@ -14,7 +14,8 @@ interface Meeting {
   notes: string | null;
   attendees: string[] | null;
   tags: string[] | null;
-  context: { name: string } | null;
+  is_completed: boolean;
+  context: { name: string; context_id: string } | null;
   task: { title: string } | null;
 }
 
@@ -50,28 +51,31 @@ function formatDate(dateStr: string): string {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-const ACCENT = '#3b82f6';
-const ACCENT_DARK = '#2563eb';
-const ACCENT_BG = '#eff6ff';
+const ACCENT        = '#3b82f6';
+const ACCENT_DARK   = '#2563eb';
+const ACCENT_BG     = '#eff6ff';
 const ACCENT_BORDER = '#bfdbfe';
 
 // ─── COMPONENT ───────────────────────────────────────────────────────────────
 
 export default function MeetingsModal({ userId, accessToken, onClose, onCountChange }: MeetingsModalProps) {
-  const [mode, setMode]           = useState<'list' | 'add' | 'edit'>('list');
-  const [meetings, setMeetings]   = useState<Meeting[]>([]);
-  const [loading, setLoading]     = useState(true);
+  const [mode, setMode]             = useState<'list' | 'add' | 'edit'>('list');
+  const [meetings, setMeetings]     = useState<Meeting[]>([]);
+  const [loading, setLoading]       = useState(true);
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [contexts, setContexts]   = useState<Context[]>([]);
-  const [allTags, setAllTags]     = useState<Tag[]>([]);
-  const [tagGroups, setTagGroups] = useState<TagGroup[]>([]);
-  const [fieldMeta, setFieldMeta] = useState<FieldMeta[]>([]);
-  const [saving, setSaving]       = useState(false);
-  const [err, setErr]             = useState('');
+  const [completingId, setCompletingId] = useState<string | null>(null);
+  const [contexts, setContexts]     = useState<Context[]>([]);
+  const [allTags, setAllTags]       = useState<Tag[]>([]);
+  const [tagGroups, setTagGroups]   = useState<TagGroup[]>([]);
+  const [fieldMeta, setFieldMeta]   = useState<FieldMeta[]>([]);
+  const [saving, setSaving]         = useState(false);
+  const [completingSaving, setCompletingSaving] = useState(false);
+  const [err, setErr]               = useState('');
+  const [completeErr, setCompleteErr] = useState('');
 
   // ─── Drag/resize ───────────────────────────────────────────────────────────
   const [pos, setPos]           = useState({ x: 0, y: 0 });
-  const [size, setSize]         = useState({ w: 800, h: 788 });
+  const [size, setSize]         = useState({ w: 800, h: 740 });
   const [centered, setCentered] = useState(true);
   const dragging                = useRef(false);
   const resizing                = useRef(false);
@@ -79,7 +83,7 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
   const resizeStart             = useRef({ mx: 0, my: 0, w: 0, h: 0 });
   const modalRef                = useRef<HTMLDivElement>(null);
 
-  // ─── Form state ────────────────────────────────────────────────────────────
+  // ─── Meeting form state ────────────────────────────────────────────────────
   const [editId, setEditId]                   = useState<string | null>(null);
   const [formTitle, setFormTitle]             = useState('');
   const [formMeetingDate, setFormMeetingDate] = useState('');
@@ -90,14 +94,21 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
   const [formTags, setFormTags]               = useState<string[]>([]);
   const [formContextId, setFormContextId]     = useState('');
 
-  // Tag picker state — shared for both tags and attendees
-  const [activePickerField, setActivePickerField]     = useState<'tags' | 'attendees' | null>(null);
-  const [tagSearch, setTagSearch]                     = useState('');
-  const [attendeeSearch, setAttendeeSearch]           = useState('');
-  const [selectedTagGroupId, setSelectedTagGroupId]   = useState('');
+  // ─── Inline completion form state ─────────────────────────────────────────
+  const [completeOutcome, setCompleteOutcome]     = useState('');
+  const [completeTags, setCompleteTags]           = useState<string[]>([]);
+  const [completeContextId, setCompleteContextId] = useState('');
+
+  // ─── Tag picker state ──────────────────────────────────────────────────────
+  const [tagSearch, setTagSearch]                         = useState('');
+  const [attendeeSearch, setAttendeeSearch]               = useState('');
+  const [selectedTagGroupId, setSelectedTagGroupId]       = useState('');
   const [selectedPeopleGroupId, setSelectedPeopleGroupId] = useState('');
-  const [showTagDrop, setShowTagDrop]                 = useState(false);
-  const [showAttendeeDrop, setShowAttendeeDrop]       = useState(false);
+  const [showTagDrop, setShowTagDrop]                     = useState(false);
+  const [showAttendeeDrop, setShowAttendeeDrop]           = useState(false);
+  const [completeTagSearch, setCompleteTagSearch]         = useState('');
+  const [completeTagGroupId, setCompleteTagGroupId]       = useState('');
+  const [showCompleteTagDrop, setShowCompleteTagDrop]     = useState(false);
 
   // ─── Load data ─────────────────────────────────────────────────────────────
 
@@ -106,11 +117,12 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
     const { data } = await supabase
       .from('meeting')
       .select(`
-        meeting_id, title, meeting_date, outcome, description, notes, attendees, tags,
-        context:context_id ( name ),
+        meeting_id, title, meeting_date, outcome, description, notes, attendees, tags, is_completed,
+        context:context_id ( name, context_id ),
         task:task_id ( title )
       `)
       .eq('user_id', userId)
+      .eq('is_completed', false)
       .order('meeting_date', { ascending: false });
 
     if (data) {
@@ -188,7 +200,7 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
     return () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
   }, []);
 
-  // ─── Handlers ──────────────────────────────────────────────────────────────
+  // ─── Meeting handlers ──────────────────────────────────────────────────────
 
   const resetForm = () => {
     setEditId(null);
@@ -219,15 +231,60 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
     setFormNotes(m.notes ?? '');
     setFormAttendees(m.attendees ?? []);
     setFormTags(m.tags ?? []);
+    setFormContextId(m.context?.context_id ?? '');
     setMode('edit');
   };
 
-  const toggleTag = (name: string) => {
-    setFormTags(prev => prev.includes(name) ? prev.filter(t => t !== name) : [...prev, name]);
+  const openComplete = (m: Meeting) => {
+    setCompletingId(m.meeting_id);
+    setCompleteOutcome(m.outcome ?? '');
+    setCompleteTags(m.tags ?? []);
+    setCompleteContextId(m.context?.context_id ?? '');
+    setCompleteTagSearch('');
+    setCompleteTagGroupId('');
+    setCompleteErr('');
+    setExpandedId(m.meeting_id);
   };
 
-  const toggleAttendee = (name: string) => {
-    setFormAttendees(prev => prev.includes(name) ? prev.filter(a => a !== name) : [...prev, name]);
+  const cancelComplete = () => {
+    setCompletingId(null);
+    setCompleteErr('');
+  };
+
+  const handleComplete = async (m: Meeting) => {
+    if (!completeOutcome.trim()) { setCompleteErr('Outcome is required'); return; }
+    setCompletingSaving(true); setCompleteErr('');
+
+    try {
+      // Insert completion record
+      const { error: compErr } = await supabase
+        .from('completion')
+        .insert({
+          user_id:      userId,
+          title:        m.title,
+          outcome:      completeOutcome.trim(),
+          completed_at: new Date().toISOString(),
+          tags:         completeTags.length > 0 ? completeTags : null,
+          context_id:   completeContextId || null,
+          meeting_id:   m.meeting_id,
+        });
+      if (compErr) throw compErr;
+
+      // Mark meeting as completed
+      const { error: meetErr } = await supabase
+        .from('meeting')
+        .update({ is_completed: true, outcome: completeOutcome.trim() })
+        .eq('meeting_id', m.meeting_id)
+        .eq('user_id', userId);
+      if (meetErr) throw meetErr;
+
+      setCompletingId(null);
+      await loadMeetings();
+    } catch (e: any) {
+      setCompleteErr(e.message);
+    } finally {
+      setCompletingSaving(false);
+    }
   };
 
   const handleSave = async () => {
@@ -262,25 +319,23 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
     }
   };
 
+  const toggleTag = (name: string) => setFormTags(prev => prev.includes(name) ? prev.filter(t => t !== name) : [...prev, name]);
+  const toggleAttendee = (name: string) => setFormAttendees(prev => prev.includes(name) ? prev.filter(a => a !== name) : [...prev, name]);
+  const toggleCompleteTag = (name: string) => setCompleteTags(prev => prev.includes(name) ? prev.filter(t => t !== name) : [...prev, name]);
+
   // ─── Tag picker renderer ───────────────────────────────────────────────────
 
   const renderTagPicker = (
-    field: 'tags' | 'attendees',
-    label: string,
-    selected: string[],
-    toggle: (name: string) => void,
-    search: string,
-    setSearch: (v: string) => void,
-    groupId: string,
-    setGroupId: (v: string) => void,
-    showDrop: boolean,
-    setShowDrop: (v: boolean) => void,
+    field: string, label: string, selected: string[], toggle: (n: string) => void,
+    search: string, setSearch: (v: string) => void,
+    groupId: string, setGroupId: (v: string) => void,
+    showDrop: boolean, setShowDrop: (v: boolean) => void,
+    accentColor: string = ACCENT,
   ) => {
     const filtered = allTags.filter(t => {
       const matchesGroup  = groupId ? t.tag_group_id === groupId : true;
       const matchesSearch = search ? t.name.toLowerCase().includes(search.toLowerCase()) : true;
-      const notSelected   = !selected.includes(t.name);
-      return matchesGroup && matchesSearch && notSelected;
+      return matchesGroup && matchesSearch && !selected.includes(t.name);
     });
 
     return (
@@ -290,7 +345,7 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem', marginBottom: '0.5rem' }}>
             {selected.map(name => (
               <span key={name} onClick={() => toggle(name)}
-                style={{ fontSize: '0.72rem', color: '#fff', background: ACCENT, border: `1px solid ${ACCENT}`, borderRadius: '3px', padding: '0.15rem 0.4rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.25rem', fontFamily: 'monospace' }}
+                style={{ fontSize: '0.72rem', color: '#fff', background: accentColor, border: `1px solid ${accentColor}`, borderRadius: '3px', padding: '0.15rem 0.4rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.25rem', fontFamily: 'monospace' }}
               >{name} <span style={{ opacity: 0.8 }}>✕</span></span>
             ))}
           </div>
@@ -300,9 +355,7 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
             style={{ ...inputStyle, flex: '0 0 140px', fontSize: '0.72rem', padding: '0.35rem 0.5rem' }}
           >
             <option value="">All groups</option>
-            {tagGroups.map(g => (
-              <option key={g.tag_group_id} value={g.tag_group_id}>{g.name}</option>
-            ))}
+            {tagGroups.map(g => <option key={g.tag_group_id} value={g.tag_group_id}>{g.name}</option>)}
           </select>
           <div style={{ position: 'relative', flex: 1 }}>
             <input value={search}
@@ -311,7 +364,7 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
               onBlur={() => setTimeout(() => setShowDrop(false), 150)}
               placeholder="Search..."
               style={{ ...inputStyle, marginBottom: 0 }}
-              onFocusCapture={e => (e.target.style.borderColor = ACCENT)}
+              onFocusCapture={e => (e.target.style.borderColor = accentColor)}
               onBlurCapture={e => (e.target.style.borderColor = '#ddd')}
             />
             {showDrop && filtered.length > 0 && (
@@ -328,9 +381,6 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
             )}
           </div>
         </div>
-        {showDrop && filtered.length === 0 && (search || groupId) && (
-          <div style={{ color: '#bbb', fontSize: '0.7rem', marginTop: '0.25rem', fontFamily: 'monospace' }}>No matching tags</div>
-        )}
       </div>
     );
   };
@@ -338,117 +388,45 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
   // ─── Field renderer ────────────────────────────────────────────────────────
 
   const renderField = (meta: FieldMeta, isAdd: boolean) => {
-    const isReadonly = isAdd
-      ? meta.insert_behavior === 'automatic'
-      : meta.update_behavior === 'readonly' || meta.update_behavior === 'automatic';
+    const isReadonly = isAdd ? meta.insert_behavior === 'automatic' : meta.update_behavior === 'readonly' || meta.update_behavior === 'automatic';
     if (isReadonly) return null;
 
     const required = isAdd ? meta.insert_behavior === 'required' : false;
-    const label = (
-      <div style={labelStyle}>
-        {meta.label}{required && <span style={{ color: '#ef4444' }}>*</span>}
-      </div>
-    );
+    const label = <div style={labelStyle}>{meta.label}{required && <span style={{ color: '#ef4444' }}>*</span>}</div>;
 
     switch (meta.field) {
-
       case 'title':
-        return (
-          <div key="title" style={{ marginBottom: '0.85rem' }}>
-            {label}
-            <input autoFocus value={formTitle} onChange={e => setFormTitle(e.target.value)}
-              style={inputStyle}
-              onFocus={e => (e.target.style.borderColor = ACCENT)}
-              onBlur={e => (e.target.style.borderColor = '#ddd')}
-            />
-          </div>
-        );
+        return <div key="title" style={{ marginBottom: '0.85rem' }}>{label}<input autoFocus value={formTitle} onChange={e => setFormTitle(e.target.value)} style={inputStyle} onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} /></div>;
 
       case 'meeting_date':
-        return (
-          <div key="meeting_date" style={{ marginBottom: '0.85rem' }}>
-            {label}
-            <input type="datetime-local" value={formMeetingDate} onChange={e => setFormMeetingDate(e.target.value)}
-              style={{ ...inputStyle, colorScheme: 'light' }}
-              onFocus={e => (e.target.style.borderColor = ACCENT)}
-              onBlur={e => (e.target.style.borderColor = '#ddd')}
-            />
-          </div>
-        );
+        return <div key="meeting_date" style={{ marginBottom: '0.85rem' }}>{label}<input type="datetime-local" value={formMeetingDate} onChange={e => setFormMeetingDate(e.target.value)} style={{ ...inputStyle, colorScheme: 'light' }} onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} /></div>;
 
       case 'outcome':
-        return (
-          <div key="outcome" style={{ marginBottom: '0.85rem' }}>
-            {label}
-            <textarea value={formOutcome} onChange={e => setFormOutcome(e.target.value)}
-              rows={2} style={{ ...inputStyle, resize: 'vertical' }}
-              onFocus={e => (e.target.style.borderColor = ACCENT)}
-              onBlur={e => (e.target.style.borderColor = '#ddd')}
-            />
-          </div>
-        );
+        return <div key="outcome" style={{ marginBottom: '0.85rem' }}>{label}<textarea value={formOutcome} onChange={e => setFormOutcome(e.target.value)} rows={2} style={{ ...inputStyle, resize: 'vertical' }} onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} /></div>;
 
       case 'description':
-        return (
-          <div key="description" style={{ marginBottom: '0.85rem' }}>
-            {label}
-            <textarea value={formDescription} onChange={e => setFormDescription(e.target.value)}
-              rows={1} style={{ ...inputStyle, resize: 'vertical' }}
-              onFocus={e => (e.target.style.borderColor = ACCENT)}
-              onBlur={e => (e.target.style.borderColor = '#ddd')}
-            />
-          </div>
-        );
+        return <div key="description" style={{ marginBottom: '0.85rem' }}>{label}<textarea value={formDescription} onChange={e => setFormDescription(e.target.value)} rows={1} style={{ ...inputStyle, resize: 'vertical' }} onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} /></div>;
 
       case 'notes':
-        return (
-          <div key="notes" style={{ marginBottom: '0.85rem' }}>
-            {label}
-            <textarea value={formNotes} onChange={e => setFormNotes(e.target.value)}
-              rows={3} style={{ ...inputStyle, resize: 'vertical', minHeight: '64px' }}
-              onFocus={e => (e.target.style.borderColor = ACCENT)}
-              onBlur={e => (e.target.style.borderColor = '#ddd')}
-            />
-          </div>
-        );
+        return <div key="notes" style={{ marginBottom: '0.85rem' }}>{label}<textarea value={formNotes} onChange={e => setFormNotes(e.target.value)} rows={3} style={{ ...inputStyle, resize: 'vertical', minHeight: '64px' }} onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} /></div>;
 
       case 'attendees':
-        return renderTagPicker(
-          'attendees', 'Attendees',
-          formAttendees, toggleAttendee,
-          attendeeSearch, setAttendeeSearch,
-          selectedPeopleGroupId, setSelectedPeopleGroupId,
-          showAttendeeDrop, setShowAttendeeDrop,
-        );
+        return renderTagPicker('attendees', 'Attendees', formAttendees, toggleAttendee, attendeeSearch, setAttendeeSearch, selectedPeopleGroupId, setSelectedPeopleGroupId, showAttendeeDrop, setShowAttendeeDrop);
 
       case 'tags':
-        return renderTagPicker(
-          'tags', 'Tags',
-          formTags, toggleTag,
-          tagSearch, setTagSearch,
-          selectedTagGroupId, setSelectedTagGroupId,
-          showTagDrop, setShowTagDrop,
-        );
+        return renderTagPicker('tags', 'Tags', formTags, toggleTag, tagSearch, setTagSearch, selectedTagGroupId, setSelectedTagGroupId, showTagDrop, setShowTagDrop);
 
       case 'context_id':
         return (
-          <div key="context_id" style={{ marginBottom: '0.85rem' }}>
-            {label}
-            <select value={formContextId} onChange={e => setFormContextId(e.target.value)}
-              style={{ ...inputStyle, cursor: 'pointer' }}
-              onFocus={e => (e.target.style.borderColor = ACCENT)}
-              onBlur={e => (e.target.style.borderColor = '#ddd')}
-            >
+          <div key="context_id" style={{ marginBottom: '0.85rem' }}>{label}
+            <select value={formContextId} onChange={e => setFormContextId(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }} onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')}>
               <option value="">— none —</option>
-              {contexts.map(c => (
-                <option key={c.context_id} value={c.context_id}>{c.name}</option>
-              ))}
+              {contexts.map(c => <option key={c.context_id} value={c.context_id}>{c.name}</option>)}
             </select>
           </div>
         );
 
-      default:
-        return null;
+      default: return null;
     }
   };
 
@@ -456,26 +434,70 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
 
   const renderForm = () => {
     const isAdd = mode === 'add';
-    const visibleFields = fieldMeta.filter(f => {
-      if (isAdd) return f.insert_behavior !== 'automatic';
-      return f.update_behavior !== 'automatic' && f.update_behavior !== 'readonly';
-    });
-
+    const visibleFields = fieldMeta.filter(f => isAdd ? f.insert_behavior !== 'automatic' : f.update_behavior !== 'automatic' && f.update_behavior !== 'readonly');
     return (
       <div style={{ padding: '1rem 1.25rem', overflowY: 'auto', flex: 1 }}>
         {visibleFields.map(f => renderField(f, isAdd))}
         {err && <div style={{ color: '#ef4444', fontSize: '0.72rem', marginBottom: '0.75rem' }}>{err}</div>}
         <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', paddingTop: '0.5rem' }}>
-          <button onClick={() => setMode('list')}
-            style={{ background: 'none', border: '1px solid #ddd', color: '#666', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer' }}
-          >cancel</button>
-          <button onClick={handleSave} disabled={saving}
-            style={{ background: ACCENT, border: `1px solid ${ACCENT}`, color: '#fff', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer', fontWeight: 600 }}
-          >{saving ? '...' : isAdd ? 'save meeting' : 'save changes'}</button>
+          <button onClick={() => setMode('list')} style={{ background: 'none', border: '1px solid #ddd', color: '#666', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer' }}>cancel</button>
+          <button onClick={handleSave} disabled={saving} style={{ background: ACCENT, border: `1px solid ${ACCENT}`, color: '#fff', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer', fontWeight: 600 }}>{saving ? '...' : isAdd ? 'save meeting' : 'save changes'}</button>
         </div>
       </div>
     );
   };
+
+  // ─── Render: inline complete form ──────────────────────────────────────────
+
+  const renderCompleteForm = (m: Meeting) => (
+    <div style={{ marginTop: '0.75rem', background: '#f0f7ff', border: `1px solid ${ACCENT_BORDER}`, borderRadius: '6px', padding: '0.85rem' }}>
+      <div style={{ color: ACCENT, fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.75rem' }}>Complete Meeting</div>
+
+      {/* Outcome */}
+      <div style={{ marginBottom: '0.75rem' }}>
+        <div style={labelStyle}>Outcome<span style={{ color: '#ef4444' }}>*</span></div>
+        <textarea
+          autoFocus
+          value={completeOutcome}
+          onChange={e => setCompleteOutcome(e.target.value)}
+          rows={3}
+          style={{ ...inputStyle, resize: 'vertical', minHeight: '64px' }}
+          onFocus={e => (e.target.style.borderColor = ACCENT)}
+          onBlur={e => (e.target.style.borderColor = '#ddd')}
+        />
+      </div>
+
+      {/* Tags */}
+      {renderTagPicker(
+        'complete_tags', 'Tags', completeTags, toggleCompleteTag,
+        completeTagSearch, setCompleteTagSearch,
+        completeTagGroupId, setCompleteTagGroupId,
+        showCompleteTagDrop, setShowCompleteTagDrop,
+      )}
+
+      {/* Context */}
+      <div style={{ marginBottom: '0.75rem' }}>
+        <div style={labelStyle}>Context</div>
+        <select value={completeContextId} onChange={e => setCompleteContextId(e.target.value)}
+          style={{ ...inputStyle, cursor: 'pointer' }}
+          onFocus={e => (e.target.style.borderColor = ACCENT)}
+          onBlur={e => (e.target.style.borderColor = '#ddd')}
+        >
+          <option value="">— none —</option>
+          {contexts.map(c => <option key={c.context_id} value={c.context_id}>{c.name}</option>)}
+        </select>
+      </div>
+
+      {completeErr && <div style={{ color: '#ef4444', fontSize: '0.72rem', marginBottom: '0.5rem' }}>{completeErr}</div>}
+
+      <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+        <button onClick={cancelComplete} style={{ background: 'none', border: '1px solid #ddd', color: '#666', padding: '0.3rem 0.7rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.72rem', cursor: 'pointer' }}>cancel</button>
+        <button onClick={() => handleComplete(m)} disabled={completingSaving}
+          style={{ background: ACCENT, border: `1px solid ${ACCENT}`, color: '#fff', padding: '0.3rem 0.7rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.72rem', cursor: 'pointer', fontWeight: 600 }}
+        >{completingSaving ? '...' : 'save & complete'}</button>
+      </div>
+    </div>
+  );
 
   // ─── Render: list ──────────────────────────────────────────────────────────
 
@@ -486,22 +508,32 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
       ) : meetings.length === 0 ? (
         <div style={{ color: '#bbb', fontSize: '0.75rem', padding: '1rem 0', fontFamily: 'monospace' }}>No meetings yet.</div>
       ) : (
-        meetings.map(m => {
-          const isExpanded = expandedId === m.meeting_id;
+        meetings.map((m, idx) => {
+          const isExpanded   = expandedId === m.meeting_id;
+          const isCompleting = completingId === m.meeting_id;
+          const identifier   = `MT${idx + 1}`;
+
           return (
             <div key={m.meeting_id} style={{ borderBottom: '1px solid #f0f0f0', paddingBottom: '0.75rem', marginBottom: '0.75rem' }}>
-              <div onClick={() => setExpandedId(isExpanded ? null : m.meeting_id)}
-                style={{ display: 'flex', alignItems: 'baseline', gap: '0.75rem', cursor: 'pointer' }}
+
+              {/* Row header */}
+              <div onClick={() => { if (!isCompleting) setExpandedId(isExpanded ? null : m.meeting_id); }}
+                style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}
               >
+                {/* Identifier */}
+                <span style={{ color: ACCENT, fontSize: '0.62rem', fontWeight: 600, opacity: 0.5, flexShrink: 0, fontFamily: 'monospace' }}>{identifier}</span>
+                {/* Date */}
                 <span style={{ color: ACCENT, fontSize: '0.65rem', flexShrink: 0, fontFamily: 'monospace' }}>
                   {m.meeting_date ? formatDate(m.meeting_date) : '—'}
                 </span>
+                {/* Title */}
                 <span style={{ color: '#111', fontSize: '0.82rem', flex: 1, fontFamily: 'monospace' }}>{m.title}</span>
+                {/* Context */}
                 {m.context && <span style={{ color: '#555', fontSize: '0.65rem', flexShrink: 0, fontFamily: 'monospace' }}>{m.context.name}</span>}
                 <span style={{ color: '#bbb', fontSize: '0.65rem', flexShrink: 0 }}>{isExpanded ? '▴' : '▾'}</span>
               </div>
 
-              {/* Attendees + tags row */}
+              {/* Attendees + tags */}
               <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap', marginTop: '0.3rem' }}>
                 {m.attendees?.map(a => (
                   <span key={a} style={{ fontSize: '0.62rem', color: ACCENT, background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, borderRadius: '3px', padding: '0.1rem 0.35rem', fontFamily: 'monospace' }}>{a}</span>
@@ -511,7 +543,8 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
                 ))}
               </div>
 
-              {isExpanded && (
+              {/* Expanded detail */}
+              {isExpanded && !isCompleting && (
                 <div style={{ marginTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                   {m.outcome && (
                     <div>
@@ -540,15 +573,24 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
                   {m.meeting_date && (
                     <div style={{ color: '#bbb', fontSize: '0.65rem', fontFamily: 'monospace' }}>{formatDateTime(m.meeting_date)}</div>
                   )}
-                  <div>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
                     <button onClick={() => openEdit(m)}
                       style={{ background: 'none', border: '1px solid #e0e0e0', color: '#888', padding: '0.25rem 0.6rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.65rem', cursor: 'pointer' }}
                       onMouseEnter={e => (e.currentTarget.style.borderColor = ACCENT)}
                       onMouseLeave={e => (e.currentTarget.style.borderColor = '#e0e0e0')}
                     >edit</button>
+                    <button onClick={e => { e.stopPropagation(); openComplete(m); }}
+                      style={{ background: ACCENT, border: `1px solid ${ACCENT}`, color: '#fff', padding: '0.25rem 0.6rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.65rem', cursor: 'pointer', fontWeight: 600 }}
+                      onMouseEnter={e => (e.currentTarget.style.background = ACCENT_DARK)}
+                      onMouseLeave={e => (e.currentTarget.style.background = ACCENT)}
+                    >complete</button>
                   </div>
                 </div>
               )}
+
+              {/* Inline complete form */}
+              {isCompleting && renderCompleteForm(m)}
+
             </div>
           );
         })
