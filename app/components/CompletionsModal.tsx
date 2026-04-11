@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
@@ -18,6 +18,7 @@ interface Completion {
 }
 
 interface Context { context_id: string; name: string; }
+interface Tag { tag_id: string; name: string; }
 
 interface CompletionsModalProps {
   userId: string;
@@ -47,17 +48,30 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
   const [loading, setLoading]         = useState(true);
   const [expandedId, setExpandedId]   = useState<string | null>(null);
   const [contexts, setContexts]       = useState<Context[]>([]);
+  const [allTags, setAllTags]         = useState<Tag[]>([]);
   const [saving, setSaving]           = useState(false);
   const [err, setErr]                 = useState('');
 
-  // ─── Add/Edit form state ───────────────────────────────────────────────────
+  // ─── Drag/resize state ─────────────────────────────────────────────────────
+  const [pos, setPos]       = useState({ x: 0, y: 0 });
+  const [size, setSize]     = useState({ w: 720, h: 560 });
+  const [centered, setCentered] = useState(true);
+  const dragging            = useRef(false);
+  const resizing            = useRef(false);
+  const dragStart           = useRef({ mx: 0, my: 0, x: 0, y: 0 });
+  const resizeStart         = useRef({ mx: 0, my: 0, w: 0, h: 0 });
+  const modalRef            = useRef<HTMLDivElement>(null);
+
+  // ─── Form state ────────────────────────────────────────────────────────────
   const [editId, setEditId]               = useState<string | null>(null);
   const [formTitle, setFormTitle]         = useState('');
   const [formOutcome, setFormOutcome]     = useState('');
   const [formDescription, setFormDescription] = useState('');
   const [formCompletedAt, setFormCompletedAt] = useState('');
-  const [formTags, setFormTags]           = useState('');
+  const [formTags, setFormTags]           = useState<string[]>([]);
   const [formContextId, setFormContextId] = useState('');
+  const [tagSearch, setTagSearch]         = useState('');
+  const [showTagDropdown, setShowTagDropdown] = useState(false);
 
   // ─── Load data ─────────────────────────────────────────────────────────────
 
@@ -91,17 +105,49 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
     if (data) setContexts(data);
   };
 
+  const loadTags = async () => {
+    const { data } = await supabase
+      .from('tag')
+      .select('tag_id, name')
+      .eq('user_id', userId)
+      .order('name');
+    if (data) setAllTags(data);
+  };
+
   useEffect(() => {
     loadCompletions();
     loadContexts();
+    loadTags();
   }, []);
 
   // ─── Keyboard close ────────────────────────────────────────────────────────
-
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
+  }, []);
+
+  // ─── Drag/resize mouse events ──────────────────────────────────────────────
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (dragging.current) {
+        setPos({
+          x: dragStart.current.x + (e.clientX - dragStart.current.mx),
+          y: dragStart.current.y + (e.clientY - dragStart.current.my),
+        });
+        setCentered(false);
+      }
+      if (resizing.current) {
+        setSize({
+          w: Math.max(520, resizeStart.current.w + (e.clientX - resizeStart.current.mx)),
+          h: Math.max(400, resizeStart.current.h + (e.clientY - resizeStart.current.my)),
+        });
+      }
+    };
+    const onUp = () => { dragging.current = false; resizing.current = false; };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    return () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
   }, []);
 
   // ─── Handlers ──────────────────────────────────────────────────────────────
@@ -112,8 +158,9 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
     setFormOutcome('');
     setFormDescription('');
     setFormCompletedAt(new Date().toISOString().slice(0, 16));
-    setFormTags('');
+    setFormTags([]);
     setFormContextId('');
+    setTagSearch('');
     setErr('');
     setMode('add');
   };
@@ -124,10 +171,15 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
     setFormOutcome(c.outcome ?? '');
     setFormDescription(c.description ?? '');
     setFormCompletedAt(c.completed_at ? c.completed_at.slice(0, 16) : '');
-    setFormTags(c.tags ? c.tags.join(', ') : '');
-    setFormContextId(''); // context_id not in join result — would need separate lookup
+    setFormTags(c.tags ?? []);
+    setFormContextId('');
+    setTagSearch('');
     setErr('');
     setMode('edit');
+  };
+
+  const toggleTag = (name: string) => {
+    setFormTags(prev => prev.includes(name) ? prev.filter(t => t !== name) : [...prev, name]);
   };
 
   const handleSave = async () => {
@@ -137,13 +189,12 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
 
     setSaving(true); setErr('');
 
-    const tags = formTags.split(',').map(t => t.trim()).filter(Boolean);
     const payload: any = {
       title:        formTitle.trim(),
       outcome:      formOutcome.trim(),
       description:  formDescription.trim() || null,
       completed_at: new Date(formCompletedAt).toISOString(),
-      tags:         tags.length > 0 ? tags : null,
+      tags:         formTags.length > 0 ? formTags : null,
       context_id:   formContextId || null,
     };
 
@@ -170,6 +221,59 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
     }
   };
 
+  // ─── Tag picker ────────────────────────────────────────────────────────────
+
+  const filteredTags = allTags.filter(t =>
+    t.name.toLowerCase().includes(tagSearch.toLowerCase()) && !formTags.includes(t.name)
+  );
+
+  const renderTagPicker = () => (
+    <div style={{ marginBottom: '1rem' }}>
+      <div style={labelStyle}>Tags</div>
+
+      {/* Selected tags */}
+      {formTags.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem', marginBottom: '0.4rem' }}>
+          {formTags.map(tag => (
+            <span key={tag}
+              onClick={() => toggleTag(tag)}
+              style={{ fontSize: '0.72rem', color: '#fff', background: '#f97316', border: '1px solid #f97316', borderRadius: '3px', padding: '0.15rem 0.4rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
+            >
+              {tag} <span style={{ opacity: 0.7 }}>✕</span>
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Search input */}
+      <div style={{ position: 'relative' }}>
+        <input
+          value={tagSearch}
+          onChange={e => { setTagSearch(e.target.value); setShowTagDropdown(true); }}
+          onFocus={() => setShowTagDropdown(true)}
+          onBlur={() => setTimeout(() => setShowTagDropdown(false), 150)}
+          placeholder="Search tags..."
+          style={{ ...inputStyle, marginBottom: 0 }}
+        />
+        {showTagDropdown && filteredTags.length > 0 && (
+          <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #ddd', borderRadius: '4px', zIndex: 10, maxHeight: '140px', overflowY: 'auto', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}>
+            {filteredTags.map(tag => (
+              <div
+                key={tag.tag_id}
+                onMouseDown={() => { toggleTag(tag.name); setTagSearch(''); }}
+                style={{ padding: '0.4rem 0.65rem', fontSize: '0.78rem', color: '#333', cursor: 'pointer', borderBottom: '1px solid #f0f0f0' }}
+                onMouseEnter={e => (e.currentTarget.style.background = '#fff8f0')}
+                onMouseLeave={e => (e.currentTarget.style.background = '#fff')}
+              >
+                {tag.name}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
   // ─── Render: form ──────────────────────────────────────────────────────────
 
   const renderForm = () => (
@@ -178,74 +282,50 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
       {/* Title */}
       <div style={{ marginBottom: '1rem' }}>
         <div style={labelStyle}>Title<span style={{ color: '#ef4444' }}>*</span></div>
-        <input
-          autoFocus
-          value={formTitle}
-          onChange={e => setFormTitle(e.target.value)}
+        <input autoFocus value={formTitle} onChange={e => setFormTitle(e.target.value)}
           style={inputStyle}
-          onFocus={e => (e.target.style.borderColor = '#555')}
-          onBlur={e => (e.target.style.borderColor = '#333')}
+          onFocus={e => (e.target.style.borderColor = '#f97316')}
+          onBlur={e => (e.target.style.borderColor = '#ddd')}
         />
       </div>
 
       {/* Outcome */}
       <div style={{ marginBottom: '1rem' }}>
         <div style={labelStyle}>Outcome<span style={{ color: '#ef4444' }}>*</span></div>
-        <textarea
-          value={formOutcome}
-          onChange={e => setFormOutcome(e.target.value)}
-          rows={4}
-          style={{ ...inputStyle, resize: 'vertical', minHeight: '80px' }}
-          onFocus={e => (e.target.style.borderColor = '#555')}
-          onBlur={e => (e.target.style.borderColor = '#333')}
+        <textarea value={formOutcome} onChange={e => setFormOutcome(e.target.value)}
+          rows={4} style={{ ...inputStyle, resize: 'vertical', minHeight: '80px' }}
+          onFocus={e => (e.target.style.borderColor = '#f97316')}
+          onBlur={e => (e.target.style.borderColor = '#ddd')}
         />
       </div>
 
       {/* Description */}
       <div style={{ marginBottom: '1rem' }}>
         <div style={labelStyle}>Description</div>
-        <textarea
-          value={formDescription}
-          onChange={e => setFormDescription(e.target.value)}
-          rows={2}
-          style={{ ...inputStyle, resize: 'vertical' }}
-          onFocus={e => (e.target.style.borderColor = '#555')}
-          onBlur={e => (e.target.style.borderColor = '#333')}
+        <textarea value={formDescription} onChange={e => setFormDescription(e.target.value)}
+          rows={2} style={{ ...inputStyle, resize: 'vertical' }}
+          onFocus={e => (e.target.style.borderColor = '#f97316')}
+          onBlur={e => (e.target.style.borderColor = '#ddd')}
         />
       </div>
 
       {/* Completed At */}
       <div style={{ marginBottom: '1rem' }}>
         <div style={labelStyle}>Completed<span style={{ color: '#ef4444' }}>*</span></div>
-        <input
-          type="datetime-local"
-          value={formCompletedAt}
-          onChange={e => setFormCompletedAt(e.target.value)}
-          style={{ ...inputStyle, colorScheme: 'dark' }}
-          onFocus={e => (e.target.style.borderColor = '#555')}
-          onBlur={e => (e.target.style.borderColor = '#333')}
+        <input type="datetime-local" value={formCompletedAt} onChange={e => setFormCompletedAt(e.target.value)}
+          style={{ ...inputStyle, colorScheme: 'light' }}
+          onFocus={e => (e.target.style.borderColor = '#f97316')}
+          onBlur={e => (e.target.style.borderColor = '#ddd')}
         />
       </div>
 
       {/* Tags */}
-      <div style={{ marginBottom: '1rem' }}>
-        <div style={labelStyle}>Tags <span style={{ color: '#444', textTransform: 'none', letterSpacing: 0 }}>— comma separated</span></div>
-        <input
-          value={formTags}
-          onChange={e => setFormTags(e.target.value)}
-          placeholder="work, personal, project..."
-          style={inputStyle}
-          onFocus={e => (e.target.style.borderColor = '#555')}
-          onBlur={e => (e.target.style.borderColor = '#333')}
-        />
-      </div>
+      {renderTagPicker()}
 
       {/* Context */}
       <div style={{ marginBottom: '1.25rem' }}>
         <div style={labelStyle}>Context</div>
-        <select
-          value={formContextId}
-          onChange={e => setFormContextId(e.target.value)}
+        <select value={formContextId} onChange={e => setFormContextId(e.target.value)}
           style={{ ...inputStyle, cursor: 'pointer' }}
         >
           <option value="">— none —</option>
@@ -258,10 +338,12 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
       {err && <div style={{ color: '#ef4444', fontSize: '0.72rem', marginBottom: '0.75rem' }}>{err}</div>}
 
       <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
-        <button onClick={() => setMode('list')} style={cancelBtnStyle}>cancel</button>
-        <button onClick={handleSave} disabled={saving} style={saveBtnStyle}>
-          {saving ? '...' : mode === 'add' ? 'save completion' : 'save changes'}
-        </button>
+        <button onClick={() => setMode('list')}
+          style={{ background: 'none', border: '1px solid #ddd', color: '#666', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer' }}
+        >cancel</button>
+        <button onClick={handleSave} disabled={saving}
+          style={{ background: '#f97316', border: '1px solid #f97316', color: '#fff', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer', fontWeight: 600 }}
+        >{saving ? '...' : mode === 'add' ? 'save completion' : 'save changes'}</button>
       </div>
     </div>
   );
@@ -271,87 +353,78 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
   const renderList = () => (
     <div style={{ overflowY: 'auto', flex: 1, padding: '0.75rem 1.25rem' }}>
       {loading ? (
-        <div style={{ color: '#555', fontSize: '0.75rem', padding: '1rem 0' }}>Loading...</div>
+        <div style={{ color: '#999', fontSize: '0.75rem', padding: '1rem 0' }}>Loading...</div>
       ) : completions.length === 0 ? (
-        <div style={{ color: '#444', fontSize: '0.75rem', padding: '1rem 0' }}>No completions yet.</div>
+        <div style={{ color: '#bbb', fontSize: '0.75rem', padding: '1rem 0' }}>No completions yet.</div>
       ) : (
         completions.map(c => {
           const isExpanded = expandedId === c.completion_id;
           return (
-            <div
-              key={c.completion_id}
-              style={{ borderBottom: '1px solid #1a1a1a', paddingBottom: '0.75rem', marginBottom: '0.75rem' }}
+            <div key={c.completion_id}
+              style={{ borderBottom: '1px solid #f0f0f0', paddingBottom: '0.75rem', marginBottom: '0.75rem' }}
             >
               {/* Row header */}
-              <div
-                onClick={() => setExpandedId(isExpanded ? null : c.completion_id)}
+              <div onClick={() => setExpandedId(isExpanded ? null : c.completion_id)}
                 style={{ display: 'flex', alignItems: 'baseline', gap: '0.75rem', cursor: 'pointer' }}
               >
-                <span style={{ color: '#f97316', fontSize: '0.65rem', flexShrink: 0 }}>
+                <span style={{ color: '#f97316', fontSize: '0.65rem', flexShrink: 0, fontFamily: 'monospace' }}>
                   {formatDate(c.completed_at)}
                 </span>
-                <span style={{ color: '#e5e5e5', fontSize: '0.82rem', flex: 1 }}>{c.title}</span>
+                <span style={{ color: '#111', fontSize: '0.82rem', flex: 1, fontFamily: 'monospace' }}>{c.title}</span>
                 {c.context && (
-                  <span style={{ color: '#555', fontSize: '0.65rem', flexShrink: 0 }}>{c.context.name}</span>
+                  <span style={{ color: '#555', fontSize: '0.65rem', flexShrink: 0, fontFamily: 'monospace' }}>{c.context.name}</span>
                 )}
-                <span style={{ color: '#444', fontSize: '0.65rem', flexShrink: 0 }}>{isExpanded ? '▴' : '▾'}</span>
+                <span style={{ color: '#bbb', fontSize: '0.65rem', flexShrink: 0 }}>{isExpanded ? '▴' : '▾'}</span>
               </div>
 
               {/* Tags row */}
               {c.tags && c.tags.length > 0 && (
-                <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap', marginTop: '0.3rem', paddingLeft: '0' }}>
+                <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap', marginTop: '0.3rem' }}>
                   {c.tags.map(tag => (
-                    <span key={tag} style={{ fontSize: '0.62rem', color: '#aaa', background: '#1e1e1e', border: '1px solid #2a2a2a', borderRadius: '3px', padding: '0.1rem 0.35rem' }}>{tag}</span>
+                    <span key={tag} style={{ fontSize: '0.62rem', color: '#f97316', background: '#fff8f0', border: '1px solid #fde8d0', borderRadius: '3px', padding: '0.1rem 0.35rem', fontFamily: 'monospace' }}>{tag}</span>
                   ))}
                 </div>
               )}
 
               {/* Expanded detail */}
               {isExpanded && (
-                <div style={{ marginTop: '0.75rem', paddingLeft: '0', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                <div style={{ marginTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
 
-                  {/* Outcome */}
                   <div>
-                    <div style={{ color: '#555', fontSize: '0.62rem', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.2rem' }}>Outcome</div>
-                    <div style={{ color: '#ccc', fontSize: '0.78rem', lineHeight: 1.6, whiteSpace: 'pre-wrap', background: '#111', border: '1px solid #1e1e1e', borderRadius: '4px', padding: '0.5rem 0.65rem' }}>
+                    <div style={{ color: '#999', fontSize: '0.62rem', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.2rem', fontFamily: 'monospace' }}>Outcome</div>
+                    <div style={{ color: '#333', fontSize: '0.78rem', lineHeight: 1.6, whiteSpace: 'pre-wrap', background: '#fafafa', border: '1px solid #eee', borderRadius: '4px', padding: '0.5rem 0.65rem', fontFamily: 'monospace' }}>
                       {c.outcome}
                     </div>
                   </div>
 
-                  {/* Description */}
                   {c.description && (
                     <div>
-                      <div style={{ color: '#555', fontSize: '0.62rem', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.2rem' }}>Description</div>
-                      <div style={{ color: '#888', fontSize: '0.78rem', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{c.description}</div>
+                      <div style={{ color: '#999', fontSize: '0.62rem', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.2rem', fontFamily: 'monospace' }}>Description</div>
+                      <div style={{ color: '#555', fontSize: '0.78rem', lineHeight: 1.6, whiteSpace: 'pre-wrap', fontFamily: 'monospace' }}>{c.description}</div>
                     </div>
                   )}
 
-                  {/* Linked task */}
                   {c.task && (
                     <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                      <span style={{ color: '#555', fontSize: '0.62rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Task</span>
-                      <span style={{ color: '#888', fontSize: '0.75rem' }}>{c.task.title}</span>
+                      <span style={{ color: '#999', fontSize: '0.62rem', textTransform: 'uppercase', letterSpacing: '0.05em', fontFamily: 'monospace' }}>Task</span>
+                      <span style={{ color: '#333', fontSize: '0.75rem', fontFamily: 'monospace' }}>{c.task.title}</span>
                     </div>
                   )}
 
-                  {/* Linked meeting */}
                   {c.meeting && (
                     <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                      <span style={{ color: '#555', fontSize: '0.62rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Meeting</span>
-                      <span style={{ color: '#888', fontSize: '0.75rem' }}>{c.meeting.title}</span>
+                      <span style={{ color: '#999', fontSize: '0.62rem', textTransform: 'uppercase', letterSpacing: '0.05em', fontFamily: 'monospace' }}>Meeting</span>
+                      <span style={{ color: '#333', fontSize: '0.75rem', fontFamily: 'monospace' }}>{c.meeting.title}</span>
                     </div>
                   )}
 
-                  {/* Completed at full */}
-                  <div style={{ color: '#444', fontSize: '0.65rem' }}>{formatDateTime(c.completed_at)}</div>
+                  <div style={{ color: '#bbb', fontSize: '0.65rem', fontFamily: 'monospace' }}>{formatDateTime(c.completed_at)}</div>
 
-                  {/* Edit button */}
                   <div>
-                    <button
-                      onClick={() => openEdit(c)}
-                      style={{ background: 'none', border: '1px solid #2a2a2a', color: '#666', padding: '0.25rem 0.6rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.65rem', cursor: 'pointer' }}
-                      onMouseEnter={e => (e.currentTarget.style.color = '#aaa')}
-                      onMouseLeave={e => (e.currentTarget.style.color = '#666')}
+                    <button onClick={() => openEdit(c)}
+                      style={{ background: 'none', border: '1px solid #e0e0e0', color: '#888', padding: '0.25rem 0.6rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.65rem', cursor: 'pointer' }}
+                      onMouseEnter={e => (e.currentTarget.style.borderColor = '#f97316')}
+                      onMouseLeave={e => (e.currentTarget.style.borderColor = '#e0e0e0')}
                     >edit</button>
                   </div>
                 </div>
@@ -363,37 +436,81 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
     </div>
   );
 
+  // ─── Modal position style ──────────────────────────────────────────────────
+
+  const modalStyle: React.CSSProperties = centered
+    ? { position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: size.w, height: size.h }
+    : { position: 'fixed', top: pos.y, left: pos.x, width: size.w, height: size.h };
+
   // ─── Render: modal shell ───────────────────────────────────────────────────
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 }}>
-      <div style={{ background: '#0d0d0d', border: '1px solid #222', borderRadius: '8px', width: '640px', maxHeight: '80vh', display: 'flex', flexDirection: 'column', fontFamily: 'monospace' }}>
-
-        {/* Modal header */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '1rem 1.25rem', borderBottom: '1px solid #1a1a1a', flexShrink: 0 }}>
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 100 }}>
+      <div
+        ref={modalRef}
+        style={{
+          ...modalStyle,
+          background: '#ffffff',
+          border: '2px solid #f97316',
+          borderRadius: '8px',
+          display: 'flex',
+          flexDirection: 'column',
+          fontFamily: 'monospace',
+          boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+          overflow: 'hidden',
+        }}
+      >
+        {/* Modal header — drag handle */}
+        <div
+          onMouseDown={e => {
+            dragging.current = true;
+            const rect = modalRef.current!.getBoundingClientRect();
+            dragStart.current = { mx: e.clientX, my: e.clientY, x: rect.left, y: rect.top };
+            setCentered(false);
+          }}
+          style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.85rem 1.25rem', borderBottom: '1px solid #fde8d0', cursor: 'grab', userSelect: 'none', background: '#fff8f0', flexShrink: 0 }}
+        >
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <span style={{ color: '#f97316', fontSize: '0.85rem', fontWeight: 600 }}>
+            <span style={{ color: '#f97316', fontSize: '0.85rem', fontWeight: 700 }}>
               {mode === 'list' ? 'Completions' : mode === 'add' ? 'New Completion' : 'Edit Completion'}
             </span>
             {mode === 'list' && (
-              <span style={{ color: '#444', fontSize: '0.7rem' }}>{completions.length} total</span>
+              <span style={{ color: '#bbb', fontSize: '0.7rem' }}>{completions.length} total</span>
             )}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
             {mode === 'list' && (
-              <button
-                onClick={openAdd}
-                style={{ background: '#1a0e00', border: '1px solid #4a2a00', color: '#f97316', padding: '0.25rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
-                onMouseEnter={e => (e.currentTarget.style.background = '#2a1800')}
-                onMouseLeave={e => (e.currentTarget.style.background = '#1a0e00')}
+              <button onClick={openAdd}
+                style={{ background: '#f97316', border: '1px solid #f97316', color: '#fff', padding: '0.25rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer', fontWeight: 600 }}
+                onMouseEnter={e => (e.currentTarget.style.background = '#ea6c00')}
+                onMouseLeave={e => (e.currentTarget.style.background = '#f97316')}
               >+ new</button>
             )}
-            <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: '0.8rem' }}>✕</button>
+            <button onClick={onClose}
+              style={{ background: 'none', border: 'none', color: '#bbb', cursor: 'pointer', fontSize: '1rem', lineHeight: 1 }}
+              onMouseEnter={e => (e.currentTarget.style.color = '#f97316')}
+              onMouseLeave={e => (e.currentTarget.style.color = '#bbb')}
+            >✕</button>
           </div>
         </div>
 
         {/* Modal body */}
-        {mode === 'list' ? renderList() : renderForm()}
+        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+          {mode === 'list' ? renderList() : renderForm()}
+        </div>
+
+        {/* Resize handle */}
+        <div
+          onMouseDown={e => {
+            resizing.current = true;
+            resizeStart.current = { mx: e.clientX, my: e.clientY, w: size.w, h: size.h };
+          }}
+          style={{ position: 'absolute', bottom: 0, right: 0, width: '16px', height: '16px', cursor: 'se-resize', display: 'flex', alignItems: 'flex-end', justifyContent: 'flex-end', padding: '3px' }}
+        >
+          <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
+            <path d="M1 7L7 1M4 7L7 4M7 7L7 7" stroke="#f97316" strokeWidth="1.5" strokeLinecap="round"/>
+          </svg>
+        </div>
 
       </div>
     </div>
@@ -403,25 +520,13 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
 // ─── STYLES ──────────────────────────────────────────────────────────────────
 
 const labelStyle: React.CSSProperties = {
-  color: '#555', fontSize: '0.65rem', marginBottom: '0.35rem',
+  color: '#888', fontSize: '0.65rem', marginBottom: '0.35rem',
   textTransform: 'uppercase', letterSpacing: '0.05em',
 };
 
 const inputStyle: React.CSSProperties = {
-  width: '100%', background: '#111', border: '1px solid #333',
-  color: '#e5e5e5', padding: '0.5rem 0.65rem', borderRadius: '4px',
+  width: '100%', background: '#fafafa', border: '1px solid #ddd',
+  color: '#222', padding: '0.5rem 0.65rem', borderRadius: '4px',
   fontFamily: 'monospace', fontSize: '0.82rem', outline: 'none',
   boxSizing: 'border-box', transition: 'border-color 0.15s',
-};
-
-const cancelBtnStyle: React.CSSProperties = {
-  background: 'none', border: '1px solid #333', color: '#666',
-  padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace',
-  fontSize: '0.75rem', cursor: 'pointer',
-};
-
-const saveBtnStyle: React.CSSProperties = {
-  background: '#1a0e00', border: '1px solid #4a2a00', color: '#f97316',
-  padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace',
-  fontSize: '0.75rem', cursor: 'pointer',
 };
