@@ -121,7 +121,8 @@ function BucketSection({ bucket, tasks, statusMap, onTaskClick }: {
   statusMap: Record<string, string>;
   onTaskClick: (task: Task) => void;
 }) {
-  const [collapsed, setCollapsed] = useState(false);
+  const defaultCollapsed = !['now', 'soon', 'realwork'].includes(bucket.key);
+  const [collapsed, setCollapsed] = useState(defaultCollapsed);
   return (
     <div style={{ marginBottom: '1.25rem' }}>
       <div onClick={() => setCollapsed(c => !c)} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem', cursor: 'pointer', userSelect: 'none' }}>
@@ -163,13 +164,17 @@ function ContextFilter({ contexts, selected, onChange }: {
     <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap', marginBottom: '1rem', paddingBottom: '0.75rem', borderBottom: '1px solid #1a1a1a' }}>
       <button
         onClick={() => onChange(null)}
-        style={{ background: selected === null ? '#1a1a1a' : 'none', border: `1px solid ${selected === null ? '#333' : '#1a1a1a'}`, color: selected === null ? '#ccc' : '#444', padding: '0.2rem 0.6rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.65rem', cursor: 'pointer', transition: 'all 0.15s' }}
+        style={{ background: selected === null ? '#1a1a1a' : 'none', border: `1px solid ${selected === null ? '#f97316' : '#333'}`, color: selected === null ? '#f97316' : '#ffffff', padding: '0.2rem 0.6rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.65rem', cursor: 'pointer', transition: 'all 0.15s' }}
+        onMouseEnter={e => { if (selected !== null) { e.currentTarget.style.color = '#f97316'; e.currentTarget.style.borderColor = '#f97316'; } }}
+        onMouseLeave={e => { if (selected !== null) { e.currentTarget.style.color = '#ffffff'; e.currentTarget.style.borderColor = '#333'; } }}
       >all</button>
       {contexts.map(c => (
         <button
           key={c.context_id}
           onClick={() => onChange(c.context_id)}
-          style={{ background: selected === c.context_id ? '#1a1a1a' : 'none', border: `1px solid ${selected === c.context_id ? '#333' : '#1a1a1a'}`, color: selected === c.context_id ? '#ccc' : '#444', padding: '0.2rem 0.6rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.65rem', cursor: 'pointer', transition: 'all 0.15s' }}
+          style={{ background: selected === c.context_id ? '#1a1a1a' : 'none', border: `1px solid ${selected === c.context_id ? '#f97316' : '#333'}`, color: selected === c.context_id ? '#f97316' : '#ffffff', padding: '0.2rem 0.6rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.65rem', cursor: 'pointer', transition: 'all 0.15s' }}
+          onMouseEnter={e => { if (selected !== c.context_id) { e.currentTarget.style.color = '#f97316'; e.currentTarget.style.borderColor = '#f97316'; } }}
+          onMouseLeave={e => { if (selected !== c.context_id) { e.currentTarget.style.color = '#ffffff'; e.currentTarget.style.borderColor = '#333'; } }}
         >
           {c.name}
         </button>
@@ -177,7 +182,6 @@ function ContextFilter({ contexts, selected, onChange }: {
     </div>
   );
 }
-
 // ─── COMPONENTS: ChatBubble ──────────────────────────────────────────────────
 
 function ChatBubble({ msg }: { msg: ChatMessage }) {
