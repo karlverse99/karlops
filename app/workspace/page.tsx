@@ -187,12 +187,14 @@ function ContextFilter({ contexts, selected, onChange }: {
 
 // ─── COMPONENTS: ChatBubble ──────────────────────────────────────────────────
 
+// ─── COMPONENTS: ChatBubble ──────────────────────────────────────────────────
+
 function ChatBubble({ msg }: { msg: ChatMessage }) {
   const isUser = msg.role === 'user';
   const lines  = msg.content.split('\n');
   return (
-    <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: '0.75rem', paddingLeft: isUser ? '3rem' : '0' }}>
-      <div style={{ maxWidth: '70%', padding: '0.6rem 0.9rem', borderRadius: isUser ? '12px 12px 2px 12px' : '12px 12px 12px 2px', background: isUser ? '#1a2a1a' : '#1a1a1a', border: `1px solid ${isUser ? '#2a4a2a' : '#252525'}`, color: isUser ? '#86efac' : '#d4d4d4', fontSize: '0.82rem', lineHeight: 1.6, marginLeft: isUser ? 'auto' : '0' }}>
+    <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: '0.75rem', paddingLeft: isUser ? '2rem' : '0' }}>
+      <div style={{ maxWidth: '70%', padding: '0.6rem 0.9rem', borderRadius: isUser ? '12px 12px 2px 12px' : '12px 12px 12px 2px', background: isUser ? '#1a2a1a' : '#1a1a1a', border: `1px solid ${isUser ? '#2a4a2a' : '#252525'}`, color: isUser ? '#86efac' : '#d4d4d4', fontSize: '0.82rem', lineHeight: 1.6, marginLeft: '0' }}>
         {lines.map((line, i) => (
           <div key={i} style={{ minHeight: line === '' ? '0.6rem' : undefined }}>
             {isUser ? line : renderMarkdown(line)}
