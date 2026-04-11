@@ -620,18 +620,22 @@ export default function WorkspacePage() {
         />
       )}
 
-      {/* HEADER */}
+  // ─── PAGE: Header ──────────────────────────────────────────────────────────
+
+{/* HEADER */}
       <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 1.25rem', height: '44px', borderBottom: '1px solid #1a1a1a', flexShrink: 0, background: '#0d0d0d' }}>
 
-        {/* LEFT: brand */}
+        {/* LEFT: brand + user */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <img src="/ko-icon.svg" alt="KO" style={{ width: '28px', height: '28px' }} />
           <span style={{ color: '#ffffff', fontSize: '0.9rem', fontWeight: 700, letterSpacing: '0.02em' }}>KarlOps</span>
           <span style={{ color: '#333', fontSize: '0.7rem' }}>|</span>
           <span style={{ color: '#555', fontSize: '0.7rem' }}>{koUser?.implementation_type ?? '...'}</span>
+          <span style={{ color: '#333', fontSize: '0.7rem' }}>|</span>
+          <span style={{ color: '#555', fontSize: '0.7rem' }}>{koUser?.display_name ?? '...'}</span>
         </div>
 
-        {/* RIGHT: FC buttons + counts + user + admin */}
+        {/* RIGHT: FC buttons + counts + admin */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -643,14 +647,14 @@ export default function WorkspacePage() {
               onMouseLeave={e => (e.currentTarget.style.background = '#0d1a0d')}
             >+capture</button>
 
-            {/* +complete(n) */}
+            {/* +complete(n) — parens orange, number white */}
             <button onClick={() => setShowCompletions(true)}
               style={{ background: '#1a0e00', border: '1px solid #4a2a00', color: '#f97316', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
               onMouseEnter={e => (e.currentTarget.style.background = '#2a1800')}
               onMouseLeave={e => (e.currentTarget.style.background = '#1a0e00')}
             >+complete(<span style={{ color: '#ffffff', fontWeight: 600 }}>{completionCount}</span>)</button>
 
-            {/* +meeting(n) */}
+            {/* +meeting(n) — parens blue, number white */}
             <button onClick={() => setShowMeetings(true)}
               style={{ background: '#0a0f1a', border: '1px solid #1a3060', color: '#3b82f6', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
               onMouseEnter={e => (e.currentTarget.style.background = '#0f1a2a')}
@@ -668,17 +672,14 @@ export default function WorkspacePage() {
 
           <span style={{ color: '#333', fontSize: '0.7rem' }}>|</span>
 
-          {/* open count — yellow number, white label */}
-          <span>
-            <span style={{ color: '#fbbf24', fontSize: '0.7rem', fontWeight: 600 }}>{contextFilter ? totalFiltered : totalOpen}</span>
-            <span style={{ color: '#ffffff', fontSize: '0.7rem' }}> open</span>
+          {/* open(n) — white text, yellow number+parens */}
+          <span style={{ color: '#ffffff', fontSize: '0.7rem' }}>
+            open(<span style={{ color: '#fbbf24', fontWeight: 600 }}>{contextFilter ? totalFiltered : totalOpen}</span>)
             {contextFilter && totalOpen !== totalFiltered && (
-              <span style={{ color: '#888', fontSize: '0.7rem' }}> / {totalOpen}</span>
+              <span style={{ color: '#888' }}> / {totalOpen}</span>
             )}
           </span>
 
-          <span style={{ color: '#333', fontSize: '0.7rem' }}>|</span>
-          <span style={{ color: '#ffffff', fontSize: '0.7rem' }}>{koUser?.display_name ?? '...'}</span>
           <span style={{ color: '#333', fontSize: '0.7rem' }}>|</span>
 
           <a href="/admin"
@@ -695,7 +696,6 @@ export default function WorkspacePage() {
 
         </div>
       </header>
-
       {/* MAIN SPLIT */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
 
