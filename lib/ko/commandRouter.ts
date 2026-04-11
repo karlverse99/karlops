@@ -64,7 +64,6 @@ export async function routeCommand(
     const contextBlock = formatContextForPrompt(bundle);
 
     // ── Build conversation history for Anthropic messages array ───────────
-    // Seed with history first, then current input at the end
     const anthropicMessages: { role: 'user' | 'assistant'; content: string }[] = [
       ...bundle.recentMessages.map(m => ({
         role: (m.role === 'karl' ? 'assistant' : 'user') as 'user' | 'assistant',
@@ -72,6 +71,12 @@ export async function routeCommand(
       })),
       { role: 'user', content: input },
     ];
+
+    // Anthropic requires the first message to be role: 'user'
+    // Strip any leading assistant messages from history
+    while (anthropicMessages.length > 1 && anthropicMessages[0].role === 'assistant') {
+      anthropicMessages.shift();
+    }
 
     // ── Call Anthropic ─────────────────────────────────────────────────────
     const systemPrompt = [

@@ -146,36 +146,8 @@ export async function initializeUserWorkspace(
       .insert(contexts.map(c => ({ ...c, user_id: auth_user_id })));
     if (contextError) throw contextError;
 
-    // ── concept_registry ──────────────────────────────────────
-    const concepts = [
-      { concept_key: 'bucket_now',          concept_type: 'bucket', label: 'On Fire',          icon: '🔥', display_order: 1,  kbd_shortcut: 'N',  is_foreign_key: false },
-      { concept_key: 'bucket_soon',         concept_type: 'bucket', label: 'Up Next',          icon: '⚡', display_order: 2,  kbd_shortcut: 'S',  is_foreign_key: false },
-      { concept_key: 'bucket_realwork',     concept_type: 'bucket', label: 'Real Work',        icon: '🔧', display_order: 3,  kbd_shortcut: 'R',  is_foreign_key: false },
-      { concept_key: 'bucket_later',        concept_type: 'bucket', label: 'Later',            icon: '🕐', display_order: 4,  kbd_shortcut: 'L',  is_foreign_key: false },
-      { concept_key: 'bucket_delegate',     concept_type: 'bucket', label: 'Delegated',        icon: '👋', display_order: 5,  kbd_shortcut: 'D',  is_foreign_key: false },
-      { concept_key: 'bucket_capture',      concept_type: 'bucket', label: 'Capture',          icon: '📥', display_order: 6,  kbd_shortcut: 'C',  is_foreign_key: false },
-      { concept_key: 'task',                concept_type: 'object', label: 'Task',              icon: '✅', display_order: 10, kbd_shortcut: 'T',  is_foreign_key: false },
-      { concept_key: 'meeting',             concept_type: 'object', label: 'Meeting',           icon: '📅', display_order: 11, kbd_shortcut: 'M',  is_foreign_key: false },
-      { concept_key: 'completion',          concept_type: 'object', label: 'Completion',        icon: '🏆', display_order: 12, kbd_shortcut: null, is_foreign_key: false },
-      { concept_key: 'external_reference',  concept_type: 'object', label: 'Reference',         icon: '🔗', display_order: 13, kbd_shortcut: null, is_foreign_key: false },
-      { concept_key: 'document_template',   concept_type: 'object', label: 'Document Template', icon: '📄', display_order: 14, kbd_shortcut: null, is_foreign_key: false },
-      { concept_key: 'user_situation',      concept_type: 'object', label: 'My Situation',      icon: '🧭', display_order: 15, kbd_shortcut: null, is_foreign_key: false },
-      { concept_key: 'context',             concept_type: 'object', label: 'Context',           icon: '🏷️', display_order: 16, kbd_shortcut: null, is_foreign_key: true  },
-      { concept_key: 'task_status',         concept_type: 'object', label: 'Status',            icon: '🚦', display_order: 17, kbd_shortcut: null, is_foreign_key: true  },
-      { concept_key: 'tag',                 concept_type: 'object', label: 'Tag',               icon: '🔖', display_order: 18, kbd_shortcut: null, is_foreign_key: false },
-      { concept_key: 'tag_group',           concept_type: 'object', label: 'Tag Group',         icon: '🗂️', display_order: 19, kbd_shortcut: null, is_foreign_key: false },
-      { concept_key: 'action_complete',     concept_type: 'action', label: 'Complete',          icon: '✓',  display_order: 20, kbd_shortcut: null, is_foreign_key: false },
-      { concept_key: 'action_delegate',     concept_type: 'action', label: 'Delegate',          icon: '👋', display_order: 21, kbd_shortcut: null, is_foreign_key: false },
-      { concept_key: 'action_capture',      concept_type: 'action', label: 'Capture',           icon: '📥', display_order: 22, kbd_shortcut: null, is_foreign_key: false },
-      { concept_key: 'action_archive',      concept_type: 'action', label: 'Archive',           icon: '📦', display_order: 23, kbd_shortcut: null, is_foreign_key: false },
-    ];
-
-    const { error: conceptError } = await db
-      .from('concept_registry')
-      .insert(concepts.map(c => ({ ...c, user_id: auth_user_id })));
-    if (conceptError) throw conceptError;
-
     // ── ko_default_registry ───────────────────────────────────
+    // NOTE: concept_registry is a system table — seeded per implementation_type, not per user
     const defaults = [
       { object_type: 'task', field: 'bucket_key',     value: 'capture'                           },
       { object_type: 'task', field: 'task_status_id', value: defaultStatus?.task_status_id ?? '' },

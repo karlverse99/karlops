@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 
-type Tab = 'tag_groups' | 'tags' | 'task_status' | 'defaults' | 'field_meta' | 'list_config' | 'concepts' | 'contexts';
+type Tab = 'tag_groups' | 'tags' | 'task_status' | 'defaults' | 'field_meta' | 'list_config' | 'concepts' | 'contexts' | 'situations';
 interface Row { [key: string]: any; }
 interface FieldMeta {
   object_type: string;
@@ -25,8 +25,8 @@ const TAB_CONFIG: Record<string, { table: string; label: string; idField: string
   defaults:    { table: 'ko_default_registry', label: 'Defaults',      idField: 'ko_default_registry_id', metaKey: 'ko_default_registry' },
   field_meta:  { table: 'ko_field_metadata',   label: 'Field Metadata',idField: 'ko_field_metadata_id',   metaKey: 'ko_field_metadata' },
   list_config: { table: 'ko_list_view_config', label: 'List Config',   idField: 'ko_list_view_config_id', metaKey: 'ko_list_view_config' },
-  concepts:    { table: 'concept_registry',    label: 'Concepts',      idField: 'concept_registry_id',    metaKey: 'concept_registry' },
   contexts:    { table: 'context',             label: 'Contexts',      idField: 'context_id',             metaKey: 'context' },
+  situations:  { table: 'user_situation',      label: 'My Situation',  idField: 'user_situation_id',      metaKey: 'user_situation' },
 };
 
 // ─── API Helpers ──────────────────────────────────────────────────────────────
@@ -231,7 +231,7 @@ function ReadCell({ value, fieldType }: { value: any; fieldType: string }) {
 
 // ─── Metadata-driven Table ────────────────────────────────────────────────────
 
-function MetaTable({ rows, fields, idField, token, table, onRefresh, addForm, fkMap, filterNode }: {
+function MetaTable({ rows, fields, idField, token, table, onRefresh, addForm, fkMap, filterNode, readOnly }: {
   rows: Row[];
   fields: FieldMeta[];
   idField: string;
@@ -241,6 +241,7 @@ function MetaTable({ rows, fields, idField, token, table, onRefresh, addForm, fk
   addForm?: React.ReactNode;
   fkMap: FKMap;
   filterNode?: React.ReactNode;
+  readOnly?: boolean;
 }) {
   const [err, setErr] = useState('');
   const visibleFields = fields
@@ -273,7 +274,7 @@ function MetaTable({ rows, fields, idField, token, table, onRefresh, addForm, fk
     const rawVal = row[f.field];
     const fk = fkMap[f.field];
 
-    if (f.update_behavior === 'editable') {
+    if (!readOnly && f.update_behavior === 'editable') {
       if (fk) return <FKCell value={rawVal} options={fk.options} onSave={v => handleSave(row[idField], f.field, v)} />;
       return <EditCell value={rawVal} fieldType={f.field_type} onSave={v => handleSave(row[idField], f.field, v)} />;
     }
@@ -285,6 +286,11 @@ function MetaTable({ rows, fields, idField, token, table, onRefresh, addForm, fk
   return (
     <div>
       {err && <div style={{ color: '#ef4444', fontSize: '0.72rem', marginBottom: '0.5rem' }}>{err}</div>}
+      {readOnly && (
+        <div style={{ color: '#444', fontSize: '0.7rem', marginBottom: '0.75rem', padding: '0.4rem 0.75rem', background: '#0d0d0d', border: '1px solid #1a1a1a', borderRadius: '4px' }}>
+          🔒 System table — read only. Managed by KarlOps admin.
+        </div>
+      )}
       {filterNode && <div style={{ marginBottom: '1rem' }}>{filterNode}</div>}
       {addForm && <div style={{ marginBottom: '1rem' }}>{addForm}</div>}
       <div style={{ overflowX: 'auto' }}>
@@ -294,10 +300,10 @@ function MetaTable({ rows, fields, idField, token, table, onRefresh, addForm, fk
               {visibleFields.map(f => (
                 <th key={f.field} style={{ textAlign: 'left', color: '#555', fontWeight: 600, padding: '0.3rem 0.5rem', borderBottom: '1px solid #1a1a1a', whiteSpace: 'nowrap', fontSize: '0.7rem' }}>
                   {f.label}
-                  {behaviorBadge(f.insert_behavior, f.update_behavior)}
+                  {!readOnly && behaviorBadge(f.insert_behavior, f.update_behavior)}
                 </th>
               ))}
-              <th style={{ width: '32px' }} />
+              {!readOnly && <th style={{ width: '32px' }} />}
             </tr>
           </thead>
           <tbody>
@@ -314,13 +320,15 @@ function MetaTable({ rows, fields, idField, token, table, onRefresh, addForm, fk
                     {renderCell(row, f)}
                   </td>
                 ))}
-                <td style={{ padding: '0.2rem 0.5rem', textAlign: 'right', verticalAlign: 'top' }}>
-                  <button onClick={() => handleDelete(row[idField])}
-                    style={{ background: 'none', border: 'none', color: '#2a2a2a', cursor: 'pointer', fontSize: '0.72rem' }}
-                    onMouseEnter={e => (e.currentTarget.style.color = '#ef4444')}
-                    onMouseLeave={e => (e.currentTarget.style.color = '#2a2a2a')}
-                  >✕</button>
-                </td>
+                {!readOnly && (
+                  <td style={{ padding: '0.2rem 0.5rem', textAlign: 'right', verticalAlign: 'top' }}>
+                    <button onClick={() => handleDelete(row[idField])}
+                      style={{ background: 'none', border: 'none', color: '#2a2a2a', cursor: 'pointer', fontSize: '0.72rem' }}
+                      onMouseEnter={e => (e.currentTarget.style.color = '#ef4444')}
+                      onMouseLeave={e => (e.currentTarget.style.color = '#2a2a2a')}
+                    >✕</button>
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>
@@ -456,7 +464,6 @@ function DefaultsAddForm({ token, onRefresh }: { token: string; onRefresh: () =>
           {objectTypes.map(t => <option key={t} value={t}>{t}</option>)}
         </select>
       </div>
-
       <div>
         <div style={{ color: '#aaa', fontSize: '0.63rem', marginBottom: '0.2rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Field<span style={{ color: '#ef4444' }}>*</span></div>
         <select value={field} onChange={e => setField(e.target.value)} disabled={!objectType}
@@ -466,7 +473,6 @@ function DefaultsAddForm({ token, onRefresh }: { token: string; onRefresh: () =>
           {fieldOptions.map(f => <option key={f.field} value={f.field}>{f.label}</option>)}
         </select>
       </div>
-
       <div>
         <div style={{ color: '#aaa', fontSize: '0.63rem', marginBottom: '0.2rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Value<span style={{ color: '#ef4444' }}>*</span></div>
         {fkOptions.length > 0 ? (
@@ -482,7 +488,6 @@ function DefaultsAddForm({ token, onRefresh }: { token: string; onRefresh: () =>
           />
         )}
       </div>
-
       <button onClick={handleAdd} disabled={saving}
         style={{ background: '#1a2a1a', border: '1px solid #2a4a2a', color: '#4ade80', padding: '0.35rem 0.75rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer', height: '30px' }}
       >{saving ? '...' : '+ Add'}</button>
@@ -515,7 +520,6 @@ function DefaultsTab({ token }: { token: string }) {
 
   useEffect(() => { load(); }, [load]);
 
-  // Resolve FK values for display
   useEffect(() => {
     const fkFields = allMeta.filter(f => f.fk_table && f.fk_label);
     const uniqueTables = Array.from(new Set(fkFields.map(f => f.fk_table!)));
@@ -710,6 +714,62 @@ function FieldMetaTab({ token }: { token: string }) {
   );
 }
 
+// ─── Concepts Tab — read-only system table ────────────────────────────────────
+
+function ConceptsTab({ token }: { token: string }) {
+  const [rows, setRows] = useState<Row[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState('');
+
+  const load = useCallback(async () => {
+    if (!token) return;
+    setLoading(true);
+    try { setRows(await adminFetch(token, 'concept_registry')); }
+    catch (e: any) { setErr(e.message); }
+    finally { setLoading(false); }
+  }, [token]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const COLS = ['concept_key', 'concept_type', 'implementation_type', 'label', 'icon', 'display_order', 'kbd_shortcut'];
+
+  return (
+    <div>
+      {err && <div style={{ color: '#ef4444', fontSize: '0.72rem', marginBottom: '0.5rem' }}>{err}</div>}
+      <div style={{ color: '#444', fontSize: '0.7rem', marginBottom: '0.75rem', padding: '0.4rem 0.75rem', background: '#0d0d0d', border: '1px solid #1a1a1a', borderRadius: '4px' }}>
+        🔒 System table — read only. Managed by KarlOps admin via SQL.
+      </div>
+      {loading ? <div style={{ color: '#444', fontSize: '0.75rem' }}>Loading...</div> : (
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
+            <thead>
+              <tr>
+                {COLS.map(c => (
+                  <th key={c} style={{ textAlign: 'left', color: '#555', fontWeight: 600, padding: '0.3rem 0.5rem', borderBottom: '1px solid #1a1a1a', whiteSpace: 'nowrap', fontSize: '0.7rem' }}>{c}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(row => (
+                <tr key={row.concept_registry_id} style={{ borderBottom: '1px solid #0f0f0f' }}
+                  onMouseEnter={e => (e.currentTarget.style.background = '#0d0d0d')}
+                  onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                >
+                  {COLS.map(c => (
+                    <td key={c} style={{ padding: '0.2rem 0.5rem' }}>
+                      <ReadCell value={row[c]} fieldType="text" />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function AdminPage() {
@@ -731,7 +791,7 @@ export default function AdminPage() {
   }, []);
 
   const loadTab = useCallback(async (t: Tab) => {
-    if (!token || t === 'field_meta' || t === 'defaults') return;
+    if (!token || t === 'field_meta' || t === 'defaults' || t === 'concepts') return;
     setLoading(true); setError(''); setTagGroupFilter('');
     try {
       const cfg = TAB_CONFIG[t];
@@ -764,7 +824,8 @@ export default function AdminPage() {
 
   const tabContent = () => {
     if (tab === 'field_meta') return <FieldMetaTab token={token} />;
-    if (tab === 'defaults') return <DefaultsTab token={token} />;
+    if (tab === 'defaults')   return <DefaultsTab token={token} />;
+    if (tab === 'concepts')   return <ConceptsTab token={token} />;
 
     const filterNode = tab === 'tags' ? (
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
@@ -779,7 +840,7 @@ export default function AdminPage() {
       </div>
     ) : undefined;
 
-    const canAdd = ['tag_groups', 'tags', 'task_status', 'contexts'].includes(tab);
+    const canAdd = ['tag_groups', 'tags', 'task_status', 'contexts', 'situations'].includes(tab);
 
     return (
       <MetaTable
@@ -804,6 +865,7 @@ export default function AdminPage() {
     { key: 'tags',        label: 'Tags' },
     { key: 'contexts',    label: 'Contexts' },
     { key: 'task_status', label: 'Task Status' },
+    { key: 'situations',  label: 'My Situation' },
     { key: 'defaults',    label: 'Defaults' },
     { key: 'field_meta',  label: 'Field Metadata' },
     { key: 'list_config', label: 'List Config' },

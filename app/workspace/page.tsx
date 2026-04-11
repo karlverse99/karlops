@@ -282,21 +282,21 @@ export default function WorkspacePage() {
 
   // ─── PAGE: State ───────────────────────────────────────────────────────────
 
-  const [koUser, setKoUser]             = useState<KOUser | null>(null);
-  const [tasks, setTasks]               = useState<Task[]>([]);
-  const [buckets, setBuckets]           = useState<BucketDef[]>([]);
-  const [contexts, setContexts]         = useState<Context[]>([]);
-  const [statusMap, setStatusMap]       = useState<Record<string, string>>({});
+  const [koUser, setKoUser]               = useState<KOUser | null>(null);
+  const [tasks, setTasks]                 = useState<Task[]>([]);
+  const [buckets, setBuckets]             = useState<BucketDef[]>([]);
+  const [contexts, setContexts]           = useState<Context[]>([]);
+  const [statusMap, setStatusMap]         = useState<Record<string, string>>({});
   const [contextFilter, setContextFilter] = useState<string | null>(null);
-  const [chat, setChat]                 = useState<ChatMessage[]>([]);
-  const [input, setInput]               = useState('');
-  const [sessionReady, setSessionReady] = useState(false);
-  const [sessionError, setSessionError] = useState('');
-  const [thinking, setThinking]         = useState(false);
-  const [pending, setPending]           = useState<PendingAction | null>(null);
-  const [accessToken, setAccessToken]   = useState('');
-  const [showCapture, setShowCapture]   = useState(false);
-  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+  const [chat, setChat]                   = useState<ChatMessage[]>([]);
+  const [input, setInput]                 = useState('');
+  const [sessionReady, setSessionReady]   = useState(false);
+  const [sessionError, setSessionError]   = useState('');
+  const [thinking, setThinking]           = useState(false);
+  const [pending, setPending]             = useState<PendingAction | null>(null);
+  const [accessToken, setAccessToken]     = useState('');
+  const [showCapture, setShowCapture]     = useState(false);
+  const [selectedTask, setSelectedTask]   = useState<Task | null>(null);
 
   const chatBottomRef = useRef<HTMLDivElement>(null);
   const inputRef      = useRef<HTMLTextAreaElement>(null);
@@ -329,8 +329,8 @@ export default function WorkspacePage() {
 
         setKoUser(koUserData);
 
-        // Load buckets from concept registry
-        await loadBuckets(session.user.id);
+        // Load buckets — uses implementation_type from concept_registry (system table)
+        await loadBuckets(koUserData.implementation_type);
 
         // Load contexts for filter
         await loadContexts(session.user.id);
@@ -359,11 +359,14 @@ export default function WorkspacePage() {
     return () => subscription.unsubscribe();
   }, []);
 
-  const loadBuckets = async (userId: string) => {
+  // ─── PAGE: Data loaders ────────────────────────────────────────────────────
+
+  // Buckets now filtered by implementation_type — concept_registry is a system table
+  const loadBuckets = async (implementationType: string) => {
     const { data } = await supabase
       .from('concept_registry')
       .select('concept_key, label, icon, display_order')
-      .eq('user_id', userId)
+      .eq('implementation_type', implementationType)
       .eq('concept_type', 'bucket')
       .order('display_order');
 
@@ -525,13 +528,10 @@ export default function WorkspacePage() {
 
   // ─── PAGE: Derived state ───────────────────────────────────────────────────
 
-  const filteredTasks = contextFilter
-    ? tasks.filter(t => t.context_id === contextFilter)
-    : tasks;
-
-  const grouped   = groupTasksByBucket(filteredTasks);
-  const totalOpen = tasks.length;
-  const totalFiltered = filteredTasks.length;
+  const filteredTasks  = contextFilter ? tasks.filter(t => t.context_id === contextFilter) : tasks;
+  const grouped        = groupTasksByBucket(filteredTasks);
+  const totalOpen      = tasks.length;
+  const totalFiltered  = filteredTasks.length;
 
   // ─── PAGE: Render ──────────────────────────────────────────────────────────
 

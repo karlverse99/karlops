@@ -11,15 +11,15 @@ export interface ChatMessage {
 }
 
 export interface KarlContextBundle {
-  situationBrief: string;       // who the user is and what they're doing
+  situationBrief: string;        // who the user is and what they're doing
   recentMessages: ChatMessage[]; // last N messages from ko_session
   bucketSnapshot: string;        // open task counts by bucket
-  recentCompletions: string;     // recent completions titles (windowed)
+  recentCompletions: string;     // recent completion titles (windowed)
 }
 
 export interface KarlDeepBundle extends KarlContextBundle {
-  fullCompletions: string;       // all completions in window with outcomes
-  tasksByContext: string;        // open tasks grouped by context
+  fullCompletions: string;  // all completions in window with outcomes
+  tasksByContext: string;   // open tasks grouped by context
 }
 
 // ── Base context — every Karl call ────────────────────────────────────────────
@@ -34,9 +34,9 @@ export async function buildKarlContext(user_id: string): Promise<KarlContextBund
     .eq('is_active', true)
     .maybeSingle();
 
-  const historyDepth      = situation?.chat_history_depth      ?? 15;
-  const completionWindow  = situation?.completion_window_days  ?? 7;
-  const situationBrief    = situation?.brief?.trim() || '';
+  const historyDepth     = situation?.chat_history_depth     ?? 15;
+  const completionWindow = situation?.completion_window_days ?? 7;
+  const situationBrief   = situation?.brief?.trim() || '';
 
   // Load session message history
   const { data: session } = await db
@@ -48,11 +48,13 @@ export async function buildKarlContext(user_id: string): Promise<KarlContextBund
   const allMessages: ChatMessage[] = session?.messages ?? [];
   const recentMessages = allMessages.slice(-historyDepth);
 
-  // Bucket snapshot — open task counts by bucket
+  // Bucket snapshot — open task counts by bucket (excludes completed/archived)
   const { data: tasks } = await db
     .from('task')
     .select('bucket_key')
-    .eq('user_id', user_id);
+    .eq('user_id', user_id)
+    .eq('is_completed', false)
+    .eq('is_archived', false);
 
   const bucketCounts: Record<string, number> = {};
   for (const t of tasks ?? []) {
@@ -118,11 +120,13 @@ export async function buildKarlDeepContext(user_id: string): Promise<KarlDeepBun
       ).join('\n\n')
     : 'no completions in window';
 
-  // Open tasks grouped by context
+  // Open tasks grouped by context (excludes completed/archived)
   const { data: tasks } = await db
     .from('task')
     .select('title, bucket_key, tags, context:context_id(name)')
     .eq('user_id', user_id)
+    .eq('is_completed', false)
+    .eq('is_archived', false)
     .neq('bucket_key', 'capture');
 
   const byContext: Record<string, string[]> = {};

@@ -1,10 +1,21 @@
+// app/api/ko/admin/route.ts
+// KarlOps L — Admin API
+// User-owned tables: filtered by user_id
+// System tables (concept_registry): filtered by implementation_type, read-only
+
 import { NextRequest, NextResponse } from 'next/server';
 import { createSupabaseAdmin } from '@/lib/supabase-server';
 
-const ALLOWED_TABLES = [
+// User-owned tables — all operations, filtered by user_id
+const USER_TABLES = [
   'tag', 'tag_group', 'task_status', 'ko_default_registry',
-  'ko_field_metadata', 'ko_list_view_config', 'concept_registry',
-  'context',
+  'ko_field_metadata', 'ko_list_view_config', 'context',
+  'user_situation',
+];
+
+// System tables — read-only, filtered by implementation_type
+const SYSTEM_TABLES = [
+  'concept_registry',
 ];
 
 async function getUser(req: NextRequest) {
@@ -15,17 +26,45 @@ async function getUser(req: NextRequest) {
   return user;
 }
 
+async function getUserImplementationType(userId: string): Promise<string> {
+  const db = createSupabaseAdmin();
+  const { data } = await db
+    .from('ko_user')
+    .select('implementation_type')
+    .eq('id', userId)
+    .single();
+  return data?.implementation_type ?? 'personal';
+}
+
 export async function GET(req: NextRequest) {
   const user = await getUser(req);
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const { searchParams } = new URL(req.url);
   const table = searchParams.get('table');
-  if (!table || !ALLOWED_TABLES.includes(table)) {
+
+  if (!table) return NextResponse.json({ error: 'Invalid table' }, { status: 400 });
+
+  const db = createSupabaseAdmin();
+
+  // ── System table — filter by implementation_type ───────────────────────────
+  if (SYSTEM_TABLES.includes(table)) {
+    const implType = await getUserImplementationType(user.id);
+    const { data, error } = await (db as any)
+      .from(table)
+      .select('*')
+      .eq('implementation_type', implType)
+      .order('display_order', { ascending: true });
+
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ data });
+  }
+
+  // ── User-owned table — filter by user_id ──────────────────────────────────
+  if (!USER_TABLES.includes(table)) {
     return NextResponse.json({ error: 'Invalid table' }, { status: 400 });
   }
 
-  const db = createSupabaseAdmin();
   const { data, error } = await (db as any)
     .from(table)
     .select('*')
@@ -42,7 +81,13 @@ export async function POST(req: NextRequest) {
 
   const body = await req.json();
   const { table, record } = body;
-  if (!table || !ALLOWED_TABLES.includes(table)) {
+
+  // System tables are read-only
+  if (SYSTEM_TABLES.includes(table)) {
+    return NextResponse.json({ error: 'System table is read-only' }, { status: 403 });
+  }
+
+  if (!table || !USER_TABLES.includes(table)) {
     return NextResponse.json({ error: 'Invalid table' }, { status: 400 });
   }
 
@@ -63,7 +108,13 @@ export async function PATCH(req: NextRequest) {
 
   const body = await req.json();
   const { table, id_field, id_value, updates } = body;
-  if (!table || !ALLOWED_TABLES.includes(table)) {
+
+  // System tables are read-only
+  if (SYSTEM_TABLES.includes(table)) {
+    return NextResponse.json({ error: 'System table is read-only' }, { status: 403 });
+  }
+
+  if (!table || !USER_TABLES.includes(table)) {
     return NextResponse.json({ error: 'Invalid table' }, { status: 400 });
   }
 
@@ -86,7 +137,13 @@ export async function DELETE(req: NextRequest) {
 
   const body = await req.json();
   const { table, id_field, id_value } = body;
-  if (!table || !ALLOWED_TABLES.includes(table)) {
+
+  // System tables are read-only
+  if (SYSTEM_TABLES.includes(table)) {
+    return NextResponse.json({ error: 'System table is read-only' }, { status: 403 });
+  }
+
+  if (!table || !USER_TABLES.includes(table)) {
     return NextResponse.json({ error: 'Invalid table' }, { status: 400 });
   }
 
