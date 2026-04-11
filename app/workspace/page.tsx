@@ -100,34 +100,19 @@ function TaskPill({ task, bucket, statusLabel, taskIndex, onClick }: {
       onMouseEnter={e => (e.currentTarget.style.background = '#1c1c1c')}
       onMouseLeave={e => (e.currentTarget.style.background = '#161616')}
     >
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.4rem' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', overflow: 'hidden' }}>
         <span style={{ color: bucket.accent, fontSize: '0.62rem', fontWeight: 600, flexShrink: 0, opacity: 0.5 }}>{BUCKET_ID[task.bucket_key] ?? task.bucket_key}{taskIndex}</span>
-        <span style={{ color: '#e5e5e5', fontSize: '0.82rem', lineHeight: 1.4 }}>{task.title}</span>
+        <span style={{ color: '#e5e5e5', fontSize: '0.82rem', flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{task.title}</span>
+        {!isCaptured && statusLabel && statusLabel !== 'Open' && (
+          <span style={{ fontSize: '0.62rem', color: '#888', background: '#1a1a1a', border: '1px solid #2a2a2a', borderRadius: '3px', padding: '0.1rem 0.35rem', flexShrink: 0 }}>{statusLabel}</span>
+        )}
+        {!isCaptured && task.target_date && (
+          <span style={{ fontSize: '0.62rem', color: '#666', flexShrink: 0 }}>{formatDate(task.target_date)}</span>
+        )}
       </div>
-
-      {!isCaptured && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.3rem', flexWrap: 'wrap' }}>
-          {statusLabel && statusLabel !== 'Open' && (
-            <span style={{ fontSize: '0.62rem', color: '#888', background: '#1a1a1a', border: '1px solid #2a2a2a', borderRadius: '3px', padding: '0.1rem 0.35rem' }}>
-              {statusLabel}
-            </span>
-          )}
-          {task.target_date && (
-            <span style={{ fontSize: '0.62rem', color: '#666' }}>{formatDate(task.target_date)}</span>
-          )}
-          {task.tags?.length > 0 && (
-            <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
-              {task.tags.map(tag => (
-                <span key={tag} style={{ fontSize: '0.65rem', color: '#aaa', background: '#1e1e1e', border: '1px solid #2a2a2a', borderRadius: '3px', padding: '0.1rem 0.35rem' }}>{tag}</span>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 }
-
 // ─── COMPONENTS: BucketSection ───────────────────────────────────────────────
 
 function BucketSection({ bucket, tasks, statusMap, onTaskClick }: {
@@ -141,7 +126,7 @@ function BucketSection({ bucket, tasks, statusMap, onTaskClick }: {
     <div style={{ marginBottom: '1.25rem' }}>
       <div onClick={() => setCollapsed(c => !c)} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem', cursor: 'pointer', userSelect: 'none' }}>
         <span style={{ fontSize: '0.75rem' }}>{bucket.icon}</span>
-        <span style={{ color: bucket.accent, fontSize: '0.7rem', fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase' }}>{bucket.label}</span>
+        <span style={{ color: bucket.accent, fontSize: '0.72rem', fontWeight: 600, marginLeft: 'auto' }}>{tasks.length > 0 ? tasks.length : '—'}</span>
         <span style={{ color: '#888', fontSize: '0.65rem', marginLeft: 'auto' }}>{tasks.length > 0 ? tasks.length : '—'}</span>
         <span style={{ color: '#888', fontSize: '0.65rem' }}>{collapsed ? '▸' : '▾'}</span>
       </div>
@@ -625,14 +610,14 @@ export default function WorkspacePage() {
 {/* HEADER */}
       <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 1.25rem', height: '44px', borderBottom: '1px solid #1a1a1a', flexShrink: 0, background: '#0d0d0d' }}>
 
-        {/* LEFT: brand + user */}
+{/* LEFT: brand + user */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <img src="/ko-icon.svg" alt="KO" style={{ width: '28px', height: '28px' }} />
           <span style={{ color: '#ffffff', fontSize: '0.9rem', fontWeight: 700, letterSpacing: '0.02em' }}>KarlOps</span>
-          <span style={{ color: '#333', fontSize: '0.7rem' }}>|</span>
-          <span style={{ color: '#555', fontSize: '0.7rem' }}>{koUser?.implementation_type ?? '...'}</span>
-          <span style={{ color: '#333', fontSize: '0.7rem' }}>|</span>
-          <span style={{ color: '#555', fontSize: '0.7rem' }}>{koUser?.display_name ?? '...'}</span>
+          <span style={{ color: '#555', fontSize: '0.7rem' }}>|</span>
+          <span style={{ color: '#aaa', fontSize: '0.7rem' }}>{koUser?.implementation_type ?? '...'}</span>
+          <span style={{ color: '#555', fontSize: '0.7rem' }}>|</span>
+          <span style={{ color: '#aaa', fontSize: '0.7rem' }}>{koUser?.display_name ?? '...'}</span>
         </div>
 
         {/* RIGHT: FC buttons + counts + admin */}
