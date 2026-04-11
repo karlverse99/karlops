@@ -77,11 +77,10 @@ function TagPicker({ selected, allTags, tagGroups, onChange }: {
   tagGroups: TagGroup[];
   onChange: (tags: string[]) => void;
 }) {
-  const [open, setOpen]       = useState(false);
-  const [search, setSearch]   = useState('');
-  const dropdownRef           = useRef<HTMLDivElement>(null);
+  const [open, setOpen]     = useState(false);
+  const [search, setSearch] = useState('');
+  const dropdownRef         = useRef<HTMLDivElement>(null);
 
-  // Close on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
@@ -113,7 +112,6 @@ function TagPicker({ selected, allTags, tagGroups, onChange }: {
 
   return (
     <div ref={dropdownRef} style={{ position: 'relative' }}>
-      {/* Selected pills + open trigger */}
       <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap', marginBottom: '0.4rem', minHeight: '1.5rem' }}>
         {selected.map(tag => (
           <span key={tag} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', background: '#1a2a1a', border: '1px solid #2a4a2a', borderRadius: '4px', padding: '0.15rem 0.5rem', fontSize: '0.72rem', color: '#4ade80' }}>
@@ -129,10 +127,8 @@ function TagPicker({ selected, allTags, tagGroups, onChange }: {
         </div>
       </div>
 
-      {/* Dropdown */}
       {open && (
         <div style={{ position: 'absolute', top: '100%', left: 0, zIndex: 200, background: '#0d0d0d', border: '1px solid #222', borderRadius: '6px', padding: '0.5rem', minWidth: '220px', maxHeight: '260px', overflowY: 'auto', boxShadow: '0 4px 20px rgba(0,0,0,0.6)' }}>
-          {/* Search */}
           <input
             autoFocus
             value={search}
@@ -140,8 +136,6 @@ function TagPicker({ selected, allTags, tagGroups, onChange }: {
             placeholder="Search tags..."
             style={{ width: '100%', background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.3rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', outline: 'none', marginBottom: '0.5rem', boxSizing: 'border-box' }}
           />
-
-          {/* Tag groups */}
           {tagGroups.map(group => {
             const groupTags = tagsByGroup[group.tag_group_id] ?? [];
             if (groupTags.length === 0) return null;
@@ -162,8 +156,6 @@ function TagPicker({ selected, allTags, tagGroups, onChange }: {
               </div>
             );
           })}
-
-          {/* Ungrouped */}
           {(tagsByGroup['__ungrouped__'] ?? []).map(tag => (
             <div key={tag.tag_id}
               onClick={() => toggle(tag.name)}
@@ -173,7 +165,6 @@ function TagPicker({ selected, allTags, tagGroups, onChange }: {
               {tag.name}
             </div>
           ))}
-
           {filtered.length === 0 && (
             <div style={{ color: '#444', fontSize: '0.75rem', padding: '0.5rem' }}>No tags found</div>
           )}
@@ -212,6 +203,12 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
   const [loading, setLoading]     = useState(true);
   const [saving, setSaving]       = useState(false);
   const [err, setErr]             = useState('');
+
+  // ─── Complete flow state ─────────────────────────────────────────────────
+  const [completing, setCompleting]       = useState(false);
+  const [completionTitle, setCompletionTitle] = useState('');
+  const [completionOutcome, setCompletionOutcome] = useState('');
+  const [completionSaving, setCompletionSaving]   = useState(false);
 
   // ─── Drag & resize state ────────────────────────────────────────────────
   const [pos, setPos]   = useState({ x: window.innerWidth / 2 - DEFAULT_W / 2, y: window.innerHeight / 2 - DEFAULT_H / 2 });
@@ -266,18 +263,19 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
           .from('ko_field_metadata').select('*')
           .eq('user_id', userId).eq('object_type', 'task').order('display_order');
 
-        const { data: tagData }    = await supabase.from('tag').select('tag_id, name, tag_group_id').eq('user_id', userId);
-        const { data: groupData }  = await supabase.from('tag_group').select('tag_group_id, name').eq('user_id', userId).order('display_order');
+        const { data: tagData }     = await supabase.from('tag').select('tag_id, name, tag_group_id').eq('user_id', userId);
+        const { data: groupData }   = await supabase.from('tag_group').select('tag_group_id, name').eq('user_id', userId).order('display_order');
         const { data: contextData } = await supabase.from('context').select('context_id, name').eq('user_id', userId).eq('is_archived', false);
-        const { data: statusData } = await supabase.from('task_status').select('task_status_id, label').eq('user_id', userId).order('display_order');
+        const { data: statusData }  = await supabase.from('task_status').select('task_status_id, label').eq('user_id', userId).order('display_order');
 
         setTask(taskData);
         setDraft(taskData);
+        setCompletionTitle(taskData.title ?? '');
         setFields((metaData ?? []) as FieldMeta[]);
         setAllTags(tagData ?? []);
         setTagGroups(groupData ?? []);
         setFkData({
-          context_id:     (contextData ?? []).map(r => ({ value: r.context_id,    label: r.name })),
+          context_id:     (contextData ?? []).map(r => ({ value: r.context_id,     label: r.name })),
           task_status_id: (statusData  ?? []).map(r => ({ value: r.task_status_id, label: r.label })),
         });
       } catch (e: any) {
@@ -320,6 +318,39 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
     }
   };
 
+  // ─── Complete ─────────────────────────────────────────────────────────────
+  const handleCompleteConfirm = async () => {
+    if (!completionTitle.trim()) { setErr('Completion title is required'); return; }
+    setCompletionSaving(true); setErr('');
+    try {
+      // Insert completion record
+      const { error: compErr } = await supabase.from('completion').insert({
+        user_id:      userId,
+        task_id:      taskId,
+        title:        completionTitle.trim(),
+        outcome:      completionOutcome.trim() || null,
+        completed_at: new Date().toISOString().slice(0, 10),
+        tags:         draft.tags ?? [],
+        context_id:   draft.context_id || null,
+      });
+      if (compErr) throw compErr;
+
+      // Mark task complete
+      const { error: taskErr } = await supabase.from('task').update({
+        is_completed:  true,
+        completed_at:  new Date().toISOString(),
+      }).eq('task_id', taskId);
+      if (taskErr) throw taskErr;
+
+      onSaved();
+      onClose();
+    } catch (e: any) {
+      setErr(e.message);
+    } finally {
+      setCompletionSaving(false);
+    }
+  };
+
   // ─── Render ──────────────────────────────────────────────────────────────
 
   const specialFields = ['tags', 'bucket_key', 'is_delegated', 'delegated_to', ...SYSTEM_FIELDS];
@@ -335,7 +366,6 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
   const missing = missingForCuration(draft);
 
   return (
-    // Transparent overlay — doesn't block interaction with background
     <div style={{ position: 'fixed', inset: 0, zIndex: 100, pointerEvents: 'none' }}>
       <div
         ref={modalRef}
@@ -362,8 +392,10 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
           style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.75rem 1rem', background: '#111', borderBottom: '1px solid #1a1a1a', cursor: 'grab', flexShrink: 0, userSelect: 'none' }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <span style={{ color: '#fff', fontSize: '0.82rem', fontWeight: 600 }}>Task Detail</span>
-            {!loading && (
+            <span style={{ color: '#fff', fontSize: '0.82rem', fontWeight: 600 }}>
+              {completing ? 'Complete Task' : 'Task Detail'}
+            </span>
+            {!loading && !completing && (
               curated
                 ? <span style={{ fontSize: '0.65rem', color: '#4ade80', background: '#0d1a0d', border: '1px solid #1a3a1a', borderRadius: '4px', padding: '0.15rem 0.4rem' }}>✓ Curated</span>
                 : <span style={{ fontSize: '0.65rem', color: '#f97316', background: '#1a0e00', border: '1px solid #3a2000', borderRadius: '4px', padding: '0.15rem 0.4rem' }}>Needs {missing.join(' & ')}</span>
@@ -376,7 +408,45 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
         <div style={{ flex: 1, overflowY: 'auto', padding: '1rem', scrollbarWidth: 'thin', scrollbarColor: '#222 transparent' }}>
           {loading ? (
             <div style={{ color: '#444', fontSize: '0.8rem', textAlign: 'center', padding: '2rem' }}>Loading...</div>
+          ) : completing ? (
+
+            // ─── COMPLETION FORM ────────────────────────────────────────────
+            <div>
+              <div style={{ color: '#aaa', fontSize: '0.78rem', marginBottom: '1.25rem', lineHeight: 1.5 }}>
+                Log what you accomplished. The title is pre-filled from the task — edit if needed.
+              </div>
+
+              <div style={fieldGroup}>
+                <div style={labelStyle}>What did you complete<span style={{ color: '#ef4444' }}>*</span></div>
+                <input
+                  autoFocus
+                  value={completionTitle}
+                  onChange={e => setCompletionTitle(e.target.value)}
+                  style={inputStyle}
+                />
+              </div>
+
+              <div style={fieldGroup}>
+                <div style={labelStyle}>Outcome / what happened</div>
+                <textarea
+                  value={completionOutcome}
+                  onChange={e => setCompletionOutcome(e.target.value)}
+                  placeholder="What was the result? What changed? What did you learn?"
+                  rows={5}
+                  style={{ ...inputStyle, resize: 'vertical', height: 'auto' }}
+                />
+              </div>
+
+              <div style={{ color: '#444', fontSize: '0.68rem', marginTop: '0.5rem' }}>
+                Tags and context will be inherited from the task. Completed today.
+              </div>
+
+              {err && <div style={{ color: '#ef4444', fontSize: '0.72rem', marginTop: '0.75rem' }}>{err}</div>}
+            </div>
+
           ) : (
+
+            // ─── TASK DETAIL FORM ───────────────────────────────────────────
             <>
               {/* BUCKET */}
               <div style={fieldGroup}>
@@ -410,12 +480,7 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
                   ) : f.field_type === 'boolean' ? (
                     <input type="checkbox" checked={!!draft[f.field]} onChange={e => setDraft(d => ({ ...d, [f.field]: e.target.checked }))} style={{ accentColor: '#4ade80', cursor: 'pointer', width: '16px', height: '16px' }} />
                   ) : f.field_type === 'date' ? (
-                    <input
-                      type="date"
-                      value={draft[f.field] ?? ''}
-                      onChange={e => setDraft(d => ({ ...d, [f.field]: e.target.value }))}
-                      style={{ ...inputStyle, colorScheme: 'dark', cursor: 'pointer' }}
-                    />
+                    <input type="date" value={draft[f.field] ?? ''} onChange={e => setDraft(d => ({ ...d, [f.field]: e.target.value }))} style={{ ...inputStyle, colorScheme: 'dark', cursor: 'pointer' }} />
                   ) : f.field === 'description' || f.field === 'notes' ? (
                     <textarea value={draft[f.field] ?? ''} onChange={e => setDraft(d => ({ ...d, [f.field]: e.target.value }))} rows={3} style={{ ...inputStyle, resize: 'vertical', height: 'auto' }} />
                   ) : (
@@ -445,11 +510,41 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
         </div>
 
         {/* FOOTER */}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', padding: '0.75rem 1rem', borderTop: '1px solid #1a1a1a', background: '#111', flexShrink: 0 }}>
-          <button onClick={onClose} style={cancelBtn}>cancel</button>
-          <button onClick={handleSave} disabled={saving || loading} style={{ ...saveBtn, opacity: saving ? 0.6 : 1 }}>
-            {saving ? 'saving...' : 'save'}
-          </button>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem', padding: '0.75rem 1rem', borderTop: '1px solid #1a1a1a', background: '#111', flexShrink: 0 }}>
+
+          {completing ? (
+            // ─── COMPLETION FOOTER ────────────────────────────────────────
+            <>
+              <button
+                onClick={() => { setCompleting(false); setErr(''); }}
+                style={cancelBtn}
+              >← back</button>
+              <button
+                onClick={handleCompleteConfirm}
+                disabled={completionSaving || !completionTitle.trim()}
+                style={{ ...completeBtn, opacity: completionSaving || !completionTitle.trim() ? 0.5 : 1 }}
+              >
+                {completionSaving ? 'logging...' : '✓ log completion'}
+              </button>
+            </>
+          ) : (
+            // ─── NORMAL FOOTER ────────────────────────────────────────────
+            <>
+              <button
+                onClick={() => { setCompleting(true); setErr(''); }}
+                disabled={loading}
+                style={completeBtn}
+              >
+                ✓ complete
+              </button>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <button onClick={onClose} style={cancelBtn}>cancel</button>
+                <button onClick={handleSave} disabled={saving || loading} style={{ ...saveBtn, opacity: saving ? 0.6 : 1 }}>
+                  {saving ? 'saving...' : 'save'}
+                </button>
+              </div>
+            </>
+          )}
         </div>
 
         {/* RESIZE HANDLE */}
@@ -496,6 +591,12 @@ const cancelBtn: React.CSSProperties = {
 
 const saveBtn: React.CSSProperties = {
   background: '#1a2a1a', border: '1px solid #2a4a2a', color: '#4ade80',
+  padding: '0.4rem 0.9rem', borderRadius: '4px', fontFamily: 'monospace',
+  fontSize: '0.75rem', cursor: 'pointer',
+};
+
+const completeBtn: React.CSSProperties = {
+  background: '#1a1000', border: '1px solid #3a2800', color: '#f97316',
   padding: '0.4rem 0.9rem', borderRadius: '4px', fontFamily: 'monospace',
   fontSize: '0.75rem', cursor: 'pointer',
 };
