@@ -624,12 +624,11 @@ export default function WorkspacePage() {
               onMouseLeave={e => (e.currentTarget.style.background = '#0d1a0d')}
             >+capture</button>
 
-            {/* +complete */}
-            <button onClick={() => setShowCompletions(true)}
-              style={{ background: '#1a0e00', border: '1px solid #4a2a00', color: '#f97316', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
-              onMouseEnter={e => (e.currentTarget.style.background = '#2a1800')}
-              onMouseLeave={e => (e.currentTarget.style.background = '#1a0e00')}
-            >+complete</button>
+<button onClick={() => setShowCompletions(true)}
+  style={{ background: '#1a0e00', border: '1px solid #4a2a00', color: '#f97316', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
+  onMouseEnter={e => (e.currentTarget.style.background = '#2a1800')}
+  onMouseLeave={e => (e.currentTarget.style.background = '#1a0e00')}
+>+complete(<span style={{ color: '#e5e5e5', fontWeight: 600 }}>{completionCount}</span>)</button>
 
             {/* done count */}
             <span>
