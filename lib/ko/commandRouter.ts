@@ -9,7 +9,13 @@ import {
   appendSessionMessage,
 } from '@/lib/ko/buildKarlContext';
 
-export type IntentType = 'capture_task' | 'capture_tasks' | 'question' | 'command' | 'unclear';
+export type IntentType =
+  | 'capture_task'
+  | 'capture_tasks'
+  | 'capture_completion'
+  | 'question'
+  | 'command'
+  | 'unclear';
 
 export interface RouterResult {
   intent: IntentType;
@@ -73,7 +79,6 @@ export async function routeCommand(
     ];
 
     // Anthropic requires the first message to be role: 'user'
-    // Strip any leading assistant messages from history
     while (anthropicMessages.length > 1 && anthropicMessages[0].role === 'assistant') {
       anthropicMessages.shift();
     }
@@ -90,17 +95,23 @@ export async function routeCommand(
       '## Available Object Types',
       objectSummaries,
       '',
+      '## Task Identifiers',
+      'Tasks in the current load are identified as [Bucket-N] (e.g. [Now-1], [RW-2], [Del-1]).',
+      'When the user references a task by identifier or title, use it to act on that specific task.',
+      '',
       '## Intent Classification',
       'Classify into one of these intents:',
       '- capture_task: A single clear action item. Extract a concise title.',
       '- capture_tasks: Multiple action items in one message. Extract all titles.',
+      '- capture_completion: User is logging something they completed or accomplished. Extract title and outcome.',
       '- question: User is asking for information or analysis. Answer using their situation and history.',
       '- command: Explicit system command (show, list, update, delete, move, etc.)',
       '- unclear: Ambiguous — needs more info.',
       '',
       '## Rules',
       '- Be conservative. Commentary, opinions, or meta-statements = question or unclear.',
-      '- Only capture_* if there are clear actionable items.',
+      '- Only capture_* if there are clear actionable items or completions.',
+      '- "I just did X", "I finished X", "I completed X", "log that I did X" → capture_completion.',
       '- Extract the most concise title possible.',
       '- For capture_tasks, extract ALL distinct tasks from the input.',
       '- Never capture philosophical statements or system commentary as tasks.',
@@ -117,6 +128,9 @@ export async function routeCommand(
       '',
       'For multiple tasks:',
       '{ "intent": "capture_tasks", "titles": ["task one", "task two"], "summary": "X tasks found", "response": "Karl\'s response listing what was found" }',
+      '',
+      'For completion:',
+      '{ "intent": "capture_completion", "title": "what was completed", "outcome": "what happened / result", "response": "Karl\'s response" }',
       '',
       'For question/command/unclear:',
       '{ "intent": "question", "response": "Karl\'s conversational response" }',
@@ -168,6 +182,17 @@ export async function routeCommand(
       return {
         intent: 'capture_tasks',
         payload: { titles: parsed.titles, summary: parsed.summary ?? `${parsed.titles?.length} tasks` },
+        response: karlResponse,
+      };
+    }
+
+    if (intent === 'capture_completion') {
+      return {
+        intent: 'capture_completion',
+        payload: {
+          title:   parsed.title,
+          outcome: parsed.outcome ?? '',
+        },
         response: karlResponse,
       };
     }

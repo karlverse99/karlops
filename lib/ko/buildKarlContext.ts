@@ -13,7 +13,7 @@ export interface ChatMessage {
 export interface KarlContextBundle {
   situationBrief: string;        // who the user is and what they're doing
   recentMessages: ChatMessage[]; // last N messages from ko_session
-  bucketSnapshot: string;        // open task counts by bucket
+  bucketSnapshot: string;        // open tasks with identifiers by bucket
   recentCompletions: string;     // recent completion titles (windowed)
 }
 
@@ -21,6 +21,16 @@ export interface KarlDeepBundle extends KarlContextBundle {
   fullCompletions: string;  // all completions in window with outcomes
   tasksByContext: string;   // open tasks grouped by context
 }
+
+// Bucket identifier prefixes for chat references
+const BUCKET_PREFIX: Record<string, string> = {
+  now:      'Now',
+  soon:     'Soon',
+  realwork: 'RW',
+  later:    'Later',
+  delegate: 'Del',
+  capture:  'Cap',
+};
 
 // ── Base context — every Karl call ────────────────────────────────────────────
 export async function buildKarlContext(user_id: string): Promise<KarlContextBundle> {
@@ -48,21 +58,41 @@ export async function buildKarlContext(user_id: string): Promise<KarlContextBund
   const allMessages: ChatMessage[] = session?.messages ?? [];
   const recentMessages = allMessages.slice(-historyDepth);
 
-  // Bucket snapshot — open task counts by bucket (excludes completed/archived)
+  // Bucket snapshot — titled tasks with identifiers, capture as count only
   const { data: tasks } = await db
     .from('task')
-    .select('bucket_key')
+    .select('task_id, title, bucket_key')
     .eq('user_id', user_id)
     .eq('is_completed', false)
-    .eq('is_archived', false);
+    .eq('is_archived', false)
+    .order('created_at', { ascending: true });
 
-  const bucketCounts: Record<string, number> = {};
+  const byBucket: Record<string, { task_id: string; title: string }[]> = {};
   for (const t of tasks ?? []) {
-    bucketCounts[t.bucket_key] = (bucketCounts[t.bucket_key] ?? 0) + 1;
+    if (!byBucket[t.bucket_key]) byBucket[t.bucket_key] = [];
+    byBucket[t.bucket_key].push({ task_id: t.task_id, title: t.title });
   }
-  const bucketSnapshot = Object.entries(bucketCounts)
-    .map(([k, v]) => `${k}: ${v}`)
-    .join(', ') || 'no open tasks';
+
+  const bucketOrder = ['now', 'soon', 'realwork', 'later', 'delegate', 'capture'];
+  const snapshotLines: string[] = [];
+
+  for (const bucket of bucketOrder) {
+    const items = byBucket[bucket] ?? [];
+    if (items.length === 0) continue;
+    const prefix = BUCKET_PREFIX[bucket] ?? bucket;
+
+    if (bucket === 'capture') {
+      // Capture: count only — no point listing uncurated tasks in every prompt
+      snapshotLines.push(`capture: ${items.length} uncurated tasks`);
+    } else {
+      snapshotLines.push(`${bucket}:`);
+      items.forEach((t, i) => {
+        snapshotLines.push(`  [${prefix}-${i + 1}] ${t.title}`);
+      });
+    }
+  }
+
+  const bucketSnapshot = snapshotLines.join('\n') || 'no open tasks';
 
   // Recent completions — titles only, windowed
   const windowStart = new Date();
@@ -156,7 +186,7 @@ export function formatContextForPrompt(bundle: KarlContextBundle): string {
     parts.push(`## User Situation\nNot yet configured. Encourage the user to write their situation brief.`);
   }
 
-  parts.push(`## Current Task Load\n${bundle.bucketSnapshot}`);
+  parts.push(`## Current Task Load\nTasks are identified as [Bucket-N] for reference in commands.\n${bundle.bucketSnapshot}`);
   parts.push(`## Recent Completions\n${bundle.recentCompletions}`);
 
   if ('fullCompletions' in bundle) {

@@ -1,7 +1,11 @@
+// app/api/ko/command/route.ts
+// KarlOps L — Command execution route
+
 import { NextRequest, NextResponse } from 'next/server';
 import { createSupabaseAdmin } from '@/lib/supabase-server';
 import { routeCommand } from '@/lib/ko/commandRouter';
 import { captureTask } from '@/lib/ko/commands/captureTask';
+import { captureCompletion } from '@/lib/ko/commands/captureCompletion';
 
 async function getUser(req: NextRequest) {
   const token = req.headers.get('authorization')?.replace('Bearer ', '');
@@ -52,6 +56,18 @@ export async function POST(req: NextRequest) {
           response: failed.length > 0
             ? `Captured ${success.length} task${success.length > 1 ? 's' : ''}. ${failed.length} failed.`
             : `Captured ${success.length} task${success.length > 1 ? 's' : ''} into your capture bucket.`,
+        });
+      }
+
+      // Standalone completion capture
+      if (pending.intent === 'capture_completion') {
+        const result = await captureCompletion(user.id, pending.payload);
+        if (!result.success) throw new Error(result.error);
+        return NextResponse.json({
+          success: true,
+          intent: 'capture_completion',
+          completion: result.completion,
+          response: `Logged — **${result.completion?.title}** is in your evidence record.`,
         });
       }
     }
