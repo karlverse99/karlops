@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
+export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
   const { searchParams, origin } = new URL(req.url);
@@ -24,16 +25,15 @@ export async function GET(req: NextRequest) {
     );
 
     const { error } = await supabase.auth.exchangeCodeForSession(code);
-
-
-if (error) {
-  console.error('[auth/callback] exchangeCodeForSession error:', error);
-  return NextResponse.redirect(`${origin}/login?error=${encodeURIComponent(error.message)}`);
-}
-
-
+    if (!error) {
+      const response = NextResponse.redirect(`${origin}/workspace`);
+      response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+      return response;
+    }
     console.error('[auth/callback] exchangeCodeForSession error:', error);
   }
 
-  return NextResponse.redirect(`${origin}/login?error=auth_callback_failed`);
+  const response = NextResponse.redirect(`${origin}/login?error=auth_callback_failed`);
+  response.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+  return response;
 }
