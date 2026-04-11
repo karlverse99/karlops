@@ -586,29 +586,73 @@ export default function WorkspacePage() {
           onSaved={() => { loadTasks(koUser.id); setSelectedTask(null); }}
         />
       )}
+{/* HEADER */}
+<header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 1.25rem', height: '44px', borderBottom: '1px solid #1a1a1a', flexShrink: 0, background: '#0d0d0d' }}>
+  
+  {/* LEFT: brand */}
+  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+    <span style={{ color: '#ffffff', fontSize: '0.9rem', fontWeight: 700, letterSpacing: '0.02em' }}>KarlOps</span>
+    <span style={{ color: '#333', fontSize: '0.7rem' }}>|</span>
+    <span style={{ color: '#555', fontSize: '0.7rem' }}>{koUser?.implementation_type ?? '...'}</span>
+  </div>
 
-      {/* HEADER */}
-      <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 1.25rem', height: '44px', borderBottom: '1px solid #1a1a1a', flexShrink: 0, background: '#0d0d0d' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          <span style={{ color: '#ffffff', fontSize: '0.9rem', fontWeight: 700, letterSpacing: '0.02em' }}>KarlOps</span>
-          <span style={{ color: '#444', fontSize: '0.7rem' }}>|</span>
-          <span style={{ color: '#aaa', fontSize: '0.7rem' }}>{koUser?.implementation_type ?? '...'}</span>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-          <span style={{ color: '#aaa', fontSize: '0.7rem' }}>
-            {contextFilter ? totalFiltered : totalOpen} open
-            {contextFilter && totalOpen !== totalFiltered && <span style={{ color: '#444' }}> / {totalOpen}</span>}
-          </span>
-          <span style={{ color: '#444', fontSize: '0.7rem' }}>|</span>
-          <span style={{ color: '#aaa', fontSize: '0.7rem' }}>{koUser?.display_name ?? '...'}</span>
-          <button onClick={() => setShowCapture(true)} style={{ ...ghostBtn, color: '#4ade80', borderColor: '#2a4a2a' }}>+ capture</button>
-          <a href="/admin" style={{ color: '#555', fontSize: '0.7rem', textDecoration: 'none' }}
-            onMouseEnter={e => (e.currentTarget.style.color = '#aaa')}
-            onMouseLeave={e => (e.currentTarget.style.color = '#555')}
-          >admin</a>
-          <button onClick={handleLogout} style={ghostBtn}>sign out</button>
-        </div>
-      </header>
+  {/* CENTER: FC object buttons */}
+  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+    <button onClick={() => setShowCapture(true)}
+      style={{ background: '#0d1a0d', border: '1px solid #2a4a2a', color: '#4ade80', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
+      onMouseEnter={e => (e.currentTarget.style.background = '#1a2a1a')}
+      onMouseLeave={e => (e.currentTarget.style.background = '#0d1a0d')}
+    >+capture</button>
+
+    <button onClick={() => {/* setShowCompletions(true) */}}
+      style={{ background: '#1a0e00', border: '1px solid #4a2a00', color: '#f97316', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
+      onMouseEnter={e => (e.currentTarget.style.background = '#2a1800')}
+      onMouseLeave={e => (e.currentTarget.style.background = '#1a0e00')}
+    >+complete</button>
+
+    <button onClick={() => {/* setShowMeetings(true) */}}
+      style={{ background: '#0a0f1a', border: '1px solid #1a3060', color: '#3b82f6', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
+      onMouseEnter={e => (e.currentTarget.style.background = '#0f1a2a')}
+      onMouseLeave={e => (e.currentTarget.style.background = '#0a0f1a')}
+    >+meeting</button>
+
+    <button onClick={() => {/* setShowReferences(true) */}}
+      style={{ background: '#120a1a', border: '1px solid #3a1a5a', color: '#8b5cf6', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
+      onMouseEnter={e => (e.currentTarget.style.background = '#1e1030')}
+      onMouseLeave={e => (e.currentTarget.style.background = '#120a1a')}
+    >+reference</button>
+  </div>
+
+  {/* RIGHT: status + user + admin */}
+  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+    <span>
+      <span style={{ color: '#e5e5e5', fontSize: '0.7rem', fontWeight: 600 }}>
+        {contextFilter ? totalFiltered : totalOpen}
+      </span>
+      <span style={{ color: '#444', fontSize: '0.7rem' }}> open</span>
+      {contextFilter && totalOpen !== totalFiltered && (
+        <span style={{ color: '#333', fontSize: '0.7rem' }}> / {totalOpen}</span>
+      )}
+    </span>
+
+    <span style={{ color: '#333', fontSize: '0.7rem' }}>|</span>
+    <span style={{ color: '#555', fontSize: '0.7rem' }}>{koUser?.display_name ?? '...'}</span>
+    <span style={{ color: '#333', fontSize: '0.7rem' }}>|</span>
+
+    <a href="/admin"
+      style={{ color: '#555', fontSize: '0.7rem', textDecoration: 'none', fontFamily: 'monospace' }}
+      onMouseEnter={e => (e.currentTarget.style.color = '#aaa')}
+      onMouseLeave={e => (e.currentTarget.style.color = '#555')}
+    >admin</a>
+
+    <button onClick={handleLogout}
+      style={{ background: 'none', border: 'none', color: '#555', fontSize: '0.7rem', fontFamily: 'monospace', cursor: 'pointer', padding: 0 }}
+      onMouseEnter={e => (e.currentTarget.style.color = '#aaa')}
+      onMouseLeave={e => (e.currentTarget.style.color = '#555')}
+    >sign out</button>
+  </div>
+
+</header>
 
       {/* MAIN SPLIT */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
