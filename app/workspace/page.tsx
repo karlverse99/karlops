@@ -101,7 +101,7 @@ function TaskPill({ task, bucket, statusLabel, taskIndex, onClick }: {
       onMouseLeave={e => (e.currentTarget.style.background = '#161616')}
     >
       <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.4rem' }}>
-        <span style={{ color: '#333', fontSize: '0.62rem', fontWeight: 600, flexShrink: 0 }}>[{BUCKET_ID[task.bucket_key] ?? task.bucket_key}-{taskIndex}]</span>
+        <span style={{ color: bucket.accent, fontSize: '0.62rem', fontWeight: 600, flexShrink: 0, opacity: 0.5 }}>{BUCKET_ID[task.bucket_key] ?? task.bucket_key}{taskIndex}</span>
         <span style={{ color: '#e5e5e5', fontSize: '0.82rem', lineHeight: 1.4 }}>{task.title}</span>
       </div>
 
@@ -313,9 +313,13 @@ export default function WorkspacePage() {
   const [showCapture, setShowCapture]     = useState(false);
   const [selectedTask, setSelectedTask]   = useState<Task | null>(null);
 
-  const chatBottomRef = useRef<HTMLDivElement>(null);
-  const inputRef      = useRef<HTMLTextAreaElement>(null);
-  const initDone      = useRef(false);
+  const chatBottomRef  = useRef<HTMLDivElement>(null);
+  const inputRef       = useRef<HTMLTextAreaElement>(null);
+  const initDone       = useRef(false);
+  const [splitW, setSplitW]       = useState(340);
+  const splitDragging              = useRef(false);
+  const splitStartX                = useRef(0);
+  const splitStartW                = useRef(340);
 
   // ─── PAGE: Auth & Init ─────────────────────────────────────────────────────
 
@@ -439,6 +443,23 @@ export default function WorkspacePage() {
   useEffect(() => {
     if (pending) setTimeout(() => inputRef.current?.focus(), 100);
   }, [pending]);
+
+  // ─── Split resize ──────────────────────────────────────────────────────────
+  useEffect(() => {
+    const onMouseMove = (e: MouseEvent) => {
+      if (!splitDragging.current) return;
+      const delta = e.clientX - splitStartX.current;
+      const newW = Math.max(220, Math.min(600, splitStartW.current + delta));
+      setSplitW(newW);
+    };
+    const onMouseUp = () => { splitDragging.current = false; };
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+    return () => {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+  }, []);
 
   // ─── PAGE: Handlers ────────────────────────────────────────────────────────
 
@@ -593,7 +614,7 @@ export default function WorkspacePage() {
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
 
         {/* LEFT: BUCKET VIEW */}
-        <div style={{ width: '340px', flexShrink: 0, borderRight: '1px solid #1a1a1a', overflowY: 'auto', padding: '1rem', scrollbarWidth: 'thin', scrollbarColor: '#222 transparent' }}>
+        <div style={{ width: splitW, flexShrink: 0, overflowY: 'auto', padding: '1rem', scrollbarWidth: 'thin', scrollbarColor: '#222 transparent' }}>
           {!sessionReady
             ? <div style={{ color: '#aaa', fontSize: '0.75rem', paddingTop: '1rem' }}>Initializing...</div>
             : (
@@ -616,6 +637,14 @@ export default function WorkspacePage() {
             )
           }
         </div>
+
+        {/* SPLIT DIVIDER */}
+        <div
+          onMouseDown={e => { splitDragging.current = true; splitStartX.current = e.clientX; splitStartW.current = splitW; }}
+          style={{ width: '4px', flexShrink: 0, background: '#1a1a1a', cursor: 'col-resize', transition: 'background 0.15s' }}
+          onMouseEnter={e => (e.currentTarget.style.background = '#333')}
+          onMouseLeave={e => (e.currentTarget.style.background = '#1a1a1a')}
+        />
 
         {/* RIGHT: CHAT */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
