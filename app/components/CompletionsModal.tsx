@@ -65,7 +65,7 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
 
   // ─── Drag/resize state ─────────────────────────────────────────────────────
   const [pos, setPos]           = useState({ x: 0, y: 0 });
-  const [size, setSize]         = useState({ w: 800, h: 580 });
+  const [size, setSize]         = useState({ w: 800, h: 640 });
   const [centered, setCentered] = useState(true);
   const dragging                = useRef(false);
   const resizing                = useRef(false);
