@@ -37,6 +37,16 @@ const BUCKET_COLORS: Record<string, { color: string; accent: string }> = {
   capture:  { color: '#10b981', accent: '#6ee7b7' },
 };
 
+// Task identifiers — stable, hardcoded, matches Karl's internal references
+const BUCKET_ID: Record<string, string> = {
+  now:      'N',
+  soon:     'S',
+  realwork: 'RW',
+  later:    'L',
+  delegate: 'D',
+  capture:  'CP',
+};
+
 const CONFIRM_WORDS = ['yes', 'yeah', 'yep', 'yup', 'do it', 'confirm', 'ok', 'sure', 'go', 'capture it', 'add it', 'capture them', 'add them', 'all of them'];
 const DENY_WORDS    = ['no', 'nope', 'cancel', 'stop', 'nevermind', 'never mind', 'nah'];
 
@@ -74,10 +84,11 @@ function formatDate(dateStr: string): string {
 
 // ─── COMPONENTS: TaskPill ────────────────────────────────────────────────────
 
-function TaskPill({ task, bucket, statusLabel, onClick }: {
+function TaskPill({ task, bucket, statusLabel, taskIndex, onClick }: {
   task: Task;
   bucket: BucketDef;
   statusLabel?: string;
+  taskIndex: number;
   onClick: () => void;
 }) {
   const isCaptured = task.bucket_key === 'capture';
@@ -89,7 +100,10 @@ function TaskPill({ task, bucket, statusLabel, onClick }: {
       onMouseEnter={e => (e.currentTarget.style.background = '#1c1c1c')}
       onMouseLeave={e => (e.currentTarget.style.background = '#161616')}
     >
-      <div style={{ color: '#e5e5e5', fontSize: '0.82rem', lineHeight: 1.4 }}>{task.title}</div>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.4rem' }}>
+        <span style={{ color: '#333', fontSize: '0.62rem', fontWeight: 600, flexShrink: 0 }}>[{BUCKET_ID[task.bucket_key] ?? task.bucket_key}-{taskIndex}]</span>
+        <span style={{ color: '#e5e5e5', fontSize: '0.82rem', lineHeight: 1.4 }}>{task.title}</span>
+      </div>
 
       {!isCaptured && (
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.3rem', flexWrap: 'wrap' }}>
@@ -142,12 +156,13 @@ function BucketSection({ bucket, tasks, statusMap, onTaskClick }: {
         <div>
           {tasks.length === 0
             ? <div style={{ color: '#444', fontSize: '0.75rem', paddingLeft: '1rem', paddingBottom: '0.25rem' }}>empty</div>
-            : tasks.map(task => (
+            : tasks.map((task, idx) => (
                 <TaskPill
                   key={task.id}
                   task={task}
                   bucket={bucket}
                   statusLabel={task.task_status_id ? statusMap[task.task_status_id] : undefined}
+                  taskIndex={idx + 1}
                   onClick={() => onTaskClick(task)}
                 />
               ))

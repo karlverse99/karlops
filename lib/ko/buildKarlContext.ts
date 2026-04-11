@@ -24,12 +24,12 @@ export interface KarlDeepBundle extends KarlContextBundle {
 
 // Bucket identifier prefixes for chat references
 const BUCKET_PREFIX: Record<string, string> = {
-  now:      'Now',
-  soon:     'Soon',
+  now:      'N',
+  soon:     'S',
   realwork: 'RW',
-  later:    'Later',
-  delegate: 'Del',
-  capture:  'Cap',
+  later:    'L',
+  delegate: 'D',
+  capture:  'CP',
 };
 
 // ── Base context — every Karl call ────────────────────────────────────────────
