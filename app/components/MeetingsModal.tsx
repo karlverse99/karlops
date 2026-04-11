@@ -51,6 +51,48 @@ function formatDate(dateStr: string): string {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+function exportAsCSV(meetings: Meeting[]): void {
+  const headers = ['Date', 'Title', 'Outcome', 'Description', 'Notes', 'Attendees', 'Tags', 'Context', 'Task'];
+  const rows = meetings.map(m => [
+    m.meeting_date ? formatDate(m.meeting_date) : '',
+    `"${m.title.replace(/"/g, '""')}"`,
+    `"${(m.outcome ?? '').replace(/"/g, '""')}"`,
+    `"${(m.description ?? '').replace(/"/g, '""')}"`,
+    `"${(m.notes ?? '').replace(/"/g, '""')}"`,
+    `"${(m.attendees ?? []).join(', ')}"`,
+    `"${(m.tags ?? []).join(', ')}"`,
+    m.context?.name ?? '',
+    m.task?.title ?? '',
+  ]);
+  const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `meetings-${new Date().toISOString().slice(0, 10)}.csv`; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportAsMD(meetings: Meeting[]): void {
+  const lines = ['# Meetings', ''];
+  for (const m of meetings) {
+    lines.push(`## ${m.title}`);
+    if (m.meeting_date) lines.push(`**Date:** ${formatDate(m.meeting_date)}`);
+    if (m.context) lines.push(`**Context:** ${m.context.name}`);
+    if (m.attendees?.length) lines.push(`**Attendees:** ${m.attendees.join(', ')}`);
+    if (m.tags?.length) lines.push(`**Tags:** ${m.tags.join(', ')}`);
+    if (m.outcome) { lines.push(''); lines.push('**Outcome:**'); lines.push(m.outcome); }
+    if (m.description) { lines.push(''); lines.push('**Description:**'); lines.push(m.description); }
+    if (m.notes) { lines.push(''); lines.push('**Notes:**'); lines.push(m.notes); }
+    if (m.task) lines.push(`**Task:** ${m.task.title}`);
+    lines.push(''); lines.push('---'); lines.push('');
+  }
+  const blob = new Blob([lines.join('\n')], { type: 'text/markdown' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `meetings-${new Date().toISOString().slice(0, 10)}.md`; a.click();
+  URL.revokeObjectURL(url);
+}
+
 const ACCENT        = '#3b82f6';
 const ACCENT_DARK   = '#2563eb';
 const ACCENT_BG     = '#eff6ff';
@@ -59,23 +101,27 @@ const ACCENT_BORDER = '#bfdbfe';
 // ─── COMPONENT ───────────────────────────────────────────────────────────────
 
 export default function MeetingsModal({ userId, accessToken, onClose, onCountChange }: MeetingsModalProps) {
-  const [mode, setMode]             = useState<'list' | 'add' | 'edit'>('list');
+  const [mode, setMode]             = useState<'empty' | 'edit' | 'add' | 'complete'>('empty');
   const [meetings, setMeetings]     = useState<Meeting[]>([]);
   const [loading, setLoading]       = useState(true);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [completingId, setCompletingId] = useState<string | null>(null);
+  const [selected, setSelected]     = useState<Meeting | null>(null);
   const [contexts, setContexts]     = useState<Context[]>([]);
   const [allTags, setAllTags]       = useState<Tag[]>([]);
   const [tagGroups, setTagGroups]   = useState<TagGroup[]>([]);
   const [fieldMeta, setFieldMeta]   = useState<FieldMeta[]>([]);
   const [saving, setSaving]         = useState(false);
-  const [completingSaving, setCompletingSaving] = useState(false);
   const [err, setErr]               = useState('');
-  const [completeErr, setCompleteErr] = useState('');
+  const [showExportMenu, setShowExportMenu] = useState(false);
+
+  // ─── Search/filter ─────────────────────────────────────────────────────────
+  const [search, setSearch]               = useState('');
+  const [filterTag, setFilterTag]         = useState('');
+  const [filterContext, setFilterContext] = useState('');
+  const [filterDateRange, setFilterDateRange] = useState<'all' | 'week' | 'month'>('all');
 
   // ─── Drag/resize ───────────────────────────────────────────────────────────
   const [pos, setPos]           = useState({ x: 0, y: 0 });
-  const [size, setSize]         = useState({ w: 800, h: 740 });
+  const [size, setSize]         = useState({ w: 1000, h: 720 });
   const [centered, setCentered] = useState(true);
   const dragging                = useRef(false);
   const resizing                = useRef(false);
@@ -94,11 +140,6 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
   const [formTags, setFormTags]               = useState<string[]>([]);
   const [formContextId, setFormContextId]     = useState('');
 
-  // ─── Inline completion form state ─────────────────────────────────────────
-  const [completeOutcome, setCompleteOutcome]     = useState('');
-  const [completeTags, setCompleteTags]           = useState<string[]>([]);
-  const [completeContextId, setCompleteContextId] = useState('');
-
   // ─── Tag picker state ──────────────────────────────────────────────────────
   const [tagSearch, setTagSearch]                         = useState('');
   const [attendeeSearch, setAttendeeSearch]               = useState('');
@@ -106,55 +147,42 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
   const [selectedPeopleGroupId, setSelectedPeopleGroupId] = useState('');
   const [showTagDrop, setShowTagDrop]                     = useState(false);
   const [showAttendeeDrop, setShowAttendeeDrop]           = useState(false);
-  const [completeTagSearch, setCompleteTagSearch]         = useState('');
-  const [completeTagGroupId, setCompleteTagGroupId]       = useState('');
-  const [showCompleteTagDrop, setShowCompleteTagDrop]     = useState(false);
 
-  // ─── Load data ─────────────────────────────────────────────────────────────
+  // ─── Complete form state ───────────────────────────────────────────────────
+  const [completeOutcome, setCompleteOutcome]     = useState('');
+  const [completeTags, setCompleteTags]           = useState<string[]>([]);
+  const [completeContextId, setCompleteContextId] = useState('');
+  const [completeTagSearch, setCompleteTagSearch] = useState('');
+  const [completeTagGroupId, setCompleteTagGroupId] = useState('');
+  const [showCompleteTagDrop, setShowCompleteTagDrop] = useState(false);
+  const [completeSaving, setCompleteSaving]       = useState(false);
+  const [completeErr, setCompleteErr]             = useState('');
+
+  // ─── Load ──────────────────────────────────────────────────────────────────
 
   const loadMeetings = async () => {
     setLoading(true);
     const { data } = await supabase
       .from('meeting')
-      .select(`
-        meeting_id, title, meeting_date, outcome, description, notes, attendees, tags, is_completed,
+      .select(`meeting_id, title, meeting_date, outcome, description, notes, attendees, tags, is_completed,
         context:context_id ( name, context_id ),
-        task:task_id ( title )
-      `)
+        task:task_id ( title )`)
       .eq('user_id', userId)
       .eq('is_completed', false)
       .order('meeting_date', { ascending: false });
-
-    if (data) {
-      setMeetings(data as any);
-      onCountChange(data.length);
-    }
+    if (data) { setMeetings(data as any); onCountChange(data.length); }
     setLoading(false);
   };
 
   const loadContexts = async () => {
-    const { data } = await supabase
-      .from('context')
-      .select('context_id, name')
-      .eq('user_id', userId)
-      .eq('is_archived', false)
-      .order('name');
+    const { data } = await supabase.from('context').select('context_id, name').eq('user_id', userId).eq('is_archived', false).order('name');
     if (data) setContexts(data);
   };
 
   const loadTags = async () => {
-    const { data: groups } = await supabase
-      .from('tag_group')
-      .select('tag_group_id, name')
-      .eq('user_id', userId)
-      .order('name');
+    const { data: groups } = await supabase.from('tag_group').select('tag_group_id, name').eq('user_id', userId).order('name');
     if (groups) setTagGroups(groups);
-
-    const { data: tags } = await supabase
-      .from('tag')
-      .select('tag_id, name, tag_group_id')
-      .eq('user_id', userId)
-      .order('name');
+    const { data: tags } = await supabase.from('tag').select('tag_id, name, tag_group_id').eq('user_id', userId).order('name');
     if (tags) setAllTags(tags);
   };
 
@@ -169,30 +197,18 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
     if (data) setFieldMeta(data);
   };
 
-  useEffect(() => {
-    loadMeetings();
-    loadContexts();
-    loadTags();
-    loadFieldMeta();
-  }, []);
+  useEffect(() => { loadMeetings(); loadContexts(); loadTags(); loadFieldMeta(); }, []);
 
-  // ─── Keyboard close ────────────────────────────────────────────────────────
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, []);
 
-  // ─── Drag/resize events ────────────────────────────────────────────────────
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
-      if (dragging.current) {
-        setPos({ x: dragStart.current.x + (e.clientX - dragStart.current.mx), y: dragStart.current.y + (e.clientY - dragStart.current.my) });
-        setCentered(false);
-      }
-      if (resizing.current) {
-        setSize({ w: Math.max(520, resizeStart.current.w + (e.clientX - resizeStart.current.mx)), h: Math.max(400, resizeStart.current.h + (e.clientY - resizeStart.current.my)) });
-      }
+      if (dragging.current) { setPos({ x: dragStart.current.x + (e.clientX - dragStart.current.mx), y: dragStart.current.y + (e.clientY - dragStart.current.my) }); setCentered(false); }
+      if (resizing.current) { setSize({ w: Math.max(700, resizeStart.current.w + (e.clientX - resizeStart.current.mx)), h: Math.max(400, resizeStart.current.h + (e.clientY - resizeStart.current.my)) }); }
     };
     const onUp = () => { dragging.current = false; resizing.current = false; };
     document.addEventListener('mousemove', onMove);
@@ -200,29 +216,23 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
     return () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
   }, []);
 
-  // ─── Meeting handlers ──────────────────────────────────────────────────────
+  // ─── Filtered list ─────────────────────────────────────────────────────────
 
-  const resetForm = () => {
-    setEditId(null);
-    setFormTitle('');
-    setFormMeetingDate(new Date().toISOString().slice(0, 16));
-    setFormOutcome('');
-    setFormDescription('');
-    setFormNotes('');
-    setFormAttendees([]);
-    setFormTags([]);
-    setFormContextId('');
-    setTagSearch('');
-    setAttendeeSearch('');
-    setSelectedTagGroupId('');
-    setSelectedPeopleGroupId('');
-    setErr('');
-  };
+  const filtered = meetings.filter(m => {
+    if (search && !m.title.toLowerCase().includes(search.toLowerCase())) return false;
+    if (filterTag && !(m.tags ?? []).includes(filterTag)) return false;
+    if (filterContext && m.context?.context_id !== filterContext) return false;
+    if (filterDateRange !== 'all' && m.meeting_date) {
+      const d = new Date(m.meeting_date); const now = new Date();
+      if (filterDateRange === 'week') { const wk = new Date(now); wk.setDate(now.getDate() - 7); if (d < wk) return false; }
+      if (filterDateRange === 'month') { const mo = new Date(now); mo.setMonth(now.getMonth() - 1); if (d < mo) return false; }
+    }
+    return true;
+  });
 
-  const openAdd = () => { resetForm(); setMode('add'); };
+  // ─── Handlers ──────────────────────────────────────────────────────────────
 
-  const openEdit = (m: Meeting) => {
-    resetForm();
+  const loadIntoForm = (m: Meeting) => {
     setEditId(m.meeting_id);
     setFormTitle(m.title);
     setFormMeetingDate(m.meeting_date ? m.meeting_date.slice(0, 16) : '');
@@ -232,59 +242,24 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
     setFormAttendees(m.attendees ?? []);
     setFormTags(m.tags ?? []);
     setFormContextId(m.context?.context_id ?? '');
-    setMode('edit');
+    setTagSearch(''); setAttendeeSearch(''); setSelectedTagGroupId(''); setSelectedPeopleGroupId('');
+    setErr(''); setSelected(m); setMode('edit');
+  };
+
+  const openAdd = () => {
+    setEditId(null); setFormTitle(''); setFormMeetingDate(new Date().toISOString().slice(0, 16));
+    setFormOutcome(''); setFormDescription(''); setFormNotes('');
+    setFormAttendees([]); setFormTags([]); setFormContextId('');
+    setTagSearch(''); setAttendeeSearch(''); setSelectedTagGroupId(''); setSelectedPeopleGroupId('');
+    setErr(''); setSelected(null); setMode('add');
   };
 
   const openComplete = (m: Meeting) => {
-    setCompletingId(m.meeting_id);
     setCompleteOutcome(m.outcome ?? '');
     setCompleteTags(m.tags ?? []);
     setCompleteContextId(m.context?.context_id ?? '');
-    setCompleteTagSearch('');
-    setCompleteTagGroupId('');
-    setCompleteErr('');
-    setExpandedId(m.meeting_id);
-  };
-
-  const cancelComplete = () => {
-    setCompletingId(null);
-    setCompleteErr('');
-  };
-
-  const handleComplete = async (m: Meeting) => {
-    if (!completeOutcome.trim()) { setCompleteErr('Outcome is required'); return; }
-    setCompletingSaving(true); setCompleteErr('');
-
-    try {
-      // Insert completion record
-      const { error: compErr } = await supabase
-        .from('completion')
-        .insert({
-          user_id:      userId,
-          title:        m.title,
-          outcome:      completeOutcome.trim(),
-          completed_at: new Date().toISOString(),
-          tags:         completeTags.length > 0 ? completeTags : null,
-          context_id:   completeContextId || null,
-          meeting_id:   m.meeting_id,
-        });
-      if (compErr) throw compErr;
-
-      // Mark meeting as completed
-      const { error: meetErr } = await supabase
-        .from('meeting')
-        .update({ is_completed: true, outcome: completeOutcome.trim() })
-        .eq('meeting_id', m.meeting_id)
-        .eq('user_id', userId);
-      if (meetErr) throw meetErr;
-
-      setCompletingId(null);
-      await loadMeetings();
-    } catch (e: any) {
-      setCompleteErr(e.message);
-    } finally {
-      setCompletingSaving(false);
-    }
+    setCompleteTagSearch(''); setCompleteTagGroupId(''); setCompleteErr('');
+    setSelected(m); setMode('complete');
   };
 
   const handleSave = async () => {
@@ -292,14 +267,14 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
     setSaving(true); setErr('');
 
     const payload: any = {
-      title:        formTitle.trim(),
+      title: formTitle.trim(),
       meeting_date: formMeetingDate ? new Date(formMeetingDate).toISOString() : null,
-      outcome:      formOutcome.trim() || null,
-      description:  formDescription.trim() || null,
-      notes:        formNotes.trim() || null,
-      attendees:    formAttendees.length > 0 ? formAttendees : null,
-      tags:         formTags.length > 0 ? formTags : null,
-      context_id:   formContextId || null,
+      outcome: formOutcome.trim() || null,
+      description: formDescription.trim() || null,
+      notes: formNotes.trim() || null,
+      attendees: formAttendees.length > 0 ? formAttendees : null,
+      tags: formTags.length > 0 ? formTags : null,
+      context_id: formContextId || null,
     };
 
     try {
@@ -311,12 +286,35 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
         if (error) throw error;
       }
       await loadMeetings();
-      setMode('list');
-    } catch (e: any) {
-      setErr(e.message);
-    } finally {
-      setSaving(false);
-    }
+      setMode('empty'); setSelected(null);
+    } catch (e: any) { setErr(e.message); }
+    finally { setSaving(false); }
+  };
+
+  const handleComplete = async () => {
+    if (!completeOutcome.trim()) { setCompleteErr('Outcome is required'); return; }
+    if (!selected) return;
+    setCompleteSaving(true); setCompleteErr('');
+
+    try {
+      const { error: compErr } = await supabase.from('completion').insert({
+        user_id: userId, title: selected.title, outcome: completeOutcome.trim(),
+        completed_at: new Date().toISOString(),
+        tags: completeTags.length > 0 ? completeTags : null,
+        context_id: completeContextId || null,
+        meeting_id: selected.meeting_id,
+      });
+      if (compErr) throw compErr;
+
+      const { error: meetErr } = await supabase.from('meeting')
+        .update({ is_completed: true, outcome: completeOutcome.trim() })
+        .eq('meeting_id', selected.meeting_id).eq('user_id', userId);
+      if (meetErr) throw meetErr;
+
+      await loadMeetings();
+      setMode('empty'); setSelected(null);
+    } catch (e: any) { setCompleteErr(e.message); }
+    finally { setCompleteSaving(false); }
   };
 
   const toggleTag = (name: string) => setFormTags(prev => prev.includes(name) ? prev.filter(t => t !== name) : [...prev, name]);
@@ -326,57 +324,39 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
   // ─── Tag picker renderer ───────────────────────────────────────────────────
 
   const renderTagPicker = (
-    field: string, label: string, selected: string[], toggle: (n: string) => void,
+    key: string, label: string, selected: string[], toggle: (n: string) => void,
     search: string, setSearch: (v: string) => void,
     groupId: string, setGroupId: (v: string) => void,
     showDrop: boolean, setShowDrop: (v: boolean) => void,
-    accentColor: string = ACCENT,
   ) => {
-    const filtered = allTags.filter(t => {
-      const matchesGroup  = groupId ? t.tag_group_id === groupId : true;
-      const matchesSearch = search ? t.name.toLowerCase().includes(search.toLowerCase()) : true;
-      return matchesGroup && matchesSearch && !selected.includes(t.name);
-    });
+    const filtered = allTags.filter(t =>
+      (groupId ? t.tag_group_id === groupId : true) &&
+      (search ? t.name.toLowerCase().includes(search.toLowerCase()) : true) &&
+      !selected.includes(t.name)
+    );
 
     return (
-      <div key={field} style={{ marginBottom: '0.85rem' }}>
-        <div style={labelStyle}>{label}</div>
+      <div key={key} style={{ marginBottom: '0.85rem' }}>
+        <div style={formLabelStyle}>{label}</div>
         {selected.length > 0 && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem', marginBottom: '0.5rem' }}>
             {selected.map(name => (
               <span key={name} onClick={() => toggle(name)}
-                style={{ fontSize: '0.72rem', color: '#fff', background: accentColor, border: `1px solid ${accentColor}`, borderRadius: '3px', padding: '0.15rem 0.4rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.25rem', fontFamily: 'monospace' }}
+                style={{ fontSize: '0.72rem', color: '#fff', background: ACCENT, borderRadius: '3px', padding: '0.15rem 0.4rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.25rem', fontFamily: 'monospace' }}
               >{name} <span style={{ opacity: 0.8 }}>✕</span></span>
             ))}
           </div>
         )}
         <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <select value={groupId} onChange={e => setGroupId(e.target.value)}
-            style={{ ...inputStyle, flex: '0 0 140px', fontSize: '0.72rem', padding: '0.35rem 0.5rem' }}
-          >
+          <select value={groupId} onChange={e => setGroupId(e.target.value)} style={{ ...inputStyle, flex: '0 0 130px', fontSize: '0.72rem', padding: '0.35rem 0.5rem' }}>
             <option value="">All groups</option>
             {tagGroups.map(g => <option key={g.tag_group_id} value={g.tag_group_id}>{g.name}</option>)}
           </select>
           <div style={{ position: 'relative', flex: 1 }}>
-            <input value={search}
-              onChange={e => { setSearch(e.target.value); setShowDrop(true); }}
-              onFocus={() => setShowDrop(true)}
-              onBlur={() => setTimeout(() => setShowDrop(false), 150)}
-              placeholder="Search..."
-              style={{ ...inputStyle, marginBottom: 0 }}
-              onFocusCapture={e => (e.target.style.borderColor = accentColor)}
-              onBlurCapture={e => (e.target.style.borderColor = '#ddd')}
-            />
+            <input value={search} onChange={e => { setSearch(e.target.value); setShowDrop(true); }} onFocus={() => setShowDrop(true)} onBlur={() => setTimeout(() => setShowDrop(false), 150)} placeholder="Search..." style={{ ...inputStyle, marginBottom: 0 }} onFocusCapture={e => (e.target.style.borderColor = ACCENT)} onBlurCapture={e => (e.target.style.borderColor = '#ddd')} />
             {showDrop && filtered.length > 0 && (
-              <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #ddd', borderRadius: '4px', zIndex: 20, maxHeight: '160px', overflowY: 'auto', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}>
-                {filtered.map(tag => (
-                  <div key={tag.tag_id}
-                    onMouseDown={() => { toggle(tag.name); setSearch(''); }}
-                    style={{ padding: '0.4rem 0.65rem', fontSize: '0.78rem', color: '#333', cursor: 'pointer', borderBottom: '1px solid #f5f5f5', fontFamily: 'monospace' }}
-                    onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BG)}
-                    onMouseLeave={e => (e.currentTarget.style.background = '#fff')}
-                  >{tag.name}</div>
-                ))}
+              <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #ddd', borderRadius: '4px', zIndex: 20, maxHeight: '140px', overflowY: 'auto', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}>
+                {filtered.map(tag => <div key={tag.tag_id} onMouseDown={() => { toggle(tag.name); setSearch(''); }} style={{ padding: '0.4rem 0.65rem', fontSize: '0.78rem', color: '#333', cursor: 'pointer', borderBottom: '1px solid #f5f5f5', fontFamily: 'monospace' }} onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BG)} onMouseLeave={e => (e.currentTarget.style.background = '#fff')}>{tag.name}</div>)}
               </div>
             )}
           </div>
@@ -387,35 +367,29 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
 
   // ─── Field renderer ────────────────────────────────────────────────────────
 
-  const renderField = (meta: FieldMeta, isAdd: boolean) => {
+  const renderField = (meta: FieldMeta) => {
+    const isAdd = mode === 'add';
     const isReadonly = isAdd ? meta.insert_behavior === 'automatic' : meta.update_behavior === 'readonly' || meta.update_behavior === 'automatic';
     if (isReadonly) return null;
 
-    const required = isAdd ? meta.insert_behavior === 'required' : false;
-    const label = <div style={labelStyle}>{meta.label}{required && <span style={{ color: '#ef4444' }}>*</span>}</div>;
+    const required = isAdd && meta.insert_behavior === 'required';
+    const label = <div style={formLabelStyle}>{meta.label}{required && <span style={{ color: '#ef4444' }}>*</span>}</div>;
 
     switch (meta.field) {
       case 'title':
-        return <div key="title" style={{ marginBottom: '0.85rem' }}>{label}<input autoFocus value={formTitle} onChange={e => setFormTitle(e.target.value)} style={inputStyle} onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} /></div>;
-
+        return <div key="title" style={{ marginBottom: '0.85rem' }}>{label}<input value={formTitle} onChange={e => setFormTitle(e.target.value)} style={inputStyle} onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} /></div>;
       case 'meeting_date':
         return <div key="meeting_date" style={{ marginBottom: '0.85rem' }}>{label}<input type="datetime-local" value={formMeetingDate} onChange={e => setFormMeetingDate(e.target.value)} style={{ ...inputStyle, colorScheme: 'light' }} onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} /></div>;
-
       case 'outcome':
         return <div key="outcome" style={{ marginBottom: '0.85rem' }}>{label}<textarea value={formOutcome} onChange={e => setFormOutcome(e.target.value)} rows={2} style={{ ...inputStyle, resize: 'vertical' }} onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} /></div>;
-
       case 'description':
         return <div key="description" style={{ marginBottom: '0.85rem' }}>{label}<textarea value={formDescription} onChange={e => setFormDescription(e.target.value)} rows={1} style={{ ...inputStyle, resize: 'vertical' }} onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} /></div>;
-
       case 'notes':
         return <div key="notes" style={{ marginBottom: '0.85rem' }}>{label}<textarea value={formNotes} onChange={e => setFormNotes(e.target.value)} rows={3} style={{ ...inputStyle, resize: 'vertical', minHeight: '64px' }} onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} /></div>;
-
       case 'attendees':
         return renderTagPicker('attendees', 'Attendees', formAttendees, toggleAttendee, attendeeSearch, setAttendeeSearch, selectedPeopleGroupId, setSelectedPeopleGroupId, showAttendeeDrop, setShowAttendeeDrop);
-
       case 'tags':
         return renderTagPicker('tags', 'Tags', formTags, toggleTag, tagSearch, setTagSearch, selectedTagGroupId, setSelectedTagGroupId, showTagDrop, setShowTagDrop);
-
       case 'context_id':
         return (
           <div key="context_id" style={{ marginBottom: '0.85rem' }}>{label}
@@ -425,176 +399,136 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
             </select>
           </div>
         );
-
       default: return null;
     }
   };
 
-  // ─── Render: form ──────────────────────────────────────────────────────────
+  // ─── Render: left panel ────────────────────────────────────────────────────
 
-  const renderForm = () => {
+  const renderLeft = () => (
+    <div style={{ width: '340px', flexShrink: 0, display: 'flex', flexDirection: 'column', borderRight: `1px solid ${ACCENT_BORDER}`, height: '100%' }}>
+      <div style={{ padding: '0.75rem', borderBottom: `1px solid ${ACCENT_BORDER}`, display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search meetings..."
+          style={{ ...inputStyle, fontSize: '0.75rem', padding: '0.4rem 0.6rem' }}
+          onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')}
+        />
+        <div style={{ display: 'flex', gap: '0.4rem' }}>
+          <select value={filterContext} onChange={e => setFilterContext(e.target.value)} style={{ ...inputStyle, flex: 1, fontSize: '0.7rem', padding: '0.3rem 0.5rem' }}>
+            <option value="">All contexts</option>
+            {contexts.map(c => <option key={c.context_id} value={c.context_id}>{c.name}</option>)}
+          </select>
+          <select value={filterTag} onChange={e => setFilterTag(e.target.value)} style={{ ...inputStyle, flex: 1, fontSize: '0.7rem', padding: '0.3rem 0.5rem' }}>
+            <option value="">All tags</option>
+            {allTags.map(t => <option key={t.tag_id} value={t.name}>{t.name}</option>)}
+          </select>
+        </div>
+        <select value={filterDateRange} onChange={e => setFilterDateRange(e.target.value as any)} style={{ ...inputStyle, fontSize: '0.7rem', padding: '0.3rem 0.5rem' }}>
+          <option value="all">All time</option>
+          <option value="week">This week</option>
+          <option value="month">This month</option>
+        </select>
+        <div style={{ color: '#999', fontSize: '0.65rem', fontFamily: 'monospace' }}>{filtered.length} of {meetings.length}</div>
+      </div>
+
+      <div style={{ flex: 1, overflowY: 'auto' }}>
+        {loading ? (
+          <div style={{ color: '#999', fontSize: '0.75rem', padding: '1rem', fontFamily: 'monospace' }}>Loading...</div>
+        ) : filtered.length === 0 ? (
+          <div style={{ color: '#bbb', fontSize: '0.75rem', padding: '1rem', fontFamily: 'monospace' }}>No meetings found.</div>
+        ) : (
+          filtered.map((m) => {
+            const isSelected = selected?.meeting_id === m.meeting_id;
+            const identifier = `MT${meetings.indexOf(m) + 1}`;
+            return (
+              <div key={m.meeting_id}
+                onClick={() => loadIntoForm(m)}
+                style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.6rem 0.75rem', cursor: 'pointer', background: isSelected ? ACCENT_BG : 'transparent', borderLeft: `3px solid ${isSelected ? ACCENT : 'transparent'}`, borderBottom: '1px solid #f5f5f5', transition: 'all 0.1s' }}
+                onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = '#fafafa'; }}
+                onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = 'transparent'; }}
+              >
+                <span style={{ color: ACCENT, fontSize: '0.65rem', fontWeight: 700, opacity: 0.6, flexShrink: 0, fontFamily: 'monospace' }}>{identifier}</span>
+                <span style={{ color: ACCENT, fontSize: '0.7rem', flexShrink: 0, fontFamily: 'monospace', fontWeight: 500 }}>{m.meeting_date ? formatDate(m.meeting_date) : '—'}</span>
+                <span style={{ color: '#111', fontSize: '0.82rem', flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontFamily: 'monospace', fontWeight: 500 }}>{m.title}</span>
+              </div>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+
+  // ─── Render: right panel ───────────────────────────────────────────────────
+
+  const renderRight = () => {
+    if (mode === 'empty') return (
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#ccc', fontSize: '0.8rem', fontFamily: 'monospace', flexDirection: 'column', gap: '0.5rem' }}>
+        <div style={{ fontSize: '2rem', opacity: 0.2 }}>📅</div>
+        <div>Select a meeting to edit</div>
+      </div>
+    );
+
+    if (mode === 'complete' && selected) return renderCompleteForm();
+
     const isAdd = mode === 'add';
-    const visibleFields = fieldMeta.filter(f => isAdd ? f.insert_behavior !== 'automatic' : f.update_behavior !== 'automatic' && f.update_behavior !== 'readonly');
+    const visibleFields = fieldMeta.filter(f =>
+      isAdd ? f.insert_behavior !== 'automatic' : f.update_behavior !== 'automatic' && f.update_behavior !== 'readonly'
+    );
+    const identifier = !isAdd ? `MT${meetings.findIndex(m => m.meeting_id === editId) + 1}` : null;
+
     return (
-      <div style={{ padding: '1rem 1.25rem', overflowY: 'auto', flex: 1 }}>
-        {visibleFields.map(f => renderField(f, isAdd))}
+      <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
+          <div style={{ color: '#888', fontSize: '0.7rem', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            {isAdd ? 'New Meeting' : `Editing ${identifier}`}
+          </div>
+          {!isAdd && (
+            <button onClick={() => openComplete(selected!)}
+              style={{ background: ACCENT, border: `1px solid ${ACCENT}`, color: '#fff', padding: '0.25rem 0.7rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer', fontWeight: 600 }}
+              onMouseEnter={e => (e.currentTarget.style.background = ACCENT_DARK)}
+              onMouseLeave={e => (e.currentTarget.style.background = ACCENT)}
+            >complete meeting</button>
+          )}
+        </div>
+        {visibleFields.map(f => renderField(f))}
         {err && <div style={{ color: '#ef4444', fontSize: '0.72rem', marginBottom: '0.75rem' }}>{err}</div>}
-        <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', paddingTop: '0.5rem' }}>
-          <button onClick={() => setMode('list')} style={{ background: 'none', border: '1px solid #ddd', color: '#666', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer' }}>cancel</button>
+        <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: 'auto', paddingTop: '1rem' }}>
+          <button onClick={() => { setMode('empty'); setSelected(null); }} style={{ background: 'none', border: '1px solid #ddd', color: '#666', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer' }}>cancel</button>
           <button onClick={handleSave} disabled={saving} style={{ background: ACCENT, border: `1px solid ${ACCENT}`, color: '#fff', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer', fontWeight: 600 }}>{saving ? '...' : isAdd ? 'save meeting' : 'save changes'}</button>
         </div>
       </div>
     );
   };
 
-  // ─── Render: inline complete form ──────────────────────────────────────────
+  // ─── Render: complete form ─────────────────────────────────────────────────
 
-  const renderCompleteForm = (m: Meeting) => (
-    <div style={{ marginTop: '0.75rem', background: '#f0f7ff', border: `1px solid ${ACCENT_BORDER}`, borderRadius: '6px', padding: '0.85rem' }}>
-      <div style={{ color: ACCENT, fontSize: '0.7rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.75rem' }}>Complete Meeting</div>
+  const renderCompleteForm = () => (
+    <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
+        <div style={{ color: ACCENT, fontSize: '0.85rem', fontWeight: 700, fontFamily: 'monospace' }}>Complete Meeting</div>
+        <button onClick={() => setMode('edit')} style={{ background: 'none', border: '1px solid #ddd', color: '#666', padding: '0.2rem 0.6rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}>← back</button>
+      </div>
+      <div style={{ color: '#333', fontSize: '0.82rem', fontFamily: 'monospace', marginBottom: '1rem', fontWeight: 600 }}>{selected?.title}</div>
 
-      {/* Outcome */}
-      <div style={{ marginBottom: '0.75rem' }}>
-        <div style={labelStyle}>Outcome<span style={{ color: '#ef4444' }}>*</span></div>
-        <textarea
-          autoFocus
-          value={completeOutcome}
-          onChange={e => setCompleteOutcome(e.target.value)}
-          rows={3}
-          style={{ ...inputStyle, resize: 'vertical', minHeight: '64px' }}
-          onFocus={e => (e.target.style.borderColor = ACCENT)}
-          onBlur={e => (e.target.style.borderColor = '#ddd')}
-        />
+      <div style={{ marginBottom: '0.85rem' }}>
+        <div style={formLabelStyle}>Outcome<span style={{ color: '#ef4444' }}>*</span></div>
+        <textarea value={completeOutcome} onChange={e => setCompleteOutcome(e.target.value)} rows={4} style={{ ...inputStyle, resize: 'vertical', minHeight: '80px' }} onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} />
       </div>
 
-      {/* Tags */}
-      {renderTagPicker(
-        'complete_tags', 'Tags', completeTags, toggleCompleteTag,
-        completeTagSearch, setCompleteTagSearch,
-        completeTagGroupId, setCompleteTagGroupId,
-        showCompleteTagDrop, setShowCompleteTagDrop,
-      )}
+      {renderTagPicker('complete_tags', 'Tags', completeTags, toggleCompleteTag, completeTagSearch, setCompleteTagSearch, completeTagGroupId, setCompleteTagGroupId, showCompleteTagDrop, setShowCompleteTagDrop)}
 
-      {/* Context */}
-      <div style={{ marginBottom: '0.75rem' }}>
-        <div style={labelStyle}>Context</div>
-        <select value={completeContextId} onChange={e => setCompleteContextId(e.target.value)}
-          style={{ ...inputStyle, cursor: 'pointer' }}
-          onFocus={e => (e.target.style.borderColor = ACCENT)}
-          onBlur={e => (e.target.style.borderColor = '#ddd')}
-        >
+      <div style={{ marginBottom: '0.85rem' }}>
+        <div style={formLabelStyle}>Context</div>
+        <select value={completeContextId} onChange={e => setCompleteContextId(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }} onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')}>
           <option value="">— none —</option>
           {contexts.map(c => <option key={c.context_id} value={c.context_id}>{c.name}</option>)}
         </select>
       </div>
 
-      {completeErr && <div style={{ color: '#ef4444', fontSize: '0.72rem', marginBottom: '0.5rem' }}>{completeErr}</div>}
-
-      <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
-        <button onClick={cancelComplete} style={{ background: 'none', border: '1px solid #ddd', color: '#666', padding: '0.3rem 0.7rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.72rem', cursor: 'pointer' }}>cancel</button>
-        <button onClick={() => handleComplete(m)} disabled={completingSaving}
-          style={{ background: ACCENT, border: `1px solid ${ACCENT}`, color: '#fff', padding: '0.3rem 0.7rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.72rem', cursor: 'pointer', fontWeight: 600 }}
-        >{completingSaving ? '...' : 'save & complete'}</button>
+      {completeErr && <div style={{ color: '#ef4444', fontSize: '0.72rem', marginBottom: '0.75rem' }}>{completeErr}</div>}
+      <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: 'auto', paddingTop: '1rem' }}>
+        <button onClick={() => setMode('edit')} style={{ background: 'none', border: '1px solid #ddd', color: '#666', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer' }}>cancel</button>
+        <button onClick={handleComplete} disabled={completeSaving} style={{ background: ACCENT, border: `1px solid ${ACCENT}`, color: '#fff', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer', fontWeight: 600 }}>{completeSaving ? '...' : 'save & complete'}</button>
       </div>
-    </div>
-  );
-
-  // ─── Render: list ──────────────────────────────────────────────────────────
-
-  const renderList = () => (
-    <div style={{ overflowY: 'auto', flex: 1, padding: '0.75rem 1.25rem' }}>
-      {loading ? (
-        <div style={{ color: '#999', fontSize: '0.75rem', padding: '1rem 0', fontFamily: 'monospace' }}>Loading...</div>
-      ) : meetings.length === 0 ? (
-        <div style={{ color: '#bbb', fontSize: '0.75rem', padding: '1rem 0', fontFamily: 'monospace' }}>No meetings yet.</div>
-      ) : (
-        meetings.map((m, idx) => {
-          const isExpanded   = expandedId === m.meeting_id;
-          const isCompleting = completingId === m.meeting_id;
-          const identifier   = `MT${idx + 1}`;
-
-          return (
-            <div key={m.meeting_id} style={{ borderBottom: '1px solid #f0f0f0', paddingBottom: '0.75rem', marginBottom: '0.75rem' }}>
-
-              {/* Row header */}
-              <div onClick={() => { if (!isCompleting) setExpandedId(isExpanded ? null : m.meeting_id); }}
-                style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}
-              >
-                {/* Identifier */}
-                <span style={{ color: ACCENT, fontSize: '0.62rem', fontWeight: 600, opacity: 0.5, flexShrink: 0, fontFamily: 'monospace' }}>{identifier}</span>
-                {/* Date */}
-                <span style={{ color: ACCENT, fontSize: '0.65rem', flexShrink: 0, fontFamily: 'monospace' }}>
-                  {m.meeting_date ? formatDate(m.meeting_date) : '—'}
-                </span>
-                {/* Title */}
-                <span style={{ color: '#111', fontSize: '0.82rem', flex: 1, fontFamily: 'monospace' }}>{m.title}</span>
-                {/* Context */}
-                {m.context && <span style={{ color: '#555', fontSize: '0.65rem', flexShrink: 0, fontFamily: 'monospace' }}>{m.context.name}</span>}
-                <span style={{ color: '#bbb', fontSize: '0.65rem', flexShrink: 0 }}>{isExpanded ? '▴' : '▾'}</span>
-              </div>
-
-              {/* Attendees + tags */}
-              <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap', marginTop: '0.3rem' }}>
-                {m.attendees?.map(a => (
-                  <span key={a} style={{ fontSize: '0.62rem', color: ACCENT, background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, borderRadius: '3px', padding: '0.1rem 0.35rem', fontFamily: 'monospace' }}>{a}</span>
-                ))}
-                {m.tags?.map(tag => (
-                  <span key={tag} style={{ fontSize: '0.62rem', color: '#666', background: '#f5f5f5', border: '1px solid #e5e5e5', borderRadius: '3px', padding: '0.1rem 0.35rem', fontFamily: 'monospace' }}>{tag}</span>
-                ))}
-              </div>
-
-              {/* Expanded detail */}
-              {isExpanded && !isCompleting && (
-                <div style={{ marginTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                  {m.outcome && (
-                    <div>
-                      <div style={expandLabelStyle}>Outcome</div>
-                      <div style={{ color: '#333', fontSize: '0.78rem', lineHeight: 1.6, whiteSpace: 'pre-wrap', background: '#fafafa', border: '1px solid #eee', borderRadius: '4px', padding: '0.5rem 0.65rem', fontFamily: 'monospace' }}>{m.outcome}</div>
-                    </div>
-                  )}
-                  {m.description && (
-                    <div>
-                      <div style={expandLabelStyle}>Description</div>
-                      <div style={{ color: '#555', fontSize: '0.78rem', lineHeight: 1.6, whiteSpace: 'pre-wrap', fontFamily: 'monospace' }}>{m.description}</div>
-                    </div>
-                  )}
-                  {m.notes && (
-                    <div>
-                      <div style={expandLabelStyle}>Notes</div>
-                      <div style={{ color: '#555', fontSize: '0.78rem', lineHeight: 1.6, whiteSpace: 'pre-wrap', background: '#fafafa', border: '1px solid #eee', borderRadius: '4px', padding: '0.5rem 0.65rem', fontFamily: 'monospace' }}>{m.notes}</div>
-                    </div>
-                  )}
-                  {m.task && (
-                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                      <span style={expandLabelStyle}>Task</span>
-                      <span style={{ color: '#333', fontSize: '0.75rem', fontFamily: 'monospace' }}>{m.task.title}</span>
-                    </div>
-                  )}
-                  {m.meeting_date && (
-                    <div style={{ color: '#bbb', fontSize: '0.65rem', fontFamily: 'monospace' }}>{formatDateTime(m.meeting_date)}</div>
-                  )}
-                  <div style={{ display: 'flex', gap: '0.5rem' }}>
-                    <button onClick={() => openEdit(m)}
-                      style={{ background: 'none', border: '1px solid #e0e0e0', color: '#888', padding: '0.25rem 0.6rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.65rem', cursor: 'pointer' }}
-                      onMouseEnter={e => (e.currentTarget.style.borderColor = ACCENT)}
-                      onMouseLeave={e => (e.currentTarget.style.borderColor = '#e0e0e0')}
-                    >edit</button>
-                    <button onClick={e => { e.stopPropagation(); openComplete(m); }}
-                      style={{ background: ACCENT, border: `1px solid ${ACCENT}`, color: '#fff', padding: '0.25rem 0.6rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.65rem', cursor: 'pointer', fontWeight: 600 }}
-                      onMouseEnter={e => (e.currentTarget.style.background = ACCENT_DARK)}
-                      onMouseLeave={e => (e.currentTarget.style.background = ACCENT)}
-                    >complete</button>
-                  </div>
-                </div>
-              )}
-
-              {/* Inline complete form */}
-              {isCompleting && renderCompleteForm(m)}
-
-            </div>
-          );
-        })
-      )}
     </div>
   );
 
@@ -604,7 +538,7 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
     ? { position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: size.w, height: size.h }
     : { position: 'fixed', top: pos.y, left: pos.x, width: size.w, height: size.h };
 
-  // ─── Render: shell ─────────────────────────────────────────────────────────
+  // ─── Render ────────────────────────────────────────────────────────────────
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 100 }}>
@@ -612,51 +546,43 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
 
         {/* Header */}
         <div
-          onMouseDown={e => {
-            dragging.current = true;
-            const rect = modalRef.current!.getBoundingClientRect();
-            dragStart.current = { mx: e.clientX, my: e.clientY, x: rect.left, y: rect.top };
-            setCentered(false);
-          }}
+          onMouseDown={e => { dragging.current = true; const rect = modalRef.current!.getBoundingClientRect(); dragStart.current = { mx: e.clientX, my: e.clientY, x: rect.left, y: rect.top }; setCentered(false); }}
           style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.85rem 1.25rem', background: ACCENT, cursor: 'grab', userSelect: 'none', flexShrink: 0 }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <span style={{ color: '#000', fontSize: '0.85rem', fontWeight: 700 }}>
-              {mode === 'list' ? 'Meetings' : mode === 'add' ? 'New Meeting' : 'Edit Meeting'}
-            </span>
-            {mode === 'list' && (
-              <span style={{ color: '#000', fontSize: '0.72rem', opacity: 0.5 }}>{meetings.length} total</span>
-            )}
+            <span style={{ color: '#000', fontSize: '0.85rem', fontWeight: 700 }}>Meetings</span>
+            <span style={{ color: '#000', fontSize: '0.72rem', opacity: 0.5 }}>{meetings.length} total</span>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            {mode === 'list' && (
-              <button onClick={openAdd}
+            <div style={{ position: 'relative' }}>
+              <button onClick={() => setShowExportMenu(v => !v)}
                 style={{ background: '#000', border: '1px solid #000', color: ACCENT, padding: '0.25rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer', fontWeight: 600 }}
-                onMouseEnter={e => (e.currentTarget.style.background = '#222')}
-                onMouseLeave={e => (e.currentTarget.style.background = '#000')}
-              >+ new</button>
-            )}
-            <button onClick={onClose}
-              style={{ background: 'none', border: 'none', color: '#000', cursor: 'pointer', fontSize: '1rem', lineHeight: 1, opacity: 0.5 }}
-              onMouseEnter={e => (e.currentTarget.style.opacity = '1')}
-              onMouseLeave={e => (e.currentTarget.style.opacity = '0.5')}
-            >✕</button>
+                onMouseEnter={e => (e.currentTarget.style.background = '#222')} onMouseLeave={e => (e.currentTarget.style.background = '#000')}
+              >export ▾</button>
+              {showExportMenu && (
+                <div style={{ position: 'absolute', top: '100%', right: 0, marginTop: '0.25rem', background: '#fff', border: '1px solid #ddd', borderRadius: '4px', boxShadow: '0 4px 12px rgba(0,0,0,0.15)', zIndex: 10, minWidth: '120px' }}>
+                  <div onClick={() => { exportAsCSV(filtered); setShowExportMenu(false); }} style={{ padding: '0.5rem 0.75rem', fontSize: '0.75rem', color: '#333', cursor: 'pointer', fontFamily: 'monospace', borderBottom: '1px solid #f0f0f0' }} onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BG)} onMouseLeave={e => (e.currentTarget.style.background = '#fff')}>Export CSV</div>
+                  <div onClick={() => { exportAsMD(filtered); setShowExportMenu(false); }} style={{ padding: '0.5rem 0.75rem', fontSize: '0.75rem', color: '#333', cursor: 'pointer', fontFamily: 'monospace' }} onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BG)} onMouseLeave={e => (e.currentTarget.style.background = '#fff')}>Export MD</div>
+                </div>
+              )}
+            </div>
+            <button onClick={openAdd}
+              style={{ background: '#000', border: '1px solid #000', color: ACCENT, padding: '0.25rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer', fontWeight: 600 }}
+              onMouseEnter={e => (e.currentTarget.style.background = '#222')} onMouseLeave={e => (e.currentTarget.style.background = '#000')}
+            >+ new</button>
+            <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#000', cursor: 'pointer', fontSize: '1rem', lineHeight: 1, opacity: 0.5 }} onMouseEnter={e => (e.currentTarget.style.opacity = '1')} onMouseLeave={e => (e.currentTarget.style.opacity = '0.5')}>✕</button>
           </div>
         </div>
 
         {/* Body */}
-        <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-          {mode === 'list' ? renderList() : renderForm()}
+        <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+          {renderLeft()}
+          {renderRight()}
         </div>
 
         {/* Resize handle */}
-        <div
-          onMouseDown={e => { resizing.current = true; resizeStart.current = { mx: e.clientX, my: e.clientY, w: size.w, h: size.h }; }}
-          style={{ position: 'absolute', bottom: 0, right: 0, width: '18px', height: '18px', cursor: 'se-resize', display: 'flex', alignItems: 'flex-end', justifyContent: 'flex-end', padding: '4px' }}
-        >
-          <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
-            <path d="M1 7L7 1M4 7L7 4" stroke={ACCENT} strokeWidth="1.5" strokeLinecap="round"/>
-          </svg>
+        <div onMouseDown={e => { resizing.current = true; resizeStart.current = { mx: e.clientX, my: e.clientY, w: size.w, h: size.h }; }} style={{ position: 'absolute', bottom: 0, right: 0, width: '18px', height: '18px', cursor: 'se-resize', display: 'flex', alignItems: 'flex-end', justifyContent: 'flex-end', padding: '4px' }}>
+          <svg width="8" height="8" viewBox="0 0 8 8" fill="none"><path d="M1 7L7 1M4 7L7 4" stroke={ACCENT} strokeWidth="1.5" strokeLinecap="round"/></svg>
         </div>
 
       </div>
@@ -666,14 +592,9 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
 
 // ─── STYLES ──────────────────────────────────────────────────────────────────
 
-const labelStyle: React.CSSProperties = {
+const formLabelStyle: React.CSSProperties = {
   color: '#000', fontSize: '0.65rem', marginBottom: '0.35rem',
   textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600,
-};
-
-const expandLabelStyle: React.CSSProperties = {
-  color: '#999', fontSize: '0.62rem', textTransform: 'uppercase',
-  letterSpacing: '0.05em', marginBottom: '0.2rem', fontFamily: 'monospace',
 };
 
 const inputStyle: React.CSSProperties = {
