@@ -24,9 +24,14 @@ export async function GET(req: NextRequest) {
     );
 
     const { error } = await supabase.auth.exchangeCodeForSession(code);
-    if (!error) {
-      return NextResponse.redirect(`${origin}/workspace`);
-    }
+
+
+if (error) {
+  console.error('[auth/callback] exchangeCodeForSession error:', error);
+  return NextResponse.redirect(`${origin}/login?error=${encodeURIComponent(error.message)}`);
+}
+
+
     console.error('[auth/callback] exchangeCodeForSession error:', error);
   }
 
