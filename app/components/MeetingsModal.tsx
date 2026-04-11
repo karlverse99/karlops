@@ -121,7 +121,7 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
 
   // ─── Drag/resize ───────────────────────────────────────────────────────────
   const [pos, setPos]           = useState({ x: 0, y: 0 });
-  const [size, setSize]         = useState({ w: 1000, h: 720 });
+  const [size, setSize]         = useState({ w: 1000, h: 860 });
   const [centered, setCentered] = useState(true);
   const dragging                = useRef(false);
   const resizing                = useRef(false);
