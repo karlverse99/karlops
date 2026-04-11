@@ -4,6 +4,7 @@ import { useEffect, useState, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import TaskDetailModal from '@/app/components/TaskDetailModal';
 import CompletionsModal from '@/app/components/CompletionsModal';
+import MeetingsModal from '@/app/components/MeetingsModal';
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -304,7 +305,9 @@ export default function WorkspacePage() {
   const [accessToken, setAccessToken]         = useState('');
   const [showCapture, setShowCapture]         = useState(false);
   const [showCompletions, setShowCompletions] = useState(false);
+  const [showMeetings, setShowMeetings]       = useState(false);
   const [completionCount, setCompletionCount] = useState(0);
+  const [meetingCount, setMeetingCount]       = useState(0);
   const [selectedTask, setSelectedTask]       = useState<Task | null>(null);
 
   const chatBottomRef = useRef<HTMLDivElement>(null);
@@ -344,6 +347,7 @@ export default function WorkspacePage() {
         await loadContexts(session.user.id);
         await loadStatuses(session.user.id);
         await loadCompletionCount(session.user.id);
+        await loadMeetingCount(session.user.id);
         setSessionReady(true);
 
         setChat([{
@@ -389,12 +393,7 @@ export default function WorkspacePage() {
     if (data) {
       setBuckets(data.map(c => {
         const key = c.concept_key.replace('bucket_', '');
-        return {
-          key,
-          label: c.label,
-          icon:  c.icon ?? '',
-          ...BUCKET_COLORS[key] ?? { color: '#666', accent: '#999' },
-        };
+        return { key, label: c.label, icon: c.icon ?? '', ...BUCKET_COLORS[key] ?? { color: '#666', accent: '#999' } };
       }));
     }
   };
@@ -439,6 +438,14 @@ export default function WorkspacePage() {
       .select('completion_id', { count: 'exact', head: true })
       .eq('user_id', userId);
     if (count !== null) setCompletionCount(count);
+  };
+
+  const loadMeetingCount = async (userId: string) => {
+    const { count } = await supabase
+      .from('meeting')
+      .select('meeting_id', { count: 'exact', head: true })
+      .eq('user_id', userId);
+    if (count !== null) setMeetingCount(count);
   };
 
   useEffect(() => {
@@ -496,7 +503,11 @@ export default function WorkspacePage() {
           const data = await res.json();
           setPending(null);
           addMessage('assistant', data.response ?? 'Done.');
-          if (koUser) { await loadTasks(koUser.id); await loadCompletionCount(koUser.id); }
+          if (koUser) {
+            await loadTasks(koUser.id);
+            await loadCompletionCount(koUser.id);
+            await loadMeetingCount(koUser.id);
+          }
           return;
         }
 
@@ -591,6 +602,14 @@ export default function WorkspacePage() {
           onCountChange={setCompletionCount}
         />
       )}
+      {showMeetings && koUser && (
+        <MeetingsModal
+          userId={koUser.id}
+          accessToken={accessToken}
+          onClose={() => setShowMeetings(false)}
+          onCountChange={setMeetingCount}
+        />
+      )}
       {selectedTask && koUser && (
         <TaskDetailModal
           taskId={selectedTask.id}
@@ -601,7 +620,7 @@ export default function WorkspacePage() {
         />
       )}
 
- {/* HEADER */}
+      {/* HEADER */}
       <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 1.25rem', height: '44px', borderBottom: '1px solid #1a1a1a', flexShrink: 0, background: '#0d0d0d' }}>
 
         {/* LEFT: brand */}
@@ -631,12 +650,12 @@ export default function WorkspacePage() {
               onMouseLeave={e => (e.currentTarget.style.background = '#1a0e00')}
             >+complete(<span style={{ color: '#ffffff', fontWeight: 600 }}>{completionCount}</span>)</button>
 
-            {/* +meeting */}
-            <button onClick={() => {}}
+            {/* +meeting(n) */}
+            <button onClick={() => setShowMeetings(true)}
               style={{ background: '#0a0f1a', border: '1px solid #1a3060', color: '#3b82f6', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
               onMouseEnter={e => (e.currentTarget.style.background = '#0f1a2a')}
               onMouseLeave={e => (e.currentTarget.style.background = '#0a0f1a')}
-            >+meeting</button>
+            >+meeting(<span style={{ color: '#ffffff', fontWeight: 600 }}>{meetingCount}</span>)</button>
 
             {/* +reference */}
             <button onClick={() => {}}
@@ -676,6 +695,7 @@ export default function WorkspacePage() {
 
         </div>
       </header>
+
       {/* MAIN SPLIT */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
 
