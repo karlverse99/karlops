@@ -22,7 +22,7 @@ export interface KarlDeepBundle extends KarlContextBundle {
   tasksByContext: string;   // open tasks grouped by context
 }
 
-// Bucket identifier prefixes for chat references
+// Bucket identifier prefixes for chat references — matches UI pill identifiers
 const BUCKET_PREFIX: Record<string, string> = {
   now:      'N',
   soon:     'S',
@@ -87,7 +87,8 @@ export async function buildKarlContext(user_id: string): Promise<KarlContextBund
     } else {
       snapshotLines.push(`${bucket}:`);
       items.forEach((t, i) => {
-      snapshotLines.push(`  ${prefix}${i + 1} ${t.title}`);
+        snapshotLines.push(`  ${prefix}${i + 1} ${t.title}`);
+      });
     }
   }
 
@@ -162,7 +163,7 @@ export async function buildKarlDeepContext(user_id: string): Promise<KarlDeepBun
   for (const t of tasks ?? []) {
     const ctx = (t.context as any)?.name ?? 'No Context';
     if (!byContext[ctx]) byContext[ctx] = [];
-    byContext[ctx].push(`  [${t.bucket_key}] ${t.title}`);
+    byContext[ctx].push(`  ${t.bucket_key} ${t.title}`);
   }
   const tasksByContext = Object.entries(byContext)
     .map(([ctx, items]) => `${ctx}:\n${items.join('\n')}`)
@@ -185,7 +186,7 @@ export function formatContextForPrompt(bundle: KarlContextBundle): string {
     parts.push(`## User Situation\nNot yet configured. Encourage the user to write their situation brief.`);
   }
 
-  parts.push(`## Current Task Load\nTasks are identified as [BucketN] for reference in commands.\n${bundle.bucketSnapshot}`);
+  parts.push(`## Current Task Load\nTasks are identified as BucketN (e.g. N1, S2, RW1, L1, D1) for reference in commands.\n${bundle.bucketSnapshot}`);
   parts.push(`## Recent Completions\n${bundle.recentCompletions}`);
 
   if ('fullCompletions' in bundle) {

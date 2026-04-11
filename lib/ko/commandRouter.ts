@@ -96,7 +96,7 @@ export async function routeCommand(
       objectSummaries,
       '',
       '## Task Identifiers',
-      'Tasks in the current load are identified as BucketN (e.g. N1, RW2, L1, D1).'
+      'Tasks in the current load are identified as BucketN (e.g. N1, S2, RW1, L1, D1).',
       'When the user references a task by identifier or title, use it to act on that specific task.',
       '',
       '## Intent Classification',
