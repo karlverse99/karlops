@@ -87,8 +87,7 @@ export async function buildKarlContext(user_id: string): Promise<KarlContextBund
     } else {
       snapshotLines.push(`${bucket}:`);
       items.forEach((t, i) => {
-        snapshotLines.push(`  [${prefix}-${i + 1}] ${t.title}`);
-      });
+      snapshotLines.push(`  ${prefix}${i + 1} ${t.title}`);
     }
   }
 
@@ -186,7 +185,7 @@ export function formatContextForPrompt(bundle: KarlContextBundle): string {
     parts.push(`## User Situation\nNot yet configured. Encourage the user to write their situation brief.`);
   }
 
-  parts.push(`## Current Task Load\nTasks are identified as [Bucket-N] for reference in commands.\n${bundle.bucketSnapshot}`);
+  parts.push(`## Current Task Load\nTasks are identified as [BucketN] for reference in commands.\n${bundle.bucketSnapshot}`);
   parts.push(`## Recent Completions\n${bundle.recentCompletions}`);
 
   if ('fullCompletions' in bundle) {
