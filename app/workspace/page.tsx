@@ -323,60 +323,65 @@ export default function WorkspacePage() {
 
   // ─── PAGE: Auth & Init ─────────────────────────────────────────────────────
 
-  useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (event !== 'INITIAL_SESSION') return;
-      if (!session?.user) { window.location.href = '/login'; return; }
-      if (initDone.current) return;
-      initDone.current = true;
-      setAccessToken(session.access_token);
+useEffect(() => {
+  const init = async (session: any) => {
+    if (!session?.user) { window.location.href = '/login'; return; }
+    if (initDone.current) return;
+    initDone.current = true;
+    setAccessToken(session.access_token);
 
-      try {
-        const res = await fetch('/api/ko/session', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}` },
-        });
-        const data = await res.json();
-        if (!data.success) throw new Error(data.error ?? 'Session init failed');
+    try {
+      const res = await fetch('/api/ko/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}` },
+      });
+      const data = await res.json();
+      if (!data.success) throw new Error(data.error ?? 'Session init failed');
 
-        const { data: koUserData, error: koErr } = await supabase
-          .from('ko_user')
-          .select('id, email, display_name, implementation_type')
-          .eq('id', session.user.id)
-          .single();
-        if (koErr) throw koErr;
+      const { data: koUserData, error: koErr } = await supabase
+        .from('ko_user')
+        .select('id, email, display_name, implementation_type')
+        .eq('id', session.user.id)
+        .single();
+      if (koErr) throw koErr;
 
-        setKoUser(koUserData);
+      setKoUser(koUserData);
+      await loadBuckets(koUserData.implementation_type);
+      await loadContexts(session.user.id);
+      await loadStatuses(session.user.id);
+      setSessionReady(true);
 
-        // Load buckets — uses implementation_type from concept_registry (system table)
-        await loadBuckets(koUserData.implementation_type);
+      setChat([{
+        role: 'assistant',
+        content: data.is_new_user
+          ? `Welcome. I'm Karl.\n\nDrop anything here — tasks, notes, things on your mind. I'll help you sort it.\n\nWhat's on the board right now?`
+          : `Back at it. What's changed?`,
+        timestamp: new Date(),
+      }]);
 
-        // Load contexts for filter
-        await loadContexts(session.user.id);
+      await loadTasks(session.user.id);
 
-        // Load task statuses for label lookup
-        await loadStatuses(session.user.id);
+    } catch (err: any) {
+      console.error('[WorkspacePage init]', err);
+      setSessionError(err.message ?? 'Failed to initialize');
+    }
+  };
 
-        setSessionReady(true);
-
-        setChat([{
-          role: 'assistant',
-          content: data.is_new_user
-            ? `Welcome. I'm Karl.\n\nDrop anything here — tasks, notes, things on your mind. I'll help you sort it.\n\nWhat's on the board right now?`
-            : `Back at it. What's changed?`,
-          timestamp: new Date(),
-        }]);
-
-        await loadTasks(session.user.id);
-
-      } catch (err: any) {
-        console.error('[WorkspacePage init]', err);
-        setSessionError(err.message ?? 'Failed to initialize');
-      }
-    });
-
-    return () => subscription.unsubscribe();
-  }, []);
+  // Try getSession first — catches cookie set by server-side callback
+  supabase.auth.getSession().then(({ data: { session } }) => {
+    if (session?.user) {
+      init(session);
+    } else {
+      // Fall back to listener in case session arrives async
+      const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+        if (event === 'INITIAL_SESSION' || event === 'SIGNED_IN') {
+          init(session);
+        }
+      });
+      return () => subscription.unsubscribe();
+    }
+  });
+}, []);
 
   // ─── PAGE: Data loaders ────────────────────────────────────────────────────
 
