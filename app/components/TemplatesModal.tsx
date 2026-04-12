@@ -41,9 +41,9 @@ interface TemplatesModalProps {
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
-const ACCENT   = '#14b8a6';
-const ACCENT_BG = '#0a1f1d';
-const ACCENT_BORDER = '#0f3330';
+const ACCENT        = '#14b8a6';
+const ACCENT_BG     = '#f0fdfa';
+const ACCENT_BORDER = '#99f6e4';
 
 const BUCKET_OPTS = ['now', 'soon', 'realwork', 'later', 'delegate', 'capture'];
 
@@ -54,12 +54,6 @@ const DEFAULT_DS: DataSources = {
   meetings:    { window_days: 30, completed_only: true },
   references:  false,
 };
-
-// ─── HELPERS ──────────────────────────────────────────────────────────────────
-
-function fmtDate(d: string) {
-  return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
-}
 
 // ─── SUBCOMPONENTS ────────────────────────────────────────────────────────────
 
@@ -76,15 +70,15 @@ function DataSourcesEditor({ ds, onChange }: { ds: DataSources; onChange: (ds: D
   };
 
   const row = (label: string, active: boolean, onToggle: () => void, children?: React.ReactNode) => (
-    <div style={{ marginBottom: '0.75rem' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: active && children ? '0.4rem' : 0 }}>
+    <div style={{ marginBottom: '0.6rem' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: active && children ? '0.35rem' : 0 }}>
         <div onClick={onToggle} style={{ width: 14, height: 14, border: `1px solid ${active ? ACCENT : '#444'}`, borderRadius: 3, background: active ? ACCENT : 'transparent', cursor: 'pointer', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           {active && <span style={{ color: '#000', fontSize: 9, fontWeight: 700 }}>✓</span>}
         </div>
-        <span style={{ color: active ? '#e5e5e5' : '#666', fontSize: '0.75rem' }}>{label}</span>
+        <span style={{ color: active ? '#111' : '#888', fontSize: '0.75rem' }}>{label}</span>
       </div>
       {active && children && (
-        <div style={{ marginLeft: '1.5rem', padding: '0.5rem', background: '#111', border: '1px solid #222', borderRadius: 4 }}>
+        <div style={{ marginLeft: '1.5rem', padding: '0.4rem 0.6rem', background: '#fafafa', border: '1px solid #e5e7eb', borderRadius: 4 }}>
           {children}
         </div>
       )}
@@ -94,51 +88,47 @@ function DataSourcesEditor({ ds, onChange }: { ds: DataSources; onChange: (ds: D
   return (
     <div>
       {row('Situation brief', !!ds.situation, () => toggle('situation', true))}
-
       {row('Tasks', hasTasks, () => toggle('tasks', { buckets: ['now', 'soon', 'realwork'], context: null, tags: [] }),
         hasTasks && typeof ds.tasks === 'object' ? (
           <div>
-            <div style={{ color: '#666', fontSize: '0.65rem', marginBottom: '0.3rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Buckets</div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem' }}>
+            <div style={{ color: '#666', fontSize: '0.62rem', marginBottom: '0.3rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Buckets</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
               {BUCKET_OPTS.map(b => {
                 const active = (ds.tasks as any).buckets?.includes(b);
                 return (
                   <button key={b} onClick={() => {
-                    const cur = (ds.tasks as any).buckets ?? [];
+                    const cur  = (ds.tasks as any).buckets ?? [];
                     const next = active ? cur.filter((x: string) => x !== b) : [...cur, b];
                     onChange({ ...ds, tasks: { ...(ds.tasks as any), buckets: next } });
-                  }} style={{ background: active ? '#0a1f1d' : 'transparent', border: `1px solid ${active ? ACCENT : '#333'}`, color: active ? ACCENT : '#666', padding: '0.15rem 0.4rem', borderRadius: 3, fontSize: '0.65rem', fontFamily: 'monospace', cursor: 'pointer' }}>{b}</button>
+                  }} style={{ background: active ? ACCENT_BG : 'transparent', border: `1px solid ${active ? ACCENT : '#333'}`, color: active ? ACCENT : '#555', padding: '0.12rem 0.4rem', borderRadius: 3, fontSize: '0.65rem', fontFamily: 'monospace', cursor: 'pointer' }}>{b}</button>
                 );
               })}
             </div>
           </div>
         ) : null
       )}
-
       {row('Completions', hasCompletions, () => toggle('completions', { window_days: 30, context: null, tags: [] }),
         hasCompletions && typeof ds.completions === 'object' ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <span style={{ color: '#666', fontSize: '0.65rem' }}>Last</span>
             <input type="number" min={1} max={365} value={(ds.completions as any).window_days}
               onChange={e => onChange({ ...ds, completions: { ...(ds.completions as any), window_days: parseInt(e.target.value) || 30 } })}
-              style={{ width: 50, background: '#0a0a0a', border: '1px solid #333', color: '#e5e5e5', padding: '0.2rem 0.4rem', borderRadius: 3, fontFamily: 'monospace', fontSize: '0.75rem' }} />
+              style={{ width: 50, background: '#f5f5f5', border: '1px solid #ddd', color: '#222', padding: '0.2rem 0.4rem', borderRadius: 3, fontFamily: 'monospace', fontSize: '0.75rem', outline: 'none' }} />
             <span style={{ color: '#666', fontSize: '0.65rem' }}>days</span>
           </div>
         ) : null
       )}
-
       {row('Meetings', hasMeetings, () => toggle('meetings', { window_days: 30, completed_only: true }),
         hasMeetings && typeof ds.meetings === 'object' ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <span style={{ color: '#666', fontSize: '0.65rem' }}>Last</span>
             <input type="number" min={1} max={365} value={(ds.meetings as any).window_days}
               onChange={e => onChange({ ...ds, meetings: { ...(ds.meetings as any), window_days: parseInt(e.target.value) || 30 } })}
-              style={{ width: 50, background: '#0a0a0a', border: '1px solid #333', color: '#e5e5e5', padding: '0.2rem 0.4rem', borderRadius: 3, fontFamily: 'monospace', fontSize: '0.75rem' }} />
+              style={{ width: 50, background: '#f5f5f5', border: '1px solid #ddd', color: '#222', padding: '0.2rem 0.4rem', borderRadius: 3, fontFamily: 'monospace', fontSize: '0.75rem', outline: 'none' }} />
             <span style={{ color: '#666', fontSize: '0.65rem' }}>days</span>
           </div>
         ) : null
       )}
-
       {row('References', !!ds.references, () => toggle('references', true))}
     </div>
   );
@@ -149,13 +139,12 @@ function DataSourcesEditor({ ds, onChange }: { ds: DataSources; onChange: (ds: D
 export default function TemplatesModal({ userId, accessToken, onClose, onCountChange }: TemplatesModalProps) {
 
   // ── State ──────────────────────────────────────────────────────────────────
-
-  const [templates, setTemplates]         = useState<Template[]>([]);
-  const [loading, setLoading]             = useState(true);
-  const [selected, setSelected]           = useState<Template | null>(null);
-  const [isNew, setIsNew]                 = useState(false);
-  const [search, setSearch]               = useState('');
-  const [filterType, setFilterType]       = useState<'all' | 'system' | 'mine'>('all');
+  const [templates, setTemplates]   = useState<Template[]>([]);
+  const [loading, setLoading]       = useState(true);
+  const [selected, setSelected]     = useState<Template | null>(null);
+  const [isNew, setIsNew]           = useState(false);
+  const [search, setSearch]         = useState('');
+  const [filterType, setFilterType] = useState<'all' | 'system' | 'mine'>('all');
 
   // Edit state
   const [editName, setEditName]           = useState('');
@@ -164,17 +153,18 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const [editFormat, setEditFormat]       = useState('markdown');
   const [editDs, setEditDs]               = useState<DataSources>(DEFAULT_DS);
   const [editInstructions, setEditInstructions] = useState('');
+  const [showInstructions, setShowInstructions] = useState(false);
   const [saving, setSaving]               = useState(false);
   const [saveErr, setSaveErr]             = useState('');
 
-  // Run state
-  const [running, setRunning]             = useState(false);
-  const [runOutput, setRunOutput]         = useState<string | null>(null);
-  const [runErr, setRunErr]               = useState('');
-  const [copied, setCopied]               = useState(false);
-  const [savePrompt, setSavePrompt]       = useState(false);
-  const [savingToRefs, setSavingToRefs]   = useState(false);
-  const [savedToRefs, setSavedToRefs]     = useState(false);
+  // Run/preview state
+  const [running, setRunning]         = useState(false);
+  const [runOutput, setRunOutput]     = useState<string | null>(null);
+  const [runErr, setRunErr]           = useState('');
+  const [copied, setCopied]           = useState(false);
+  const [savePrompt, setSavePrompt]   = useState(false);
+  const [savingToRefs, setSavingToRefs] = useState(false);
+  const [savedToRefs, setSavedToRefs] = useState(false);
 
   // Assist state
   const [assistInput, setAssistInput]     = useState('');
@@ -182,12 +172,20 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const [assistLoading, setAssistLoading] = useState(false);
 
   // Modal drag/resize
-  const [pos, setPos]   = useState({ x: Math.max(0, window.innerWidth / 2 - 550), y: Math.max(0, window.innerHeight / 2 - 420) });
+  const initX = Math.max(0, Math.round(window.innerWidth  / 2 - 550));
+  const initY = Math.max(0, Math.round(window.innerHeight / 2 - 390));
+  const [pos, setPos]   = useState({ x: initX, y: initY });
   const [size, setSize] = useState({ w: 1100, h: 780 });
-  const dragging        = useRef(false);
-  const resizing        = useRef(false);
-  const dragStart       = useRef({ x: 0, y: 0, px: 0, py: 0 });
-  const resizeStart     = useRef({ x: 0, y: 0, w: 0, h: 0 });
+
+  // Left panel resize
+  const [leftW, setLeftW] = useState(300);
+  const leftDragging      = useRef(false);
+  const leftDragStart     = useRef({ mx: 0, w: 0 });
+
+  const dragging    = useRef(false);
+  const resizing    = useRef(false);
+  const dragStart   = useRef({ x: 0, y: 0, px: 0, py: 0 });
+  const resizeStart = useRef({ x: 0, y: 0, w: 0, h: 0 });
 
   const assistBottomRef = useRef<HTMLDivElement>(null);
 
@@ -208,10 +206,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
       .eq('is_active', true)
       .order('is_system', { ascending: false })
       .order('name');
-    if (data) {
-      setTemplates(data as Template[]);
-      onCountChange?.(data.length);
-    }
+    if (data) { setTemplates(data as Template[]); onCountChange?.(data.length); }
     setLoading(false);
   };
 
@@ -225,8 +220,12 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
       if (resizing.current) {
         setSize({ w: Math.max(800, resizeStart.current.w + e.clientX - resizeStart.current.x), h: Math.max(500, resizeStart.current.h + e.clientY - resizeStart.current.y) });
       }
+      if (leftDragging.current) {
+        const newW = Math.max(200, Math.min(500, leftDragStart.current.w + e.clientX - leftDragStart.current.mx));
+        setLeftW(newW);
+      }
     };
-    const onUp = () => { dragging.current = false; resizing.current = false; };
+    const onUp = () => { dragging.current = false; resizing.current = false; leftDragging.current = false; };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
     return () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
@@ -235,54 +234,38 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   // ── Handlers ───────────────────────────────────────────────────────────────
 
   const selectTemplate = (t: Template) => {
-    setSelected(t);
-    setIsNew(false);
-    setEditName(t.name);
-    setEditDesc(t.description ?? '');
-    setEditDocType(t.doc_type ?? '');
-    setEditFormat(t.output_format ?? 'markdown');
-    setEditDs(t.data_sources ?? DEFAULT_DS);
+    setSelected(t); setIsNew(false);
+    setEditName(t.name); setEditDesc(t.description ?? ''); setEditDocType(t.doc_type ?? '');
+    setEditFormat(t.output_format ?? 'markdown'); setEditDs(t.data_sources ?? DEFAULT_DS);
     setEditInstructions(t.prompt_template ?? '');
-    setRunOutput(null);
-    setRunErr('');
-    setSaveErr('');
-    setAssistHistory([]);
-    setSavePrompt(false);
-    setSavedToRefs(false);
+    setShowInstructions(!!t.prompt_template);
+    setRunOutput(null); setRunErr(''); setSaveErr(''); setAssistHistory([]);
+    setSavePrompt(false); setSavedToRefs(false);
   };
 
   const startNew = () => {
-    setSelected(null);
-    setIsNew(true);
-    setEditName('');
-    setEditDesc('');
-    setEditDocType('');
-    setEditFormat('markdown');
-    setEditDs(DEFAULT_DS);
-    setEditInstructions('');
-    setRunOutput(null);
-    setRunErr('');
-    setSaveErr('');
-    setAssistHistory([]);
+    setSelected(null); setIsNew(true);
+    setEditName(''); setEditDesc(''); setEditDocType(''); setEditFormat('markdown');
+    setEditDs(DEFAULT_DS); setEditInstructions(''); setShowInstructions(false);
+    setRunOutput(null); setRunErr(''); setSaveErr(''); setAssistHistory([]);
+    setSavePrompt(false); setSavedToRefs(false);
   };
 
   const handleSave = async () => {
-    if (!editName.trim())         { setSaveErr('Name is required'); return; }
-    if (!editInstructions.trim()) { setSaveErr('Instructions are required'); return; }
+    if (!editName.trim()) { setSaveErr('Name is required'); return; }
     setSaving(true); setSaveErr('');
-
     try {
       if (isNew) {
         const { error } = await supabase.from('document_template').insert({
-          user_id:          userId,
-          name:             editName.trim(),
-          description:      editDesc.trim() || null,
-          doc_type:         editDocType.trim() || null,
-          output_format:    editFormat,
-          data_sources:     editDs,
-          prompt_template:  editInstructions.trim(),
-          is_system:        false,
-          is_active:        true,
+          user_id:         userId,
+          name:            editName.trim(),
+          description:     editDesc.trim() || null,
+          doc_type:        editDocType.trim() || null,
+          output_format:   editFormat,
+          data_sources:    editDs,
+          prompt_template: editInstructions.trim() || '',
+          is_system:       false,
+          is_active:       true,
         });
         if (error) throw error;
       } else if (selected && !selected.is_system) {
@@ -292,29 +275,21 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
           doc_type:        editDocType.trim() || null,
           output_format:   editFormat,
           data_sources:    editDs,
-          prompt_template: editInstructions.trim(),
+          prompt_template: editInstructions.trim() || '',
           updated_at:      new Date().toISOString(),
         }).eq('document_template_id', selected.document_template_id);
         if (error) throw error;
       }
-
-      await loadTemplates();
-      setIsNew(false);
-    } catch (err: any) {
-      setSaveErr(err.message ?? 'Save failed');
-    } finally {
-      setSaving(false);
-    }
+      await loadTemplates(); setIsNew(false);
+    } catch (err: any) { setSaveErr(err.message ?? 'Save failed'); }
+    finally { setSaving(false); }
   };
 
   const handleDelete = async () => {
     if (!selected || selected.is_system) return;
     if (!confirm(`Delete "${selected.name}"? This cannot be undone.`)) return;
-    await supabase.from('document_template')
-      .update({ is_active: false })
-      .eq('document_template_id', selected.document_template_id);
-    setSelected(null);
-    setIsNew(false);
+    await supabase.from('document_template').update({ is_active: false }).eq('document_template_id', selected.document_template_id);
+    setSelected(null); setIsNew(false);
     await loadTemplates();
   };
 
@@ -324,7 +299,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     setRunning(true); setRunOutput(null); setRunErr('');
     setSavePrompt(false); setSavedToRefs(false);
     try {
-      const res = await fetch('/api/ko/template/run', {
+      const res  = await fetch('/api/ko/template/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
         body: JSON.stringify({ template_id: templateId }),
@@ -332,20 +307,16 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Run failed');
       setRunOutput(data.output);
-    } catch (err: any) {
-      setRunErr(err.message ?? 'Run failed');
-    } finally {
-      setRunning(false);
-    }
+    } catch (err: any) { setRunErr(err.message ?? 'Run failed'); }
+    finally { setRunning(false); }
   };
 
   const handleSaveToRefs = async () => {
     if (!runOutput || !selected) return;
     setSavingToRefs(true);
     try {
-      const dateStr    = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-      const fileName   = `${editName.toLowerCase().replace(/\s+/g, '-')}-${new Date().toISOString().slice(0,10)}.md`;
-
+      const dateStr  = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      const fileName = `${editName.toLowerCase().replace(/\s+/g, '-')}-${new Date().toISOString().slice(0, 10)}.md`;
       const { error } = await supabase.from('external_reference').insert({
         user_id:              userId,
         title:                `${editName} — ${dateStr}`,
@@ -359,21 +330,15 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
         tags:                 [],
       });
       if (error) throw error;
-      setSavedToRefs(true);
-      setSavePrompt(false);
-    } catch (err: any) {
-      setRunErr(err.message ?? 'Save failed');
-      setSavePrompt(false);
-    } finally {
-      setSavingToRefs(false);
-    }
+      setSavedToRefs(true); setSavePrompt(false);
+    } catch (err: any) { setRunErr(err.message ?? 'Save failed'); setSavePrompt(false); }
+    finally { setSavingToRefs(false); }
   };
 
   const handleCopy = async () => {
     if (!runOutput) return;
     await navigator.clipboard.writeText(runOutput);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    setCopied(true); setTimeout(() => setCopied(false), 2000);
   };
 
   const handleDownloadMd = () => {
@@ -381,63 +346,51 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     const blob = new Blob([runOutput], { type: 'text/markdown' });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
-    a.href     = url;
-    a.download = `${editName || 'document'}.md`;
-    a.click();
+    a.href = url; a.download = `${editName || 'document'}.md`; a.click();
     URL.revokeObjectURL(url);
   };
 
   const handleAssist = async () => {
     const msg = assistInput.trim();
     if (!msg || assistLoading) return;
-    setAssistInput('');
-    setAssistLoading(true);
-
-    const userMsg: AssistMessage = { role: 'user', content: msg };
-    setAssistHistory(h => [...h, userMsg]);
-
+    setAssistInput(''); setAssistLoading(true);
+    setAssistHistory(h => [...h, { role: 'user', content: msg }]);
     try {
-      const res = await fetch('/api/ko/template/assist', {
+      const res  = await fetch('/api/ko/template/assist', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
         body: JSON.stringify({
-          message:                  msg,
-          history:                  assistHistory.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content })),
-          current_instructions:     editInstructions,
-          current_data_sources:     editDs,
+          message:              msg,
+          history:              assistHistory.map(m => ({ role: m.role, content: m.content })),
+          current_instructions: editInstructions,
+          current_data_sources: editDs,
         }),
       });
       const data = await res.json();
-
       setAssistHistory(h => [...h, { role: 'assistant', content: data.response ?? '' }]);
-
-      if (data.suggested_instructions) setEditInstructions(data.suggested_instructions);
+      if (data.suggested_instructions) { setEditInstructions(data.suggested_instructions); setShowInstructions(true); }
       if (data.suggested_data_sources) setEditDs(data.suggested_data_sources);
-
-    } catch (err: any) {
+    } catch {
       setAssistHistory(h => [...h, { role: 'assistant', content: 'Something went wrong. Try again.' }]);
-    } finally {
-      setAssistLoading(false);
-    }
+    } finally { setAssistLoading(false); }
   };
 
-  // ── Filtered list ──────────────────────────────────────────────────────────
+  // ── Derived ────────────────────────────────────────────────────────────────
 
-  const filtered = templates.filter(t => {
-    const matchSearch = !search || t.name.toLowerCase().includes(search.toLowerCase()) || (t.description ?? '').toLowerCase().includes(search.toLowerCase());
-    const matchType   = filterType === 'all' ? true : filterType === 'system' ? t.is_system : !t.is_system;
-    return matchSearch && matchType;
+  const filtered  = templates.filter(t => {
+    const matchS = !search || t.name.toLowerCase().includes(search.toLowerCase()) || (t.description ?? '').toLowerCase().includes(search.toLowerCase());
+    const matchT = filterType === 'all' ? true : filterType === 'system' ? t.is_system : !t.is_system;
+    return matchS && matchT;
   });
 
-  const isEditing  = isNew || !!selected;
-  const isSystem   = selected?.is_system ?? false;
-  const canEdit    = isNew || (!!selected && !isSystem);
+  const isEditing = isNew || !!selected;
+  const isSystem  = selected?.is_system ?? false;
 
-  // ── Render ─────────────────────────────────────────────────────────────────
+  // ─── RENDER ────────────────────────────────────────────────────────────────
 
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 200, pointerEvents: 'none' }}>
-      <div style={{ position: 'absolute', left: pos.x, top: pos.y, width: size.w, height: size.h, background: '#0d0d0d', border: `1px solid ${ACCENT_BORDER}`, borderRadius: 8, display: 'flex', flexDirection: 'column', fontFamily: 'monospace', overflow: 'hidden', pointerEvents: 'all', boxShadow: '0 8px 40px rgba(0,0,0,0.6)' }}>
+      <div style={{ position: 'absolute', left: pos.x, top: pos.y, width: size.w, height: size.h, background: '#ffffff', border: `2px solid ${ACCENT}`, borderRadius: 8, display: 'flex', flexDirection: 'column', fontFamily: 'monospace', overflow: 'hidden', pointerEvents: 'all', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
 
         {/* HEADER */}
         <div
@@ -446,9 +399,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
             <span style={{ color: '#000', fontWeight: 700, fontSize: '0.85rem' }}>Templates</span>
-            <span style={{ color: '#000', fontSize: '0.7rem', opacity: 0.6 }}>TM</span>
-            <span style={{ color: '#000', fontSize: '0.7rem', opacity: 0.5 }}>·</span>
-            <span style={{ color: '#000', fontSize: '0.7rem' }}>{templates.length} template{templates.length !== 1 ? 's' : ''}</span>
+            <span style={{ color: '#000', fontSize: '0.7rem', opacity: 0.5 }}>TM · {templates.length} template{templates.length !== 1 ? 's' : ''}</span>
           </div>
           <button onMouseDown={e => e.stopPropagation()} onClick={onClose}
             style={{ background: 'none', border: 'none', color: '#000', cursor: 'pointer', fontSize: '1rem', opacity: 0.6, lineHeight: 1 }}>✕</button>
@@ -458,16 +409,11 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
         <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
 
           {/* LEFT PANEL */}
-          <div style={{ width: 320, flexShrink: 0, borderRight: `1px solid #1a1a1a`, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <div style={{ width: leftW, flexShrink: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
-            {/* Search + filter */}
-            <div style={{ padding: '0.75rem', borderBottom: '1px solid #1a1a1a', flexShrink: 0 }}>
-              <input
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-                placeholder="Search templates..."
-                style={{ width: '100%', background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.4rem 0.6rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.75rem', outline: 'none', boxSizing: 'border-box', marginBottom: '0.5rem' }}
-              />
+            <div style={{ padding: '0.75rem', borderBottom: '1px solid #e5e7eb', flexShrink: 0 }}>
+              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search templates..."
+                style={{ width: '100%', background: '#fafafa', border: '1px solid #e5e7eb', color: '#222', padding: '0.4rem 0.6rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.75rem', outline: 'none', boxSizing: 'border-box', marginBottom: '0.5rem' }} />
               <div style={{ display: 'flex', gap: '0.3rem' }}>
                 {(['all', 'system', 'mine'] as const).map(f => (
                   <button key={f} onClick={() => setFilterType(f)}
@@ -476,36 +422,34 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
               </div>
             </div>
 
-            {/* New button */}
-            <div style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #1a1a1a', flexShrink: 0 }}>
+            <div style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #e5e7eb', flexShrink: 0 }}>
               <button onClick={startNew}
                 style={{ width: '100%', background: isNew ? ACCENT_BG : 'transparent', border: `1px solid ${isNew ? ACCENT : '#333'}`, color: isNew ? ACCENT : '#888', padding: '0.4rem', borderRadius: 4, fontSize: '0.75rem', fontFamily: 'monospace', cursor: 'pointer' }}>
                 + new template
               </button>
             </div>
 
-            {/* List */}
-            <div style={{ flex: 1, overflowY: 'auto', scrollbarWidth: 'thin', scrollbarColor: '#222 transparent' }}>
+            <div style={{ flex: 1, overflowY: 'auto', scrollbarWidth: 'thin', scrollbarColor: '#ddd transparent' }}>
               {loading
-                ? <div style={{ padding: '1rem', color: '#555', fontSize: '0.75rem' }}>Loading...</div>
+                ? <div style={{ padding: '1rem', color: '#666', fontSize: '0.75rem' }}>Loading...</div>
                 : filtered.length === 0
-                  ? <div style={{ padding: '1rem', color: '#444', fontSize: '0.75rem' }}>No templates found</div>
+                  ? <div style={{ padding: '1rem', color: '#888', fontSize: '0.75rem' }}>No templates found</div>
                   : filtered.map((t, idx) => {
                       const isActive = selected?.document_template_id === t.document_template_id;
                       return (
                         <div key={t.document_template_id} onClick={() => selectTemplate(t)}
-                          style={{ padding: '0.6rem 0.75rem', borderBottom: '1px solid #111', cursor: 'pointer', background: isActive ? ACCENT_BG : 'transparent', borderLeft: isActive ? `2px solid ${ACCENT}` : '2px solid transparent', transition: 'background 0.1s' }}
-                          onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = '#111'; }}
+                          style={{ padding: '0.6rem 0.75rem', borderBottom: '1px solid #e5e7eb', cursor: 'pointer', background: isActive ? ACCENT_BG : 'transparent', borderLeft: isActive ? `2px solid ${ACCENT}` : '2px solid transparent', transition: 'background 0.1s' }}
+                          onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = '#f5f5f5'; }}
                           onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}
                         >
                           <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.2rem' }}>
                             <span style={{ color: ACCENT, fontSize: '0.6rem', opacity: 0.5, fontWeight: 600 }}>TM{idx + 1}</span>
-                            <span style={{ color: '#e5e5e5', fontSize: '0.78rem', flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.name}</span>
+                            <span style={{ color: '#222', fontSize: '0.78rem', flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.name}</span>
                           </div>
-                          <div style={{ display: 'flex', gap: '0.3rem', alignItems: 'center' }}>
+                          <div style={{ display: 'flex', gap: '0.3rem' }}>
                             {t.is_system && <span style={{ fontSize: '0.6rem', color: ACCENT, background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, padding: '0.05rem 0.3rem', borderRadius: 2 }}>system</span>}
                             {t.implementation_type && <span style={{ fontSize: '0.6rem', color: '#8b5cf6', background: '#120a1a', border: '1px solid #3a1a5a', padding: '0.05rem 0.3rem', borderRadius: 2 }}>{t.implementation_type}</span>}
-                            {t.doc_type && <span style={{ fontSize: '0.6rem', color: '#888', background: '#1a1a1a', border: '1px solid #2a2a2a', padding: '0.05rem 0.3rem', borderRadius: 2 }}>{t.doc_type}</span>}
+                            {t.doc_type && <span style={{ fontSize: '0.6rem', color: '#666', background: '#e5e5e5', border: '1px solid #e5e7eb', padding: '0.05rem 0.3rem', borderRadius: 2 }}>{t.doc_type}</span>}
                           </div>
                         </div>
                       );
@@ -514,54 +458,61 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
             </div>
           </div>
 
+          {/* RESIZABLE DIVIDER */}
+          <div
+            onMouseDown={e => { leftDragging.current = true; leftDragStart.current = { mx: e.clientX, w: leftW }; }}
+            style={{ width: 5, flexShrink: 0, background: '#e5e5e5', cursor: 'col-resize', transition: 'background 0.15s' }}
+            onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BORDER)}
+            onMouseLeave={e => (e.currentTarget.style.background = '#e5e7eb')}          />
+
           {/* RIGHT PANEL */}
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
 
             {/* Empty state */}
             {!isEditing && (
-              <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#333', fontSize: '0.8rem' }}>
-                Select a template or create a new one
+              <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#555', fontSize: '0.8rem', flexDirection: 'column', gap: '0.75rem' }}>
+                <div style={{ opacity: 0.3, fontSize: '1.5rem' }}>⊙</div>
+                <div>Select a template or create a new one</div>
               </div>
             )}
 
-            {/* Edit / view panel */}
+            {/* Edit panel */}
             {isEditing && !runOutput && !running && (
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
-                {/* Scrollable form area */}
-                <div style={{ flex: 1, overflowY: 'auto', padding: '1rem', scrollbarWidth: 'thin', scrollbarColor: '#222 transparent' }}>
+                <div style={{ flex: 1, overflowY: 'auto', padding: '1rem', scrollbarWidth: 'thin', scrollbarColor: '#ddd transparent' }}>
 
                   {isSystem && (
-                    <div style={{ padding: '0.4rem 0.7rem', background: '#1a1a00', border: '1px solid #3a3a00', borderRadius: 4, color: '#aaa', fontSize: '0.7rem', marginBottom: '1rem' }}>
+                    <div style={{ padding: '0.4rem 0.7rem', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 4, color: '#92400e', fontSize: '0.7rem', marginBottom: '1rem' }}>
                       System template — read only. Duplicate to customize.
                     </div>
                   )}
 
                   {/* Name */}
                   <div style={{ marginBottom: '0.75rem' }}>
-                    <div style={labelStyle}>Name {!isSystem && <span style={{ color: '#ef4444' }}>*</span>}</div>
+                    <div style={labelSt}>Name {!isSystem && <span style={{ color: '#ef4444' }}>*</span>}</div>
                     <input value={editName} onChange={e => setEditName(e.target.value)} disabled={isSystem}
-                      style={inputStyle(isSystem)} placeholder="Weekly Status Report" />
+                      style={inputSt(isSystem)} placeholder="Weekly Status Report" />
                   </div>
 
                   {/* Description */}
                   <div style={{ marginBottom: '0.75rem' }}>
-                    <div style={labelStyle}>Description</div>
+                    <div style={labelSt}>Description</div>
                     <input value={editDesc} onChange={e => setEditDesc(e.target.value)} disabled={isSystem}
-                      style={inputStyle(isSystem)} placeholder="What this template produces..." />
+                      style={inputSt(isSystem)} placeholder="What this template produces..." />
                   </div>
 
-                  {/* Doc type + Format */}
+                  {/* Category + Format */}
                   <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '0.75rem' }}>
                     <div style={{ flex: 1 }}>
-                      <div style={labelStyle}>Category</div>
+                      <div style={labelSt}>Category</div>
                       <input value={editDocType} onChange={e => setEditDocType(e.target.value)} disabled={isSystem}
-                        style={inputStyle(isSystem)} placeholder="report / debrief / pip..." />
+                        style={inputSt(isSystem)} placeholder="report / debrief / pip..." />
                     </div>
                     <div style={{ width: 140 }}>
-                      <div style={labelStyle}>Output Format</div>
+                      <div style={labelSt}>Output Format</div>
                       <select value={editFormat} onChange={e => setEditFormat(e.target.value)} disabled={isSystem}
-                        style={{ ...inputStyle(isSystem), cursor: isSystem ? 'not-allowed' : 'pointer' }}>
+                        style={{ ...inputSt(isSystem), cursor: isSystem ? 'not-allowed' : 'pointer' } as any}>
                         <option value="markdown">Markdown</option>
                         <option value="docx">Word (.docx)</option>
                       </select>
@@ -570,48 +521,47 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
 
                   {/* Data Sources */}
                   <div style={{ marginBottom: '0.75rem' }}>
-                    <div style={labelStyle}>Data Sources</div>
-                    <div style={{ padding: '0.75rem', background: '#111', border: '1px solid #222', borderRadius: 4 }}>
+                    <div style={labelSt}>Data Sources</div>
+                    <div style={{ padding: '0.75rem', background: '#fafafa', border: '1px solid #e5e7eb', borderRadius: 4 }}>
                       {isSystem
-                        ? <div style={{ color: '#555', fontSize: '0.72rem' }}>{JSON.stringify(editDs, null, 2)}</div>
+                        ? <div style={{ color: '#888', fontSize: '0.7rem', whiteSpace: 'pre-wrap' }}>{JSON.stringify(editDs, null, 2)}</div>
                         : <DataSourcesEditor ds={editDs} onChange={setEditDs} />
                       }
                     </div>
                   </div>
 
-                  {/* Instructions */}
-                  <div style={{ marginBottom: '0.75rem' }}>
-                    <div style={labelStyle}>Instructions {!isSystem && <span style={{ color: '#ef4444' }}>*</span>}</div>
-                    <textarea
-                      value={editInstructions}
-                      onChange={e => setEditInstructions(e.target.value)}
-                      disabled={isSystem}
-                      rows={10}
-                      placeholder="Tell Karl what document to produce and how to structure it. Be specific about format, sections, tone, and what data to emphasize..."
-                      style={{ ...inputStyle(isSystem), resize: 'vertical', minHeight: 200, lineHeight: 1.5 } as any}
-                    />
-                  </div>
-
-                  {/* Karl Assist */}
+                  {/* ── KARL ASSIST — PRIMARY ── */}
                   {!isSystem && (
-                    <div style={{ border: '1px solid #1a1a1a', borderRadius: 6, overflow: 'hidden', marginBottom: '0.5rem' }}>
-                      <div style={{ padding: '0.4rem 0.75rem', background: '#111', borderBottom: '1px solid #1a1a1a', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                        <span style={{ color: ACCENT, fontSize: '0.65rem', fontWeight: 600 }}>KARL ASSIST</span>
-                        <span style={{ color: '#444', fontSize: '0.65rem' }}>— describe what you want, Karl will draft the instructions</span>
+                    <div style={{ border: `1px solid ${ACCENT_BORDER}`, borderRadius: 6, overflow: 'hidden', marginBottom: '0.75rem' }}>
+
+                      {/* Assist header */}
+                      <div style={{ padding: '0.5rem 0.75rem', background: ACCENT_BG, borderBottom: `1px solid ${ACCENT_BORDER}`, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <span style={{ color: ACCENT, fontSize: '0.68rem', fontWeight: 700 }}>KARL ASSIST</span>
+                        <span style={{ color: '#2d6e65', fontSize: '0.65rem' }}>— describe what you want, Karl drafts the generation instructions</span>
                       </div>
+
+                      {/* Empty state prompt */}
+                      {assistHistory.length === 0 && !editInstructions && (
+                        <div style={{ padding: '0.75rem', background: '#f0fdfa', borderBottom: `1px solid ` }}>
+                          <div style={{ color: '#888', fontSize: '0.72rem', lineHeight: 1.5 }}>
+                            Tell Karl what you want this template to produce. For example:<br />
+                            <span style={{ color: '#666', fontStyle: 'italic' }}>"A weekly status report summarizing my completions by context area, with key wins and open risks"</span>
+                          </div>
+                        </div>
+                      )}
 
                       {/* Assist history */}
                       {assistHistory.length > 0 && (
-                        <div style={{ maxHeight: 180, overflowY: 'auto', padding: '0.5rem 0.75rem', background: '#0a0a0a', scrollbarWidth: 'thin', scrollbarColor: '#222 transparent' }}>
+                        <div style={{ maxHeight: 200, overflowY: 'auto', padding: '0.6rem 0.75rem', background: '#f5f5f5', scrollbarWidth: 'thin', scrollbarColor: '#ddd transparent' }}>
                           {assistHistory.map((m, i) => (
-                            <div key={i} style={{ marginBottom: '0.4rem', fontSize: '0.75rem', color: m.role === 'user' ? '#86efac' : '#d4d4d4', paddingLeft: m.role === 'user' ? '0.5rem' : 0, borderLeft: m.role === 'user' ? '2px solid #2a4a2a' : 'none' }}>
+                            <div key={i} style={{ marginBottom: '0.5rem', fontSize: '0.75rem', color: m.role === 'user' ? '#0f766e' : '#374151', paddingLeft: m.role === 'user' ? '0.5rem' : 0, borderLeft: m.role === 'user' ? '2px solid #99f6e4' : 'none', lineHeight: 1.5 }}>
                               {m.content}
                             </div>
                           ))}
                           {assistLoading && (
                             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.25rem 0' }}>
                               <KarlSpinner size="sm" color={ACCENT} />
-                              <span style={{ color: '#555', fontSize: '0.72rem' }}>Karl is thinking...</span>
+                              <span style={{ color: '#666', fontSize: '0.72rem' }}>Karl is thinking...</span>
                             </div>
                           )}
                           <div ref={assistBottomRef} />
@@ -619,26 +569,58 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                       )}
 
                       {/* Assist input */}
-                      <div style={{ display: 'flex', gap: '0.5rem', padding: '0.5rem 0.75rem', background: '#0d0d0d', borderTop: assistHistory.length > 0 ? '1px solid #1a1a1a' : 'none' }}>
-                        <input
+                      <div style={{ display: 'flex', gap: '0.5rem', padding: '0.5rem 0.75rem', background: '#fafafa' }}>
+                        <textarea
                           value={assistInput}
                           onChange={e => setAssistInput(e.target.value)}
-                          onKeyDown={e => { if (e.key === 'Enter') handleAssist(); }}
-                          placeholder="Describe what you want this template to produce..."
-                          style={{ flex: 1, background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.35rem 0.6rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.72rem', outline: 'none' }}
+                          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAssist(); } }}
+                          placeholder={assistHistory.length > 0 ? 'Refine further...' : 'Describe what you want this template to produce...'}
+                          rows={2}
+                          style={{ flex: 1, background: '#fafafa', border: '1px solid #e5e7eb', color: '#222', padding: '0.35rem 0.6rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.72rem', outline: 'none', resize: 'vertical', minHeight: 36 }}
+                          onFocus={e => (e.target.style.borderColor = ACCENT)}
+                          onBlur={e => (e.target.style.borderColor = '#ddd')}
                         />
                         <button onClick={handleAssist} disabled={!assistInput.trim() || assistLoading}
-                          style={{ background: assistInput.trim() ? ACCENT_BG : 'transparent', border: `1px solid ${assistInput.trim() ? ACCENT : '#333'}`, color: assistInput.trim() ? ACCENT : '#555', padding: '0.35rem 0.65rem', borderRadius: 4, fontSize: '0.7rem', fontFamily: 'monospace', cursor: assistInput.trim() ? 'pointer' : 'not-allowed' }}>
+                          style={{ background: assistInput.trim() ? ACCENT_BG : 'transparent', border: `1px solid ${assistInput.trim() ? ACCENT : '#333'}`, color: assistInput.trim() ? ACCENT : '#555', padding: '0.35rem 0.65rem', borderRadius: 4, fontSize: '0.7rem', fontFamily: 'monospace', cursor: assistInput.trim() ? 'pointer' : 'not-allowed', alignSelf: 'flex-end' }}>
                           ask
                         </button>
                       </div>
                     </div>
                   )}
 
+                  {/* ── GENERATION INSTRUCTIONS — SECONDARY ── */}
+                  <div style={{ marginBottom: '0.5rem' }}>
+                    <div
+                      onClick={() => setShowInstructions(v => !v)}
+                      style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', marginBottom: showInstructions ? '0.5rem' : 0 }}
+                    >
+                      <span style={{ color: showInstructions ? ACCENT : '#444', fontSize: '0.65rem', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>
+                        {showInstructions ? '▾' : '▸'} Generation Instructions {!isSystem && <span style={{ color: '#555', textTransform: 'none', fontWeight: 400, letterSpacing: 0 }}>(Karl-authored — edit carefully)</span>}
+                      </span>
+                      {editInstructions && !showInstructions && (
+                        <span style={{ fontSize: '0.62rem', color: '#2d6e65', background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, borderRadius: 3, padding: '0.05rem 0.3rem' }}>✓ drafted</span>
+                      )}
+                      {!editInstructions && !showInstructions && (
+                        <span style={{ fontSize: '0.62rem', color: '#888' }}>use Karl Assist above to build</span>
+                      )}
+                    </div>
+
+                    {showInstructions && (
+                      <textarea
+                        value={editInstructions}
+                        onChange={e => setEditInstructions(e.target.value)}
+                        disabled={isSystem}
+                        rows={8}
+                        placeholder="Use Karl Assist above to draft these instructions, or write them manually. Be specific about document format, sections, tone, and what data to emphasize..."
+                        style={{ ...inputSt(isSystem), resize: 'vertical', minHeight: 160, lineHeight: 1.5 } as any}
+                      />
+                    )}
+                  </div>
+
                 </div>
 
                 {/* Footer */}
-                <div style={{ padding: '0.75rem 1rem', borderTop: '1px solid #1a1a1a', background: '#0d0d0d', display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
+                <div style={{ padding: '0.75rem 1rem', borderTop: '1px solid #e5e7eb', background: '#fafafa', display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
                   {saveErr && <span style={{ color: '#ef4444', fontSize: '0.7rem', flex: 1 }}>{saveErr}</span>}
                   {!saveErr && <span style={{ flex: 1 }} />}
 
@@ -670,92 +652,66 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
             {running && (
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '1.25rem' }}>
                 <KarlSpinner size="lg" color={ACCENT} />
-                <div style={{ color: '#555', fontSize: '0.8rem' }}>Karl is previewing your template...</div>
-                <div style={{ color: '#333', fontSize: '0.7rem' }}>This is a test run — nothing is saved yet</div>
+                <div style={{ color: '#666', fontSize: '0.8rem' }}>Karl is previewing your template...</div>
+                <div style={{ color: '#555', fontSize: '0.7rem' }}>This is a test run — nothing is saved yet</div>
               </div>
             )}
 
-            {/* Run output */}
+            {/* Preview output */}
             {runOutput && !running && (
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
-                {/* Output toolbar */}
-                <div style={{ padding: '0.5rem 1rem', borderBottom: '1px solid #1a1a1a', background: '#0d0d0d', display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
+                <div style={{ padding: '0.5rem 1rem', borderBottom: '1px solid #e5e7eb', background: '#fafafa', display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
                   <span style={{ color: ACCENT, fontSize: '0.7rem', fontWeight: 600 }}>PREVIEW</span>
-                  <span style={{ color: '#444', fontSize: '0.7rem' }}>·</span>
-                  <span style={{ color: '#555', fontSize: '0.7rem' }}>{editName}</span>
-                  <span style={{ color: '#333', fontSize: '0.65rem', marginLeft: '0.25rem' }}>— this is a test run, nothing saved</span>
+                  <span style={{ color: '#555', fontSize: '0.65rem' }}>· test run · nothing saved</span>
                   <span style={{ flex: 1 }} />
                   <button onClick={handleCopy}
-                    style={{ background: copied ? '#0a1f1d' : 'transparent', border: `1px solid ${copied ? ACCENT : '#333'}`, color: copied ? ACCENT : '#888', padding: '0.25rem 0.6rem', borderRadius: 3, fontSize: '0.68rem', fontFamily: 'monospace', cursor: 'pointer' }}>
+                    style={{ background: copied ? ACCENT_BG : 'transparent', border: `1px solid ${copied ? ACCENT : '#333'}`, color: copied ? ACCENT : '#666', padding: '0.25rem 0.6rem', borderRadius: 3, fontSize: '0.68rem', fontFamily: 'monospace', cursor: 'pointer' }}>
                     {copied ? '✓ copied' : 'copy'}
                   </button>
                   <button onClick={handleDownloadMd}
-                    style={{ background: 'transparent', border: '1px solid #333', color: '#888', padding: '0.25rem 0.6rem', borderRadius: 3, fontSize: '0.68rem', fontFamily: 'monospace', cursor: 'pointer' }}>
+                    style={{ background: 'transparent', border: '1px solid #ddd', color: '#666', padding: '0.25rem 0.6rem', borderRadius: 3, fontSize: '0.68rem', fontFamily: 'monospace', cursor: 'pointer' }}>
                     ↓ .md
                   </button>
                   <button onClick={() => { setRunOutput(null); setRunErr(''); setSavePrompt(false); }}
-                    style={{ background: 'transparent', border: '1px solid #333', color: '#888', padding: '0.25rem 0.6rem', borderRadius: 3, fontSize: '0.68rem', fontFamily: 'monospace', cursor: 'pointer' }}>
+                    style={{ background: 'transparent', border: '1px solid #ddd', color: '#666', padding: '0.25rem 0.6rem', borderRadius: 3, fontSize: '0.68rem', fontFamily: 'monospace', cursor: 'pointer' }}>
                     ← back
                   </button>
                 </div>
 
-                {/* Output content */}
-                <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem', scrollbarWidth: 'thin', scrollbarColor: '#222 transparent' }}>
-                  <pre style={{ color: '#d4d4d4', fontSize: '0.8rem', lineHeight: 1.7, whiteSpace: 'pre-wrap', fontFamily: 'monospace', margin: 0 }}>
-                    {runOutput}
-                  </pre>
+                <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem', scrollbarWidth: 'thin', scrollbarColor: '#ddd transparent' }}>
+                  <pre style={{ color: '#555', fontSize: '0.8rem', lineHeight: 1.7, whiteSpace: 'pre-wrap', fontFamily: 'monospace', margin: 0 }}>{runOutput}</pre>
                 </div>
 
-                {/* Footer — save prompt or preview again */}
-                <div style={{ padding: '0.75rem 1rem', borderTop: '1px solid #1a1a1a', background: '#0d0d0d', flexShrink: 0 }}>
-
+                <div style={{ padding: '0.75rem 1rem', borderTop: '1px solid #e5e7eb', background: '#fafafa', flexShrink: 0 }}>
                   {!savePrompt && !savedToRefs && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                       <div style={{ flex: 1 }}>
                         <div style={{ color: '#888', fontSize: '0.72rem' }}>Happy with this?</div>
-                        <div style={{ color: '#444', fontSize: '0.65rem', marginTop: '0.15rem' }}>Save to your Extracts so you can rerun it anytime — or just copy and go.</div>
+                        <div style={{ color: '#888', fontSize: '0.65rem', marginTop: '0.1rem' }}>Save to your Extracts so you can rerun it anytime — or just copy and go.</div>
                       </div>
-                      <button onClick={handleRun}
-                        style={{ background: 'transparent', border: '1px solid #333', color: '#666', padding: '0.35rem 0.75rem', borderRadius: 4, fontSize: '0.7rem', fontFamily: 'monospace', cursor: 'pointer' }}>
-                        ▶ preview again
-                      </button>
-                      <button onClick={() => setSavePrompt(true)}
-                        style={{ background: ACCENT, border: 'none', color: '#000', padding: '0.35rem 1rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer', fontWeight: 700 }}>
-                        Save & Track
-                      </button>
+                      <button onClick={handleRun} style={{ background: 'transparent', border: '1px solid #ddd', color: '#666', padding: '0.35rem 0.75rem', borderRadius: 4, fontSize: '0.7rem', fontFamily: 'monospace', cursor: 'pointer' }}>▶ preview again</button>
+                      <button onClick={() => setSavePrompt(true)} style={{ background: ACCENT, border: 'none', color: '#000', padding: '0.35rem 1rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer', fontWeight: 700 }}>Save & Track</button>
                     </div>
                   )}
-
                   {savePrompt && !savedToRefs && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                       <div style={{ flex: 1 }}>
-                        <div style={{ color: '#e5e5e5', fontSize: '0.72rem' }}>Save this to your Extracts?</div>
-                        <div style={{ color: '#555', fontSize: '0.65rem', marginTop: '0.15rem' }}>We'll keep a copy so you can rerun it anytime.</div>
+                        <div style={{ color: '#222', fontSize: '0.72rem' }}>Save this to your Extracts?</div>
+                        <div style={{ color: '#666', fontSize: '0.65rem', marginTop: '0.1rem' }}>We'll keep a copy so you can rerun it anytime.</div>
                       </div>
-                      <button onClick={() => setSavePrompt(false)}
-                        style={{ background: 'transparent', border: '1px solid #333', color: '#666', padding: '0.35rem 0.75rem', borderRadius: 4, fontSize: '0.7rem', fontFamily: 'monospace', cursor: 'pointer' }}>
-                        no thanks
-                      </button>
-                      <button onClick={handleSaveToRefs} disabled={savingToRefs}
-                        style={{ background: ACCENT, border: 'none', color: '#000', padding: '0.35rem 1rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer', fontWeight: 700 }}>
-                        {savingToRefs ? 'saving...' : 'yes, save it'}
-                      </button>
+                      <button onClick={() => setSavePrompt(false)} style={{ background: 'transparent', border: '1px solid #ddd', color: '#666', padding: '0.35rem 0.75rem', borderRadius: 4, fontSize: '0.7rem', fontFamily: 'monospace', cursor: 'pointer' }}>no thanks</button>
+                      <button onClick={handleSaveToRefs} disabled={savingToRefs} style={{ background: ACCENT, border: 'none', color: '#000', padding: '0.35rem 1rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer', fontWeight: 700 }}>{savingToRefs ? 'saving...' : 'yes, save it'}</button>
                     </div>
                   )}
-
                   {savedToRefs && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                       <span style={{ color: ACCENT, fontSize: '0.72rem' }}>✓ Saved to Extracts.</span>
-                      <span style={{ color: '#444', fontSize: '0.65rem' }}>Find it anytime in your Extracts — or rerun it from there.</span>
+                      <span style={{ color: '#888', fontSize: '0.65rem' }}>Find it anytime in your Extracts — or rerun it from there.</span>
                       <span style={{ flex: 1 }} />
-                      <button onClick={handleRun}
-                        style={{ background: 'transparent', border: '1px solid #333', color: '#666', padding: '0.35rem 0.75rem', borderRadius: 4, fontSize: '0.7rem', fontFamily: 'monospace', cursor: 'pointer' }}>
-                        ▶ preview again
-                      </button>
+                      <button onClick={handleRun} style={{ background: 'transparent', border: '1px solid #ddd', color: '#666', padding: '0.35rem 0.75rem', borderRadius: 4, fontSize: '0.7rem', fontFamily: 'monospace', cursor: 'pointer' }}>▶ preview again</button>
                     </div>
                   )}
-
                 </div>
               </div>
             )}
@@ -764,7 +720,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
             {runErr && !running && (
               <div style={{ padding: '1rem', color: '#ef4444', fontSize: '0.75rem' }}>
                 Error: {runErr}
-                <button onClick={() => setRunErr('')} style={{ marginLeft: '1rem', background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: '0.7rem' }}>dismiss</button>
+                <button onClick={() => setRunErr('')} style={{ marginLeft: '1rem', background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: '0.7rem' }}>dismiss</button>
               </div>
             )}
 
@@ -782,26 +738,16 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   );
 }
 
-// ─── Style helpers ────────────────────────────────────────────────────────────
+// ─── STYLES ───────────────────────────────────────────────────────────────────
 
-const labelStyle: React.CSSProperties = {
-  color: '#555',
-  fontSize: '0.65rem',
-  textTransform: 'uppercase',
-  letterSpacing: '0.05em',
-  marginBottom: '0.3rem',
+const labelSt: React.CSSProperties = {
+  color: '#666', fontSize: '0.65rem', textTransform: 'uppercase',
+  letterSpacing: '0.05em', marginBottom: '0.3rem',
 };
 
-const inputStyle = (disabled: boolean): React.CSSProperties => ({
-  width: '100%',
-  background: disabled ? '#0d0d0d' : '#111',
-  border: '1px solid #222',
-  color: disabled ? '#555' : '#e5e5e5',
-  padding: '0.45rem 0.6rem',
-  borderRadius: 4,
-  fontFamily: 'monospace',
-  fontSize: '0.8rem',
-  outline: 'none',
-  boxSizing: 'border-box',
-  cursor: disabled ? 'not-allowed' : 'text',
+const inputSt = (disabled: boolean): React.CSSProperties => ({
+  width: '100%', background: disabled ? '#f5f5f5' : '#fafafa', border: '1px solid #ddd',
+  color: disabled ? '#aaa' : '#222', padding: '0.45rem 0.6rem', borderRadius: 4,
+  fontFamily: 'monospace', fontSize: '0.8rem', outline: 'none',
+  boxSizing: 'border-box', cursor: disabled ? 'not-allowed' : 'text',
 });
