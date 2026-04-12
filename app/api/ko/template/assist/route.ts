@@ -1,10 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createSupabaseAdmin } from '@/lib/supabase-server';
-import Anthropic from '@anthropic-ai/sdk';
 
 export const dynamic = 'force-dynamic';
-
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
 
 // ─── POST /api/ko/template/assist ─────────────────────────────────────────────
 // Karl-assist chat for building template instructions.
@@ -86,17 +83,23 @@ data_sources: ${JSON.stringify(current_data_sources)}`;
       { role: 'user' as const, content: message },
     ];
 
-    const response = await anthropic.messages.create({
-      model:      'claude-sonnet-4-6',
-      max_tokens: 1000,
-      system:     systemPrompt,
-      messages,
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY!,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model:      'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        system:     systemPrompt,
+        messages,
+      }),
     });
 
-    const raw = response.content
-      .filter(b => b.type === 'text')
-      .map(b => (b as any).text)
-      .join('');
+    const data = await res.json();
+    const raw = data.content?.[0]?.text ?? '';
 
     // Parse JSON response
     try {
