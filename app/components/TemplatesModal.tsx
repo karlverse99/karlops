@@ -342,12 +342,19 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     if (!runOutput || !selected) return;
     setSavingToRefs(true);
     try {
+      const dateStr    = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      const fileName   = `${editName.toLowerCase().replace(/\s+/g, '-')}-${new Date().toISOString().slice(0,10)}.md`;
+
       const { error } = await supabase.from('external_reference').insert({
         user_id:              userId,
-        title:                `${editName} — ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`,
+        title:                `${editName} — ${dateStr}`,
         description:          editDesc || null,
+        filename:             fileName,
+        location:             'generated',
         notes:                runOutput,
+        context_id:           selected.context_id || null,
         document_template_id: selected.document_template_id,
+        ref_type:             'generated',
         tags:                 [],
       });
       if (error) throw error;
