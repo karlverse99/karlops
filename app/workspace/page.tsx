@@ -87,19 +87,22 @@ function formatDate(dateStr: string): string {
 
 // ─── COMPONENTS: TaskPill ────────────────────────────────────────────────────
 
-function TaskPill({ task, bucket, statusLabel, taskIndex, onClick }: {
+function TaskPill({ task, bucket, statusLabel, taskIndex, onClick, onDragStart }: {
   task: Task;
   bucket: BucketDef;
   statusLabel?: string;
   taskIndex: number;
   onClick: () => void;
+  onDragStart: (task: Task) => void;
 }) {
   const isCaptured = task.bucket_key === 'capture';
 
   return (
     <div
+      draggable
+      onDragStart={e => { e.dataTransfer.effectAllowed = 'move'; onDragStart(task); }}
       onClick={onClick}
-      style={{ padding: '0.5rem 0.75rem', background: '#161616', border: '1px solid #222', borderLeft: `2px solid ${bucket.color}`, borderRadius: '4px', marginBottom: '0.375rem', cursor: 'pointer', transition: 'background 0.15s' }}
+      style={{ padding: '0.5rem 0.75rem', background: '#161616', border: '1px solid #222', borderLeft: `2px solid ${bucket.color}`, borderRadius: '4px', marginBottom: '0.375rem', cursor: 'grab', transition: 'background 0.15s', userSelect: 'none' }}
       onMouseEnter={e => (e.currentTarget.style.background = '#1c1c1c')}
       onMouseLeave={e => (e.currentTarget.style.background = '#161616')}
     >
@@ -119,19 +122,35 @@ function TaskPill({ task, bucket, statusLabel, taskIndex, onClick }: {
 
 // ─── COMPONENTS: BucketSection ───────────────────────────────────────────────
 
-function BucketSection({ bucket, tasks, statusMap, onTaskClick }: {
+const DROPPABLE_BUCKETS = ['now', 'soon', 'realwork', 'later'];
+
+function BucketSection({ bucket, tasks, statusMap, onTaskClick, onDragStart, onDrop }: {
   bucket: BucketDef;
   tasks: Task[];
   statusMap: Record<string, string>;
   onTaskClick: (task: Task) => void;
+  onDragStart: (task: Task) => void;
+  onDrop: (bucketKey: string) => void;
 }) {
   const defaultCollapsed = !['now', 'soon', 'realwork'].includes(bucket.key);
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const isDroppable = DROPPABLE_BUCKETS.includes(bucket.key);
+
   return (
-    <div style={{ marginBottom: '1.25rem' }}>
-      <div onClick={() => setCollapsed(c => !c)} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem', cursor: 'pointer', userSelect: 'none' }}>
+    <div
+      style={{ marginBottom: '1.25rem' }}
+      onDragOver={e => { if (isDroppable) { e.preventDefault(); setIsDragOver(true); } }}
+      onDragLeave={() => setIsDragOver(false)}
+      onDrop={e => { e.preventDefault(); setIsDragOver(false); if (isDroppable) onDrop(bucket.key); }}
+    >
+      <div
+        onClick={() => setCollapsed(c => !c)}
+        style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem', cursor: 'pointer', userSelect: 'none', padding: '0.2rem 0.4rem', borderRadius: '4px', background: isDragOver ? `${bucket.color}22` : 'transparent', border: isDragOver ? `1px dashed ${bucket.color}` : '1px solid transparent', transition: 'all 0.15s' }}
+      >
         <span style={{ fontSize: '0.75rem' }}>{bucket.icon}</span>
         <span style={{ color: bucket.accent, fontSize: '0.7rem', fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase' }}>{bucket.label}</span>
+        {isDragOver && <span style={{ color: bucket.color, fontSize: '0.62rem', marginLeft: '0.25rem' }}>drop here</span>}
         <span style={{ color: bucket.accent, fontSize: '0.72rem', fontWeight: 600, marginLeft: 'auto' }}>{tasks.length > 0 ? tasks.length : '—'}</span>
         <span style={{ color: '#888', fontSize: '0.65rem' }}>{collapsed ? '▸' : '▾'}</span>
       </div>
@@ -147,6 +166,7 @@ function BucketSection({ bucket, tasks, statusMap, onTaskClick }: {
                   statusLabel={task.task_status_id ? statusMap[task.task_status_id] : undefined}
                   taskIndex={idx + 1}
                   onClick={() => onTaskClick(task)}
+                  onDragStart={onDragStart}
                 />
               ))
           }
@@ -308,6 +328,7 @@ export default function WorkspacePage() {
   const [extractCount, setExtractCount]   = useState(0);
   const [templateCount, setTemplateCount]     = useState(0);       // ← NEW
   const [selectedTask, setSelectedTask]       = useState<Task | null>(null);
+  const draggedTask                            = useRef<Task | null>(null);
 
   const chatBottomRef = useRef<HTMLDivElement>(null);
   const inputRef      = useRef<HTMLTextAreaElement>(null);
@@ -579,6 +600,31 @@ export default function WorkspacePage() {
     );
   };
 
+  const handleDragStart = (task: Task) => {
+    draggedTask.current = task;
+  };
+
+  const handleDrop = async (targetBucketKey: string) => {
+    const task = draggedTask.current;
+    draggedTask.current = null;
+    if (!task || !koUser) return;
+    if (task.bucket_key === targetBucketKey) return; // no-op same bucket
+
+    // Optimistic update
+    setTasks(prev => prev.map(t => t.id === task.id ? { ...t, bucket_key: targetBucketKey } : t));
+
+    const { error } = await supabase
+      .from('task')
+      .update({ bucket_key: targetBucketKey })
+      .eq('task_id', task.id)
+      .eq('user_id', koUser.id);
+
+    if (error) {
+      console.error('[handleDrop]', error);
+      await loadTasks(koUser.id); // revert on error
+    }
+  };
+
   // ─── Error state ───────────────────────────────────────────────────────────
 
   if (sessionError) {
@@ -765,6 +811,8 @@ export default function WorkspacePage() {
                     tasks={grouped[bucket.key] ?? []}
                     statusMap={statusMap}
                     onTaskClick={task => setSelectedTask(task)}
+                    onDragStart={handleDragStart}
+                    onDrop={handleDrop}
                   />
                 ))}
               </>
