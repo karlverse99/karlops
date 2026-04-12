@@ -4,751 +4,809 @@ import { useEffect, useState, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import KarlSpinner from './KarlSpinner';
 
-// ─── TYPES ────────────────────────────────────────────────────────────────────
+// ─── TYPES ───────────────────────────────────────────────────────────────────
+
+interface Extract {
+  external_reference_id: string;
+  title: string;
+  filename: string | null;
+  location: string | null;
+  ref_type: string | null;
+  description: string | null;
+  notes: string | null;
+  tags: string[] | null;
+  document_template_id: string | null;
+  created_at: string;
+  context: { name: string; context_id: string } | null;
+  task: { title: string; task_id: string } | null;
+}
 
 interface Template {
   document_template_id: string;
   name: string;
-  description: string | null;
   doc_type: string | null;
   prompt_template: string;
-  data_sources: DataSources;
+  data_sources: any;
   output_format: string;
-  tags: string[];
-  is_system: boolean;
-  is_active: boolean;
-  implementation_type: string | null;
-  context_id: string | null;
-  created_at: string;
 }
 
-interface DataSources {
-  situation?: boolean;
-  tasks?: { buckets: string[]; context: string | null; tags: string[] } | false;
-  completions?: { window_days: number; context: string | null; tags: string[] } | false;
-  meetings?: { window_days: number; completed_only: boolean } | false;
-  references?: boolean;
-}
+interface Context { context_id: string; name: string; }
+interface Tag { tag_id: string; name: string; tag_group_id: string; }
+interface TagGroup { tag_group_id: string; name: string; }
 
-interface AssistMessage { role: 'user' | 'assistant'; content: string; }
-
-interface TemplatesModalProps {
+interface ExtractsModalProps {
   userId: string;
   accessToken: string;
   onClose: () => void;
-  onCountChange?: (count: number) => void;
+  onCountChange: (count: number) => void;
 }
 
-// ─── CONSTANTS ────────────────────────────────────────────────────────────────
+type CreatePath = 'choose' | 'template' | 'manual';
+type RightMode  = 'empty' | 'view' | 'create';
 
-const ACCENT        = '#14b8a6';
-const ACCENT_BG     = '#0a1f1d';
-const ACCENT_BORDER = '#0f3330';
+const ACCENT        = '#8b5cf6';
+const ACCENT_BG     = '#f5f3ff';
+const ACCENT_BORDER = '#ddd6fe';
+const ACCENT_DARK   = '#7c3aed';
 
-const BUCKET_OPTS = ['now', 'soon', 'realwork', 'later', 'delegate', 'capture'];
+// ─── DOWNLOAD HELPERS ─────────────────────────────────────────────────────────
 
-const DEFAULT_DS: DataSources = {
-  situation:   true,
-  tasks:       { buckets: ['now', 'soon', 'realwork'], context: null, tags: [] },
-  completions: { window_days: 30, context: null, tags: [] },
-  meetings:    { window_days: 30, completed_only: true },
-  references:  false,
-};
+function slugify(s: string) {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+}
 
-// ─── SUBCOMPONENTS ────────────────────────────────────────────────────────────
+function fmtDate(d: string) {
+  return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
+}
 
-function DataSourcesEditor({ ds, onChange }: { ds: DataSources; onChange: (ds: DataSources) => void }) {
-  const hasTasks       = !!ds.tasks;
-  const hasCompletions = !!ds.completions;
-  const hasMeetings    = !!ds.meetings;
+function downloadMD(content: string, title: string) {
+  const blob = new Blob([content], { type: 'text/markdown' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = `${slugify(title)}.md`; a.click();
+  URL.revokeObjectURL(url);
+}
 
-  const toggle = (key: keyof DataSources, defaultVal: any) => {
-    const next = { ...ds };
-    if (next[key]) { (next as any)[key] = false; }
-    else           { (next as any)[key] = defaultVal; }
-    onChange(next);
-  };
+function downloadTXT(content: string, title: string) {
+  const blob = new Blob([content], { type: 'text/plain' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = `${slugify(title)}.txt`; a.click();
+  URL.revokeObjectURL(url);
+}
 
-  const row = (label: string, active: boolean, onToggle: () => void, children?: React.ReactNode) => (
-    <div style={{ marginBottom: '0.6rem' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: active && children ? '0.35rem' : 0 }}>
-        <div onClick={onToggle} style={{ width: 14, height: 14, border: `1px solid ${active ? ACCENT : '#444'}`, borderRadius: 3, background: active ? ACCENT : 'transparent', cursor: 'pointer', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          {active && <span style={{ color: '#000', fontSize: 9, fontWeight: 700 }}>✓</span>}
-        </div>
-        <span style={{ color: active ? '#e5e5e5' : '#555', fontSize: '0.75rem' }}>{label}</span>
-      </div>
-      {active && children && (
-        <div style={{ marginLeft: '1.5rem', padding: '0.4rem 0.6rem', background: '#111', border: '1px solid #1a1a1a', borderRadius: 4 }}>
-          {children}
-        </div>
-      )}
-    </div>
-  );
+async function downloadPDF(content: string, title: string) {
+  try {
+    // @ts-ignore
+    const { jsPDF } = await import(/* webpackIgnore: true */ 'jspdf');
+    const doc   = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+    const lines = doc.splitTextToSize(content, 170);
+    let y = 20;
+    doc.setFontSize(14); doc.text(title, 20, y); y += 10;
+    doc.setFontSize(10);
+    for (const line of lines) {
+      if (y > 280) { doc.addPage(); y = 20; }
+      doc.text(line, 20, y); y += 5;
+    }
+    doc.save(`${slugify(title)}.pdf`);
+  } catch {
+    // fallback — open print dialog
+    const win = window.open('', '_blank');
+    if (win) { win.document.write(`<pre style="font-family:monospace;font-size:12px;padding:2rem">${content}</pre>`); win.print(); }
+  }
+}
 
-  return (
-    <div>
-      {row('Situation brief', !!ds.situation, () => toggle('situation', true))}
-      {row('Tasks', hasTasks, () => toggle('tasks', { buckets: ['now', 'soon', 'realwork'], context: null, tags: [] }),
-        hasTasks && typeof ds.tasks === 'object' ? (
-          <div>
-            <div style={{ color: '#555', fontSize: '0.62rem', marginBottom: '0.3rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Buckets</div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
-              {BUCKET_OPTS.map(b => {
-                const active = (ds.tasks as any).buckets?.includes(b);
-                return (
-                  <button key={b} onClick={() => {
-                    const cur  = (ds.tasks as any).buckets ?? [];
-                    const next = active ? cur.filter((x: string) => x !== b) : [...cur, b];
-                    onChange({ ...ds, tasks: { ...(ds.tasks as any), buckets: next } });
-                  }} style={{ background: active ? ACCENT_BG : 'transparent', border: `1px solid ${active ? ACCENT : '#333'}`, color: active ? ACCENT : '#555', padding: '0.12rem 0.4rem', borderRadius: 3, fontSize: '0.65rem', fontFamily: 'monospace', cursor: 'pointer' }}>{b}</button>
-                );
-              })}
-            </div>
-          </div>
-        ) : null
-      )}
-      {row('Completions', hasCompletions, () => toggle('completions', { window_days: 30, context: null, tags: [] }),
-        hasCompletions && typeof ds.completions === 'object' ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <span style={{ color: '#555', fontSize: '0.65rem' }}>Last</span>
-            <input type="number" min={1} max={365} value={(ds.completions as any).window_days}
-              onChange={e => onChange({ ...ds, completions: { ...(ds.completions as any), window_days: parseInt(e.target.value) || 30 } })}
-              style={{ width: 50, background: '#0a0a0a', border: '1px solid #333', color: '#e5e5e5', padding: '0.2rem 0.4rem', borderRadius: 3, fontFamily: 'monospace', fontSize: '0.75rem', outline: 'none' }} />
-            <span style={{ color: '#555', fontSize: '0.65rem' }}>days</span>
-          </div>
-        ) : null
-      )}
-      {row('Meetings', hasMeetings, () => toggle('meetings', { window_days: 30, completed_only: true }),
-        hasMeetings && typeof ds.meetings === 'object' ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <span style={{ color: '#555', fontSize: '0.65rem' }}>Last</span>
-            <input type="number" min={1} max={365} value={(ds.meetings as any).window_days}
-              onChange={e => onChange({ ...ds, meetings: { ...(ds.meetings as any), window_days: parseInt(e.target.value) || 30 } })}
-              style={{ width: 50, background: '#0a0a0a', border: '1px solid #333', color: '#e5e5e5', padding: '0.2rem 0.4rem', borderRadius: 3, fontFamily: 'monospace', fontSize: '0.75rem', outline: 'none' }} />
-            <span style={{ color: '#555', fontSize: '0.65rem' }}>days</span>
-          </div>
-        ) : null
-      )}
-      {row('References', !!ds.references, () => toggle('references', true))}
-    </div>
-  );
+async function downloadDOCX(content: string, title: string) {
+  try {
+    // @ts-ignore
+    const { Document, Packer, Paragraph, TextRun, HeadingLevel } = await import(/* webpackIgnore: true */ 'docx');
+    const lines    = content.split('\n');
+    const children: any[] = [];
+    for (const line of lines) {
+      if (line.startsWith('## '))      children.push(new Paragraph({ text: line.slice(3), heading: HeadingLevel.HEADING_2 }));
+      else if (line.startsWith('# ')) children.push(new Paragraph({ text: line.slice(2), heading: HeadingLevel.HEADING_1 }));
+      else                             children.push(new Paragraph({ children: [new TextRun(line)] }));
+    }
+    const doc  = new Document({ sections: [{ properties: {}, children }] });
+    const blob = await Packer.toBlob(doc);
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = `${slugify(title)}.docx`; a.click();
+    URL.revokeObjectURL(url);
+  } catch {
+    // fallback — download as txt
+    downloadTXT(content, title);
+  }
 }
 
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
 
-export default function TemplatesModal({ userId, accessToken, onClose, onCountChange }: TemplatesModalProps) {
-
-  // ── State ──────────────────────────────────────────────────────────────────
-  const [templates, setTemplates]   = useState<Template[]>([]);
-  const [loading, setLoading]       = useState(true);
-  const [selected, setSelected]     = useState<Template | null>(null);
-  const [isNew, setIsNew]           = useState(false);
-  const [search, setSearch]         = useState('');
-  const [filterType, setFilterType] = useState<'all' | 'system' | 'mine'>('all');
-
-  // Edit state
-  const [editName, setEditName]           = useState('');
-  const [editDesc, setEditDesc]           = useState('');
-  const [editDocType, setEditDocType]     = useState('');
-  const [editFormat, setEditFormat]       = useState('markdown');
-  const [editDs, setEditDs]               = useState<DataSources>(DEFAULT_DS);
-  const [editInstructions, setEditInstructions] = useState('');
-  const [showInstructions, setShowInstructions] = useState(false);
-  const [saving, setSaving]               = useState(false);
-  const [saveErr, setSaveErr]             = useState('');
-
-  // Run/preview state
-  const [running, setRunning]         = useState(false);
-  const [runOutput, setRunOutput]     = useState<string | null>(null);
-  const [runErr, setRunErr]           = useState('');
-  const [copied, setCopied]           = useState(false);
-  const [savePrompt, setSavePrompt]   = useState(false);
-  const [savingToRefs, setSavingToRefs] = useState(false);
-  const [savedToRefs, setSavedToRefs] = useState(false);
-
-  // Assist state
-  const [assistInput, setAssistInput]     = useState('');
-  const [assistHistory, setAssistHistory] = useState<AssistMessage[]>([]);
-  const [assistLoading, setAssistLoading] = useState(false);
-
-  // Modal drag/resize
-  const initX = Math.max(0, Math.round(window.innerWidth  / 2 - 550));
-  const initY = Math.max(0, Math.round(window.innerHeight / 2 - 390));
-  const [pos, setPos]   = useState({ x: initX, y: initY });
-  const [size, setSize] = useState({ w: 1100, h: 780 });
-
-  // Left panel resize
-  const [leftW, setLeftW] = useState(300);
-  const leftDragging      = useRef(false);
-  const leftDragStart     = useRef({ mx: 0, w: 0 });
-
-  const dragging    = useRef(false);
-  const resizing    = useRef(false);
-  const dragStart   = useRef({ x: 0, y: 0, px: 0, py: 0 });
-  const resizeStart = useRef({ x: 0, y: 0, w: 0, h: 0 });
-
-  const assistBottomRef = useRef<HTMLDivElement>(null);
+export default function ExtractsModal({ userId, accessToken, onClose, onCountChange }: ExtractsModalProps) {
 
   // ── Data ───────────────────────────────────────────────────────────────────
+  const [extracts, setExtracts]   = useState<Extract[]>([]);
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [contexts, setContexts]   = useState<Context[]>([]);
+  const [allTags, setAllTags]     = useState<Tag[]>([]);
+  const [loading, setLoading]     = useState(true);
 
-  useEffect(() => { loadTemplates(); }, []);
+  // ── UI ─────────────────────────────────────────────────────────────────────
+  const [rightMode, setRightMode]         = useState<RightMode>('empty');
+  const [selected, setSelected]           = useState<Extract | null>(null);
+  const [search, setSearch]               = useState('');
+  const [filterContext, setFilterContext] = useState('');
+  const [filterType, setFilterType]       = useState<'all' | 'generated' | 'manual'>('all');
+  const [sortBy, setSortBy]               = useState<'date' | 'title' | 'template'>('date');
 
-  useEffect(() => {
-    assistBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [assistHistory, assistLoading]);
+  // ── Create flow ────────────────────────────────────────────────────────────
+  const [createPath, setCreatePath]             = useState<CreatePath>('choose');
+  const [selectedTemplateId, setSelectedTemplateId] = useState('');
+  const [focusPrompt, setFocusPrompt]           = useState('');
+  const [previewContent, setPreviewContent]     = useState('');
+  const [generating, setGenerating]             = useState(false);
+  const [refineInput, setRefineInput]           = useState('');
+  const [refining, setRefining]                 = useState(false);
+  const [refineHistory, setRefineHistory]       = useState<{ role: 'user' | 'karl'; content: string }[]>([]);
 
-  const loadTemplates = async () => {
+  // ── Manual create ──────────────────────────────────────────────────────────
+  const [manualTitle, setManualTitle]           = useState('');
+  const [manualNotes, setManualNotes]           = useState('');
+  const [manualContext, setManualContext]       = useState('');
+  const [manualTags, setManualTags]             = useState<string[]>([]);
+  const [manualFilename, setManualFilename]     = useState('');
+  const [manualTagSearch, setManualTagSearch]   = useState('');
+  const [showManualTagDrop, setShowManualTagDrop] = useState(false);
+  const [karlAssistInput, setKarlAssistInput]   = useState('');
+  const [karlAssistLoading, setKarlAssistLoading] = useState(false);
+  const [karlAssistHistory, setKarlAssistHistory] = useState<{ role: 'user' | 'karl'; content: string }[]>([]);
+
+  // ── Save metadata ──────────────────────────────────────────────────────────
+  const [saveTitle, setSaveTitle]       = useState('');
+  const [saveContext, setSaveContext]   = useState('');
+  const [saveTags, setSaveTags]         = useState<string[]>([]);
+  const [saveTagSearch, setSaveTagSearch] = useState('');
+  const [showSaveTagDrop, setShowSaveTagDrop] = useState(false);
+  const [saving, setSaving]             = useState(false);
+  const [saveErr, setSaveErr]           = useState('');
+
+  // ── Drag/resize ────────────────────────────────────────────────────────────
+  const initX = Math.max(20, Math.round(window.innerWidth  / 2 - 600));
+  const initY = Math.max(20, Math.round(window.innerHeight / 2 - 390));
+  const [pos, setPos]   = useState({ x: initX, y: initY });
+  const [size, setSize] = useState({ w: 1200, h: 780 });
+  const dragging        = useRef(false);
+  const resizing        = useRef(false);
+  const dragStart       = useRef({ mx: 0, my: 0, px: 0, py: 0 });
+  const resizeStart     = useRef({ mx: 0, my: 0, w: 0, h: 0 });
+  const refineBottomRef = useRef<HTMLDivElement>(null);
+  const karlBottomRef   = useRef<HTMLDivElement>(null);
+
+  // ── Load ───────────────────────────────────────────────────────────────────
+
+  const loadAll = async () => {
     setLoading(true);
-    const { data } = await supabase
-      .from('document_template')
-      .select('*')
-      .or(`user_id.eq.${userId},is_system.eq.true`)
-      .eq('is_active', true)
-      .order('is_system', { ascending: false })
-      .order('name');
-    if (data) { setTemplates(data as Template[]); onCountChange?.(data.length); }
+    const [{ data: exData }, { data: tmData }, { data: ctxData }, { data: tgData }] = await Promise.all([
+      supabase.from('external_reference')
+        .select(`external_reference_id, title, filename, location, ref_type, description, notes, tags, document_template_id, created_at,
+          context:context_id ( name, context_id ),
+          task:task_id ( title, task_id )`)
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false }),
+      supabase.from('document_template')
+        .select('document_template_id, name, doc_type, prompt_template, data_sources, output_format')
+        .or(`user_id.eq.${userId},is_system.eq.true`)
+        .eq('is_active', true)
+        .order('name'),
+      supabase.from('context').select('context_id, name').eq('user_id', userId).eq('is_archived', false).order('name'),
+      supabase.from('tag').select('tag_id, name, tag_group_id').eq('user_id', userId).order('name'),
+    ]);
+    if (exData)  { setExtracts(exData as any); onCountChange(exData.length); }
+    if (tmData)  setTemplates(tmData as any);
+    if (ctxData) setContexts(ctxData);
+    if (tgData)  setAllTags(tgData);
     setLoading(false);
   };
 
-  // ── Drag / Resize ──────────────────────────────────────────────────────────
+  useEffect(() => { loadAll(); }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose]);
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
-      if (dragging.current) {
-        setPos({ x: Math.max(0, dragStart.current.px + e.clientX - dragStart.current.x), y: Math.max(0, dragStart.current.py + e.clientY - dragStart.current.y) });
-      }
-      if (resizing.current) {
-        setSize({ w: Math.max(800, resizeStart.current.w + e.clientX - resizeStart.current.x), h: Math.max(500, resizeStart.current.h + e.clientY - resizeStart.current.y) });
-      }
-      if (leftDragging.current) {
-        const newW = Math.max(200, Math.min(500, leftDragStart.current.w + e.clientX - leftDragStart.current.mx));
-        setLeftW(newW);
-      }
+      if (dragging.current) setPos({ x: Math.max(0, dragStart.current.px + e.clientX - dragStart.current.mx), y: Math.max(0, dragStart.current.py + e.clientY - dragStart.current.my) });
+      if (resizing.current) setSize({ w: Math.max(900, resizeStart.current.w + e.clientX - resizeStart.current.mx), h: Math.max(500, resizeStart.current.h + e.clientY - resizeStart.current.my) });
     };
-    const onUp = () => { dragging.current = false; resizing.current = false; leftDragging.current = false; };
+    const onUp = () => { dragging.current = false; resizing.current = false; };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
     return () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
   }, []);
 
+  useEffect(() => { refineBottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [refineHistory, refining]);
+  useEffect(() => { karlBottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [karlAssistHistory, karlAssistLoading]);
+
+  // ── Filtered list ──────────────────────────────────────────────────────────
+
+  const filtered = extracts
+    .filter(r => {
+      if (search && !r.title.toLowerCase().includes(search.toLowerCase()) && !(r.filename ?? '').toLowerCase().includes(search.toLowerCase())) return false;
+      if (filterContext && r.context?.context_id !== filterContext) return false;
+      if (filterType === 'generated' && !r.document_template_id) return false;
+      if (filterType === 'manual'    &&  r.document_template_id) return false;
+      return true;
+    })
+    .sort((a, b) => {
+      if (sortBy === 'title')    return a.title.localeCompare(b.title);
+      if (sortBy === 'template') return (a.document_template_id ?? '').localeCompare(b.document_template_id ?? '');
+      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+    });
+
   // ── Handlers ───────────────────────────────────────────────────────────────
 
-  const selectTemplate = (t: Template) => {
-    setSelected(t); setIsNew(false);
-    setEditName(t.name); setEditDesc(t.description ?? ''); setEditDocType(t.doc_type ?? '');
-    setEditFormat(t.output_format ?? 'markdown'); setEditDs(t.data_sources ?? DEFAULT_DS);
-    setEditInstructions(t.prompt_template ?? '');
-    setShowInstructions(!!t.prompt_template);
-    setRunOutput(null); setRunErr(''); setSaveErr(''); setAssistHistory([]);
-    setSavePrompt(false); setSavedToRefs(false);
+  const openView = (r: Extract) => { setSelected(r); setRightMode('view'); setSaveErr(''); };
+
+  const openCreate = () => {
+    setSelected(null); setRightMode('create'); setCreatePath('choose');
+    setSelectedTemplateId(''); setFocusPrompt(''); setPreviewContent(''); setRefineHistory([]);
+    setManualTitle(''); setManualNotes(''); setManualContext(''); setManualTags([]); setManualFilename('');
+    setKarlAssistHistory([]); setSaveTitle(''); setSaveContext(''); setSaveTags([]); setSaveErr('');
   };
 
-  const startNew = () => {
-    setSelected(null); setIsNew(true);
-    setEditName(''); setEditDesc(''); setEditDocType(''); setEditFormat('markdown');
-    setEditDs(DEFAULT_DS); setEditInstructions(''); setShowInstructions(false);
-    setRunOutput(null); setRunErr(''); setSaveErr(''); setAssistHistory([]);
-    setSavePrompt(false); setSavedToRefs(false);
-  };
-
-  const handleSave = async () => {
-    if (!editName.trim()) { setSaveErr('Name is required'); return; }
-    setSaving(true); setSaveErr('');
-    try {
-      if (isNew) {
-        const { error } = await supabase.from('document_template').insert({
-          user_id:         userId,
-          name:            editName.trim(),
-          description:     editDesc.trim() || null,
-          doc_type:        editDocType.trim() || null,
-          output_format:   editFormat,
-          data_sources:    editDs,
-          prompt_template: editInstructions.trim() || '',
-          is_system:       false,
-          is_active:       true,
-        });
-        if (error) throw error;
-      } else if (selected && !selected.is_system) {
-        const { error } = await supabase.from('document_template').update({
-          name:            editName.trim(),
-          description:     editDesc.trim() || null,
-          doc_type:        editDocType.trim() || null,
-          output_format:   editFormat,
-          data_sources:    editDs,
-          prompt_template: editInstructions.trim() || '',
-          updated_at:      new Date().toISOString(),
-        }).eq('document_template_id', selected.document_template_id);
-        if (error) throw error;
-      }
-      await loadTemplates(); setIsNew(false);
-    } catch (err: any) { setSaveErr(err.message ?? 'Save failed'); }
-    finally { setSaving(false); }
-  };
-
-  const handleDelete = async () => {
-    if (!selected || selected.is_system) return;
-    if (!confirm(`Delete "${selected.name}"? This cannot be undone.`)) return;
-    await supabase.from('document_template').update({ is_active: false }).eq('document_template_id', selected.document_template_id);
-    setSelected(null); setIsNew(false);
-    await loadTemplates();
-  };
-
-  const handleRun = async () => {
-    const templateId = selected?.document_template_id;
-    if (!templateId) return;
-    setRunning(true); setRunOutput(null); setRunErr('');
-    setSavePrompt(false); setSavedToRefs(false);
+  const handleGenerate = async () => {
+    if (!selectedTemplateId) return;
+    setGenerating(true); setPreviewContent('');
+    const tmpl = templates.find(t => t.document_template_id === selectedTemplateId);
     try {
       const res  = await fetch('/api/ko/template/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
-        body: JSON.stringify({ template_id: templateId }),
+        body: JSON.stringify({ template_id: selectedTemplateId, focus_prompt: focusPrompt }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? 'Run failed');
-      setRunOutput(data.output);
-    } catch (err: any) { setRunErr(err.message ?? 'Run failed'); }
-    finally { setRunning(false); }
+      if (!res.ok) throw new Error(data.error ?? 'Generate failed');
+      setPreviewContent(data.output);
+      setSaveTitle(`${tmpl?.name ?? 'Extract'} — ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`);
+    } catch (err: any) {
+      setPreviewContent(`Error: ${err.message}`);
+    } finally {
+      setGenerating(false);
+    }
   };
 
-  const handleSaveToRefs = async () => {
-    if (!runOutput || !selected) return;
-    setSavingToRefs(true);
+  const handleRefine = async () => {
+    const msg = refineInput.trim();
+    if (!msg || !previewContent || refining) return;
+    setRefineInput(''); setRefining(true);
+    setRefineHistory(h => [...h, { role: 'user', content: msg }]);
+    const tmpl = templates.find(t => t.document_template_id === selectedTemplateId);
     try {
-      const dateStr  = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-      const fileName = `${editName.toLowerCase().replace(/\s+/g, '-')}-${new Date().toISOString().slice(0, 10)}.md`;
-      const { error } = await supabase.from('external_reference').insert({
-        user_id:              userId,
-        title:                `${editName} — ${dateStr}`,
-        description:          editDesc || null,
-        filename:             fileName,
-        location:             'generated',
-        notes:                runOutput,
-        context_id:           selected.context_id || null,
-        document_template_id: selected.document_template_id,
-        ref_type:             'generated',
-        tags:                 [],
+      const res  = await fetch('/api/ko/extract/refine', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
+        body: JSON.stringify({ current_content: previewContent, refinement_instruction: msg, template_instructions: tmpl?.prompt_template ?? '' }),
       });
-      if (error) throw error;
-      setSavedToRefs(true); setSavePrompt(false);
-    } catch (err: any) { setRunErr(err.message ?? 'Save failed'); setSavePrompt(false); }
-    finally { setSavingToRefs(false); }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Refine failed');
+      setPreviewContent(data.output);
+      setRefineHistory(h => [...h, { role: 'karl', content: `✓ Rewritten with: "${msg}"` }]);
+    } catch (err: any) {
+      setRefineHistory(h => [...h, { role: 'karl', content: `Error: ${err.message}` }]);
+    } finally {
+      setRefining(false);
+    }
   };
 
-  const handleCopy = async () => {
-    if (!runOutput) return;
-    await navigator.clipboard.writeText(runOutput);
-    setCopied(true); setTimeout(() => setCopied(false), 2000);
-  };
-
-  const handleDownloadMd = () => {
-    if (!runOutput) return;
-    const blob = new Blob([runOutput], { type: 'text/markdown' });
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement('a');
-    a.href = url; a.download = `${editName || 'document'}.md`; a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const handleAssist = async () => {
-    const msg = assistInput.trim();
-    if (!msg || assistLoading) return;
-    setAssistInput(''); setAssistLoading(true);
-    setAssistHistory(h => [...h, { role: 'user', content: msg }]);
+  const handleKarlAssist = async () => {
+    const msg = karlAssistInput.trim();
+    if (!msg || karlAssistLoading) return;
+    setKarlAssistInput(''); setKarlAssistLoading(true);
+    setKarlAssistHistory(h => [...h, { role: 'user', content: msg }]);
     try {
       const res  = await fetch('/api/ko/template/assist', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
-        body: JSON.stringify({
-          message:              msg,
-          history:              assistHistory.map(m => ({ role: m.role, content: m.content })),
-          current_instructions: editInstructions,
-          current_data_sources: editDs,
-        }),
+        body: JSON.stringify({ message: msg, history: karlAssistHistory.map(m => ({ role: m.role === 'karl' ? 'assistant' : 'user', content: m.content })), current_instructions: manualNotes, current_data_sources: {} }),
       });
       const data = await res.json();
-      setAssistHistory(h => [...h, { role: 'assistant', content: data.response ?? '' }]);
-      if (data.suggested_instructions) { setEditInstructions(data.suggested_instructions); setShowInstructions(true); }
-      if (data.suggested_data_sources) setEditDs(data.suggested_data_sources);
-    } catch {
-      setAssistHistory(h => [...h, { role: 'assistant', content: 'Something went wrong. Try again.' }]);
-    } finally { setAssistLoading(false); }
+      if (data.suggested_instructions) setManualNotes(data.suggested_instructions);
+      setKarlAssistHistory(h => [...h, { role: 'karl', content: data.response ?? '' }]);
+    } catch (err: any) {
+      setKarlAssistHistory(h => [...h, { role: 'karl', content: `Error: ${err.message}` }]);
+    } finally {
+      setKarlAssistLoading(false);
+    }
   };
 
-  // ── Derived ────────────────────────────────────────────────────────────────
+  const handleSaveGenerated = async () => {
+    if (!saveTitle.trim()) { setSaveErr('Title is required'); return; }
+    setSaving(true); setSaveErr('');
+    const tmpl    = templates.find(t => t.document_template_id === selectedTemplateId);
+    const dateSlug = new Date().toISOString().slice(0, 10);
+    try {
+      const { error } = await supabase.from('external_reference').insert({
+        user_id:              userId,
+        title:                saveTitle.trim(),
+        filename:             `${slugify(saveTitle.trim())}-${dateSlug}.md`,
+        location:             'generated',
+        notes:                previewContent,
+        description:          tmpl?.name ?? null,
+        context_id:           saveContext || null,
+        document_template_id: selectedTemplateId || null,
+        ref_type:             'generated',
+        tags:                 saveTags.length > 0 ? saveTags : [],
+      });
+      if (error) throw error;
+      await loadAll(); setRightMode('empty');
+    } catch (err: any) { setSaveErr(err.message); }
+    finally { setSaving(false); }
+  };
 
-  const filtered  = templates.filter(t => {
-    const matchS = !search || t.name.toLowerCase().includes(search.toLowerCase()) || (t.description ?? '').toLowerCase().includes(search.toLowerCase());
-    const matchT = filterType === 'all' ? true : filterType === 'system' ? t.is_system : !t.is_system;
-    return matchS && matchT;
-  });
+  const handleSaveManual = async () => {
+    if (!manualTitle.trim()) { setSaveErr('Title is required'); return; }
+    setSaving(true); setSaveErr('');
+    try {
+      const { error } = await supabase.from('external_reference').insert({
+        user_id:    userId,
+        title:      manualTitle.trim(),
+        filename:   manualFilename.trim() || null,
+        notes:      manualNotes.trim() || null,
+        context_id: manualContext || null,
+        ref_type:   'manual',
+        tags:       manualTags.length > 0 ? manualTags : [],
+      });
+      if (error) throw error;
+      await loadAll(); setRightMode('empty');
+    } catch (err: any) { setSaveErr(err.message); }
+    finally { setSaving(false); }
+  };
 
-  const isEditing = isNew || !!selected;
-  const isSystem  = selected?.is_system ?? false;
+  const handleNewVersion = (extract: Extract) => {
+    if (!extract.document_template_id) return;
+    const tmpl = templates.find(t => t.document_template_id === extract.document_template_id);
+    setSelected(null); setRightMode('create'); setCreatePath('template');
+    setSelectedTemplateId(extract.document_template_id);
+    setFocusPrompt(''); setPreviewContent(''); setRefineHistory([]);
+    setSaveTitle(`${tmpl?.name ?? extract.title} — ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`);
+    setSaveContext(extract.context?.context_id ?? '');
+    setSaveTags(extract.tags ?? []);
+    setSaveErr('');
+  };
+
+  const toggleSaveTag   = (n: string) => setSaveTags(p => p.includes(n) ? p.filter(t => t !== n) : [...p, n]);
+  const toggleManualTag = (n: string) => setManualTags(p => p.includes(n) ? p.filter(t => t !== n) : [...p, n]);
+
+  const filteredSaveTags   = allTags.filter(t => !saveTags.includes(t.name)   && (saveTagSearch   ? t.name.toLowerCase().includes(saveTagSearch.toLowerCase())   : true));
+  const filteredManualTags = allTags.filter(t => !manualTags.includes(t.name) && (manualTagSearch ? t.name.toLowerCase().includes(manualTagSearch.toLowerCase()) : true));
+  const selectedTemplate   = templates.find(t => t.document_template_id === selectedTemplateId);
 
   // ─── RENDER ────────────────────────────────────────────────────────────────
 
-  return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 200, pointerEvents: 'none' }}>
-      <div style={{ position: 'absolute', left: pos.x, top: pos.y, width: size.w, height: size.h, background: '#0d0d0d', border: `1px solid ${ACCENT_BORDER}`, borderRadius: 8, display: 'flex', flexDirection: 'column', fontFamily: 'monospace', overflow: 'hidden', pointerEvents: 'all', boxShadow: '0 8px 40px rgba(0,0,0,0.6)' }}>
+  const renderLeft = () => (
+    <div style={{ width: 340, flexShrink: 0, borderRight: `1px solid ${ACCENT_BORDER}`, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <div style={{ padding: '0.75rem', borderBottom: `1px solid ${ACCENT_BORDER}`, display: 'flex', flexDirection: 'column', gap: '0.35rem', flexShrink: 0 }}>
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search extracts..."
+          style={inputSt} onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} />
+        <div style={{ display: 'flex', gap: '0.3rem' }}>
+          <select value={filterContext} onChange={e => setFilterContext(e.target.value)} style={{ ...inputSt, flex: 1, fontSize: '0.68rem', padding: '0.3rem 0.4rem' } as any}>
+            <option value="">All contexts</option>
+            {contexts.map(c => <option key={c.context_id} value={c.context_id}>{c.name}</option>)}
+          </select>
+          <select value={filterType} onChange={e => setFilterType(e.target.value as any)} style={{ ...inputSt, flex: 1, fontSize: '0.68rem', padding: '0.3rem 0.4rem' } as any}>
+            <option value="all">All</option>
+            <option value="generated">Generated</option>
+            <option value="manual">Manual</option>
+          </select>
+          <select value={sortBy} onChange={e => setSortBy(e.target.value as any)} style={{ ...inputSt, flex: 1, fontSize: '0.68rem', padding: '0.3rem 0.4rem' } as any}>
+            <option value="date">Date</option>
+            <option value="title">Title</option>
+            <option value="template">Template</option>
+          </select>
+        </div>
+        <div style={{ color: '#aaa', fontSize: '0.62rem' }}>{filtered.length} of {extracts.length}</div>
+      </div>
+      <div style={{ flex: 1, overflowY: 'auto', scrollbarWidth: 'thin', scrollbarColor: `${ACCENT_BORDER} transparent` }}>
+        {loading
+          ? <div style={{ padding: '1rem', color: '#aaa', fontSize: '0.75rem' }}>Loading...</div>
+          : filtered.length === 0
+            ? <div style={{ padding: '1rem', color: '#ccc', fontSize: '0.75rem' }}>No extracts found.</div>
+            : filtered.map((r, idx) => {
+                const isSel  = selected?.external_reference_id === r.external_reference_id;
+                const tmplNm = r.document_template_id ? templates.find(t => t.document_template_id === r.document_template_id)?.name : null;
+                return (
+                  <div key={r.external_reference_id} onClick={() => openView(r)}
+                    style={{ padding: '0.55rem 0.75rem', borderBottom: '1px solid #f5f5f5', cursor: 'pointer', background: isSel ? ACCENT_BG : 'transparent', borderLeft: `3px solid ${isSel ? ACCENT : 'transparent'}`, transition: 'all 0.1s' }}
+                    onMouseEnter={e => { if (!isSel) e.currentTarget.style.background = '#fafafa'; }}
+                    onMouseLeave={e => { if (!isSel) e.currentTarget.style.background = 'transparent'; }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', marginBottom: '0.1rem' }}>
+                      <span style={{ color: ACCENT, fontSize: '0.58rem', fontWeight: 700, opacity: 0.5, flexShrink: 0 }}>EX{idx + 1}</span>
+                      <span style={{ color: '#111', fontSize: '0.78rem', flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', fontWeight: 500 }}>{r.title}</span>
+                      <span style={{ color: '#ccc', fontSize: '0.6rem', flexShrink: 0 }}>{fmtDate(r.created_at)}</span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', paddingLeft: '0.9rem', flexWrap: 'wrap' }}>
+                      {tmplNm && <span style={{ fontSize: '0.6rem', color: ACCENT, background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, borderRadius: 2, padding: '0.02rem 0.3rem' }}>{tmplNm}</span>}
+                      {r.context && <span style={{ fontSize: '0.6rem', color: '#aaa' }}>{r.context.name}</span>}
+                      {r.tags?.slice(0, 2).map(t => <span key={t} style={{ fontSize: '0.58rem', color: '#ccc' }}>#{t}</span>)}
+                    </div>
+                  </div>
+                );
+              })
+        }
+      </div>
+    </div>
+  );
 
-        {/* HEADER */}
-        <div
-          onMouseDown={e => { dragging.current = true; dragStart.current = { x: e.clientX, y: e.clientY, px: pos.x, py: pos.y }; }}
-          style={{ background: ACCENT, padding: '0 1rem', height: 44, display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'grab', flexShrink: 0 }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <span style={{ color: '#000', fontWeight: 700, fontSize: '0.85rem' }}>Templates</span>
-            <span style={{ color: '#000', fontSize: '0.7rem', opacity: 0.5 }}>TM · {templates.length} template{templates.length !== 1 ? 's' : ''}</span>
+  const renderEmpty = () => (
+    <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: '1rem', color: '#ccc' }}>
+      <div style={{ fontSize: '2.5rem', opacity: 0.12 }}>⬡</div>
+      <div style={{ fontSize: '0.8rem' }}>Select an extract or create a new one</div>
+      <button onClick={openCreate} style={{ background: ACCENT, border: 'none', color: '#fff', padding: '0.5rem 1.25rem', borderRadius: 6, fontSize: '0.8rem', fontFamily: 'monospace', cursor: 'pointer', fontWeight: 600 }}>+ new extract</button>
+    </div>
+  );
+
+  const renderView = () => {
+    if (!selected) return null;
+    const tmplNm = selected.document_template_id ? templates.find(t => t.document_template_id === selected.document_template_id)?.name : null;
+    return (
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        <div style={{ padding: '0.75rem 1.25rem', borderBottom: `1px solid ${ACCENT_BORDER}`, background: '#fafafa', flexShrink: 0, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '1rem' }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: '0.95rem', fontWeight: 600, color: '#111', marginBottom: '0.3rem', wordBreak: 'break-word' }}>{selected.title}</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+              {tmplNm    && <span style={{ fontSize: '0.63rem', color: ACCENT, background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, borderRadius: 3, padding: '0.08rem 0.35rem' }}>from: {tmplNm}</span>}
+              {selected.context && <span style={{ fontSize: '0.63rem', color: '#888' }}>{selected.context.name}</span>}
+              {selected.tags?.map(t => <span key={t} style={{ fontSize: '0.6rem', color: '#bbb' }}>#{t}</span>)}
+              <span style={{ fontSize: '0.6rem', color: '#ccc' }}>{fmtDate(selected.created_at)}</span>
+            </div>
           </div>
-          <button onMouseDown={e => e.stopPropagation()} onClick={onClose}
-            style={{ background: 'none', border: 'none', color: '#000', cursor: 'pointer', fontSize: '1rem', opacity: 0.6, lineHeight: 1 }}>✕</button>
+          {selected.document_template_id && (
+            <button onClick={() => handleNewVersion(selected)}
+              style={{ background: ACCENT, border: 'none', color: '#fff', padding: '0.3rem 0.75rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer', fontWeight: 600, flexShrink: 0 }}>
+              ▶ new version
+            </button>
+          )}
+        </div>
+        <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem', scrollbarWidth: 'thin', scrollbarColor: `${ACCENT_BORDER} transparent` }}>
+          {selected.notes
+            ? <pre style={{ color: '#333', fontSize: '0.8rem', lineHeight: 1.7, whiteSpace: 'pre-wrap', fontFamily: 'monospace', margin: 0 }}>{selected.notes}</pre>
+            : <div style={{ color: '#ccc', fontSize: '0.8rem', fontStyle: 'italic' }}>No content recorded for this extract.</div>
+          }
+        </div>
+        {selected.notes && (
+          <div style={{ padding: '0.6rem 1.25rem', borderTop: `1px solid ${ACCENT_BORDER}`, background: '#fafafa', display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
+            <span style={{ color: '#bbb', fontSize: '0.63rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Download</span>
+            {(['MD', 'TXT', 'PDF', 'DOCX'] as const).map(fmt => (
+              <button key={fmt} onClick={() => {
+                const c = selected.notes!; const t = selected.title;
+                if (fmt === 'MD')   downloadMD(c, t);
+                if (fmt === 'TXT')  downloadTXT(c, t);
+                if (fmt === 'PDF')  downloadPDF(c, t);
+                if (fmt === 'DOCX') downloadDOCX(c, t);
+              }} style={{ background: 'transparent', border: `1px solid ${ACCENT_BORDER}`, color: ACCENT, padding: '0.2rem 0.5rem', borderRadius: 3, fontSize: '0.68rem', fontFamily: 'monospace', cursor: 'pointer' }}
+                onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BG)}
+                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+              >.{fmt.toLowerCase()}</button>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderCreate = () => {
+    // Choose path
+    if (createPath === 'choose') return (
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: '1.5rem' }}>
+        <div style={{ color: '#888', fontSize: '0.82rem' }}>How do you want to create this extract?</div>
+        <div style={{ display: 'flex', gap: '1.25rem' }}>
+          {[
+            { path: 'template' as CreatePath, icon: '⚡', title: 'From Template', sub: 'Karl generates from your workspace data' },
+            { path: 'manual'   as CreatePath, icon: '✍️', title: 'Manual',        sub: 'Write it yourself, Karl can help' },
+          ].map(opt => (
+            <div key={opt.path} onClick={() => setCreatePath(opt.path)}
+              style={{ width: 190, padding: '1.5rem 1rem', border: `2px solid ${ACCENT_BORDER}`, borderRadius: 8, cursor: 'pointer', textAlign: 'center', transition: 'all 0.15s' }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = ACCENT; e.currentTarget.style.background = ACCENT_BG; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = ACCENT_BORDER; e.currentTarget.style.background = 'transparent'; }}
+            >
+              <div style={{ fontSize: '1.5rem', marginBottom: '0.5rem' }}>{opt.icon}</div>
+              <div style={{ fontWeight: 600, fontSize: '0.85rem', color: '#333', marginBottom: '0.25rem' }}>{opt.title}</div>
+              <div style={{ fontSize: '0.7rem', color: '#aaa' }}>{opt.sub}</div>
+            </div>
+          ))}
+        </div>
+        <button onClick={() => setRightMode('empty')} style={{ background: 'none', border: 'none', color: '#ccc', fontSize: '0.75rem', cursor: 'pointer' }}>cancel</button>
+      </div>
+    );
+
+    // Template: setup
+    if (createPath === 'template' && !previewContent && !generating) return (
+      <div style={{ flex: 1, padding: '1.5rem', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+        <div style={labelSt}>From Template</div>
+
+        <div>
+          <div style={labelSt}>Template <span style={{ color: '#ef4444' }}>*</span></div>
+          <select value={selectedTemplateId} onChange={e => setSelectedTemplateId(e.target.value)} style={{ ...inputSt, cursor: 'pointer' } as any}
+            onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')}>
+            <option value="">— select a template —</option>
+            {templates.map(t => <option key={t.document_template_id} value={t.document_template_id}>{t.name}{t.doc_type ? ` · ${t.doc_type}` : ''}</option>)}
+          </select>
         </div>
 
-        {/* BODY */}
+        {selectedTemplate && (
+          <div style={{ padding: '0.6rem 0.75rem', background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, borderRadius: 4, fontSize: '0.72rem', color: '#777' }}>
+            <strong style={{ color: ACCENT }}>Data sources:</strong>{' '}
+            {[
+              selectedTemplate.data_sources?.situation && 'situation',
+              selectedTemplate.data_sources?.tasks && `tasks (${(selectedTemplate.data_sources.tasks.buckets ?? []).join(', ')})`,
+              selectedTemplate.data_sources?.completions && `completions (${selectedTemplate.data_sources.completions.window_days}d)`,
+              selectedTemplate.data_sources?.meetings && `meetings (${selectedTemplate.data_sources.meetings.window_days}d)`,
+              selectedTemplate.data_sources?.references && 'references',
+            ].filter(Boolean).join(' · ') || 'none configured'}
+          </div>
+        )}
+
+        <div>
+          <div style={labelSt}>Focus prompt <span style={{ color: '#bbb', textTransform: 'none', fontWeight: 400, letterSpacing: 0 }}>— optional</span></div>
+          <textarea value={focusPrompt} onChange={e => setFocusPrompt(e.target.value)} rows={3}
+            placeholder="e.g. Focus on the Communication requirement. Include the Oct 15 meeting with my manager."
+            style={{ ...inputSt, resize: 'vertical' } as any}
+            onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} />
+        </div>
+
+        <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: 'auto' }}>
+          <button onClick={() => setCreatePath('choose')} style={{ background: 'none', border: '1px solid #ddd', color: '#888', padding: '0.4rem 0.8rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer' }}>← back</button>
+          <button onClick={handleGenerate} disabled={!selectedTemplateId}
+            style={{ background: selectedTemplateId ? ACCENT : '#e5e7eb', border: 'none', color: selectedTemplateId ? '#fff' : '#aaa', padding: '0.4rem 1.25rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.75rem', cursor: selectedTemplateId ? 'pointer' : 'not-allowed', fontWeight: 600 }}>
+            ▶ Generate
+          </button>
+        </div>
+      </div>
+    );
+
+    // Generating
+    if (createPath === 'template' && generating) return (
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '1.25rem' }}>
+        <KarlSpinner size="lg" color={ACCENT} />
+        <div style={{ color: '#888', fontSize: '0.8rem' }}>Karl is generating your extract...</div>
+        <div style={{ color: '#ccc', fontSize: '0.7rem' }}>This may take a moment</div>
+      </div>
+    );
+
+    // Template: preview + refine
+    if (createPath === 'template' && previewContent) return (
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+
+        {/* Preview toolbar */}
+        <div style={{ padding: '0.5rem 1rem', borderBottom: `1px solid ${ACCENT_BORDER}`, background: '#fafafa', display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
+          <span style={{ color: ACCENT, fontSize: '0.68rem', fontWeight: 600 }}>PREVIEW</span>
+          <span style={{ color: '#ccc', fontSize: '0.68rem' }}>— edit directly or refine with Karl →</span>
+          <span style={{ flex: 1 }} />
+          <button onClick={() => { setPreviewContent(''); setRefineHistory([]); }}
+            style={{ background: 'transparent', border: `1px solid ${ACCENT_BORDER}`, color: '#888', padding: '0.2rem 0.5rem', borderRadius: 3, fontSize: '0.67rem', fontFamily: 'monospace', cursor: 'pointer' }}>
+            ← regenerate
+          </button>
+        </div>
+
+        {/* Split: editable preview LEFT | Karl refine RIGHT */}
         <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
 
-          {/* LEFT PANEL */}
-          <div style={{ width: leftW, flexShrink: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          {/* Editable textarea */}
+          <textarea value={previewContent} onChange={e => setPreviewContent(e.target.value)}
+            style={{ flex: 3, background: '#fff', border: 'none', borderRight: `1px solid ${ACCENT_BORDER}`, outline: 'none', padding: '1rem', fontFamily: 'monospace', fontSize: '0.8rem', lineHeight: 1.7, color: '#222', resize: 'none' }} />
 
-            <div style={{ padding: '0.75rem', borderBottom: '1px solid #1a1a1a', flexShrink: 0 }}>
-              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search templates..."
-                style={{ width: '100%', background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.4rem 0.6rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.75rem', outline: 'none', boxSizing: 'border-box', marginBottom: '0.5rem' }} />
-              <div style={{ display: 'flex', gap: '0.3rem' }}>
-                {(['all', 'system', 'mine'] as const).map(f => (
-                  <button key={f} onClick={() => setFilterType(f)}
-                    style={{ background: filterType === f ? ACCENT_BG : 'transparent', border: `1px solid ${filterType === f ? ACCENT : '#333'}`, color: filterType === f ? ACCENT : '#666', padding: '0.2rem 0.5rem', borderRadius: 3, fontSize: '0.65rem', fontFamily: 'monospace', cursor: 'pointer' }}>{f}</button>
-                ))}
-              </div>
+          {/* Karl Refine panel */}
+          <div style={{ flex: 1, minWidth: 200, display: 'flex', flexDirection: 'column', background: '#fafafa', overflow: 'hidden' }}>
+            <div style={{ padding: '0.45rem 0.75rem', borderBottom: `1px solid ${ACCENT_BORDER}`, flexShrink: 0 }}>
+              <span style={{ color: ACCENT, fontSize: '0.63rem', fontWeight: 600 }}>KARL REFINE</span>
             </div>
-
-            <div style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #1a1a1a', flexShrink: 0 }}>
-              <button onClick={startNew}
-                style={{ width: '100%', background: isNew ? ACCENT_BG : 'transparent', border: `1px solid ${isNew ? ACCENT : '#333'}`, color: isNew ? ACCENT : '#888', padding: '0.4rem', borderRadius: 4, fontSize: '0.75rem', fontFamily: 'monospace', cursor: 'pointer' }}>
-                + new template
+            <div style={{ flex: 1, overflowY: 'auto', padding: '0.6rem 0.75rem', scrollbarWidth: 'thin', scrollbarColor: `${ACCENT_BORDER} transparent` }}>
+              {refineHistory.length === 0 && <div style={{ color: '#ccc', fontSize: '0.7rem', fontStyle: 'italic' }}>Tell Karl how to improve it. Your hand edits are preserved as input.</div>}
+              {refineHistory.map((m, i) => (
+                <div key={i} style={{ marginBottom: '0.5rem', fontSize: '0.7rem', color: m.role === 'user' ? '#444' : ACCENT, paddingLeft: m.role === 'user' ? '0.5rem' : 0, borderLeft: m.role === 'user' ? `2px solid ${ACCENT_BORDER}` : 'none' }}>
+                  {m.content}
+                </div>
+              ))}
+              {refining && <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}><KarlSpinner size="sm" color={ACCENT} /><span style={{ color: '#aaa', fontSize: '0.7rem' }}>Rewriting...</span></div>}
+              <div ref={refineBottomRef} />
+            </div>
+            <div style={{ padding: '0.5rem', borderTop: `1px solid ${ACCENT_BORDER}`, flexShrink: 0 }}>
+              <textarea value={refineInput} onChange={e => setRefineInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleRefine(); } }}
+                placeholder="e.g. More detail on requirement 2..." rows={2}
+                style={{ width: '100%', background: '#fff', border: `1px solid #ddd`, borderRadius: 4, padding: '0.35rem 0.5rem', fontFamily: 'monospace', fontSize: '0.7rem', outline: 'none', resize: 'none', boxSizing: 'border-box' }}
+                onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} />
+              <button onClick={handleRefine} disabled={!refineInput.trim() || refining}
+                style={{ marginTop: '0.3rem', width: '100%', background: refineInput.trim() ? ACCENT : '#e5e7eb', border: 'none', color: refineInput.trim() ? '#fff' : '#aaa', padding: '0.3rem', borderRadius: 3, fontSize: '0.7rem', fontFamily: 'monospace', cursor: refineInput.trim() ? 'pointer' : 'not-allowed' }}>
+                rewrite ↵
               </button>
             </div>
-
-            <div style={{ flex: 1, overflowY: 'auto', scrollbarWidth: 'thin', scrollbarColor: '#222 transparent' }}>
-              {loading
-                ? <div style={{ padding: '1rem', color: '#555', fontSize: '0.75rem' }}>Loading...</div>
-                : filtered.length === 0
-                  ? <div style={{ padding: '1rem', color: '#444', fontSize: '0.75rem' }}>No templates found</div>
-                  : filtered.map((t, idx) => {
-                      const isActive = selected?.document_template_id === t.document_template_id;
-                      return (
-                        <div key={t.document_template_id} onClick={() => selectTemplate(t)}
-                          style={{ padding: '0.6rem 0.75rem', borderBottom: '1px solid #111', cursor: 'pointer', background: isActive ? ACCENT_BG : 'transparent', borderLeft: isActive ? `2px solid ${ACCENT}` : '2px solid transparent', transition: 'background 0.1s' }}
-                          onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = '#111'; }}
-                          onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}
-                        >
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.2rem' }}>
-                            <span style={{ color: ACCENT, fontSize: '0.6rem', opacity: 0.5, fontWeight: 600 }}>TM{idx + 1}</span>
-                            <span style={{ color: '#e5e5e5', fontSize: '0.78rem', flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.name}</span>
-                          </div>
-                          <div style={{ display: 'flex', gap: '0.3rem' }}>
-                            {t.is_system && <span style={{ fontSize: '0.6rem', color: ACCENT, background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, padding: '0.05rem 0.3rem', borderRadius: 2 }}>system</span>}
-                            {t.implementation_type && <span style={{ fontSize: '0.6rem', color: '#8b5cf6', background: '#120a1a', border: '1px solid #3a1a5a', padding: '0.05rem 0.3rem', borderRadius: 2 }}>{t.implementation_type}</span>}
-                            {t.doc_type && <span style={{ fontSize: '0.6rem', color: '#666', background: '#1a1a1a', border: '1px solid #222', padding: '0.05rem 0.3rem', borderRadius: 2 }}>{t.doc_type}</span>}
-                          </div>
-                        </div>
-                      );
-                    })
-              }
-            </div>
-          </div>
-
-          {/* RESIZABLE DIVIDER */}
-          <div
-            onMouseDown={e => { leftDragging.current = true; leftDragStart.current = { mx: e.clientX, w: leftW }; }}
-            style={{ width: 5, flexShrink: 0, background: '#1a1a1a', cursor: 'col-resize', transition: 'background 0.15s' }}
-            onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BORDER)}
-            onMouseLeave={e => (e.currentTarget.style.background = '#1a1a1a')}
-          />
-
-          {/* RIGHT PANEL */}
-          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
-
-            {/* Empty state */}
-            {!isEditing && (
-              <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#333', fontSize: '0.8rem', flexDirection: 'column', gap: '0.75rem' }}>
-                <div style={{ opacity: 0.3, fontSize: '1.5rem' }}>⊙</div>
-                <div>Select a template or create a new one</div>
-              </div>
-            )}
-
-            {/* Edit panel */}
-            {isEditing && !runOutput && !running && (
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-
-                <div style={{ flex: 1, overflowY: 'auto', padding: '1rem', scrollbarWidth: 'thin', scrollbarColor: '#222 transparent' }}>
-
-                  {isSystem && (
-                    <div style={{ padding: '0.4rem 0.7rem', background: '#1a1a00', border: '1px solid #3a3a00', borderRadius: 4, color: '#888', fontSize: '0.7rem', marginBottom: '1rem' }}>
-                      System template — read only. Duplicate to customize.
-                    </div>
-                  )}
-
-                  {/* Name */}
-                  <div style={{ marginBottom: '0.75rem' }}>
-                    <div style={labelSt}>Name {!isSystem && <span style={{ color: '#ef4444' }}>*</span>}</div>
-                    <input value={editName} onChange={e => setEditName(e.target.value)} disabled={isSystem}
-                      style={inputSt(isSystem)} placeholder="Weekly Status Report" />
-                  </div>
-
-                  {/* Description */}
-                  <div style={{ marginBottom: '0.75rem' }}>
-                    <div style={labelSt}>Description</div>
-                    <input value={editDesc} onChange={e => setEditDesc(e.target.value)} disabled={isSystem}
-                      style={inputSt(isSystem)} placeholder="What this template produces..." />
-                  </div>
-
-                  {/* Category + Format */}
-                  <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '0.75rem' }}>
-                    <div style={{ flex: 1 }}>
-                      <div style={labelSt}>Category</div>
-                      <input value={editDocType} onChange={e => setEditDocType(e.target.value)} disabled={isSystem}
-                        style={inputSt(isSystem)} placeholder="report / debrief / pip..." />
-                    </div>
-                    <div style={{ width: 140 }}>
-                      <div style={labelSt}>Output Format</div>
-                      <select value={editFormat} onChange={e => setEditFormat(e.target.value)} disabled={isSystem}
-                        style={{ ...inputSt(isSystem), cursor: isSystem ? 'not-allowed' : 'pointer' } as any}>
-                        <option value="markdown">Markdown</option>
-                        <option value="docx">Word (.docx)</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  {/* Data Sources */}
-                  <div style={{ marginBottom: '0.75rem' }}>
-                    <div style={labelSt}>Data Sources</div>
-                    <div style={{ padding: '0.75rem', background: '#111', border: '1px solid #1a1a1a', borderRadius: 4 }}>
-                      {isSystem
-                        ? <div style={{ color: '#444', fontSize: '0.7rem', whiteSpace: 'pre-wrap' }}>{JSON.stringify(editDs, null, 2)}</div>
-                        : <DataSourcesEditor ds={editDs} onChange={setEditDs} />
-                      }
-                    </div>
-                  </div>
-
-                  {/* ── KARL ASSIST — PRIMARY ── */}
-                  {!isSystem && (
-                    <div style={{ border: `1px solid ${ACCENT_BORDER}`, borderRadius: 6, overflow: 'hidden', marginBottom: '0.75rem' }}>
-
-                      {/* Assist header */}
-                      <div style={{ padding: '0.5rem 0.75rem', background: ACCENT_BG, borderBottom: `1px solid ${ACCENT_BORDER}`, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                        <span style={{ color: ACCENT, fontSize: '0.68rem', fontWeight: 700 }}>KARL ASSIST</span>
-                        <span style={{ color: '#2d6e65', fontSize: '0.65rem' }}>— describe what you want, Karl drafts the generation instructions</span>
-                      </div>
-
-                      {/* Empty state prompt */}
-                      {assistHistory.length === 0 && !editInstructions && (
-                        <div style={{ padding: '0.75rem', background: '#0a0a0a', borderBottom: `1px solid #1a1a1a` }}>
-                          <div style={{ color: '#444', fontSize: '0.72rem', lineHeight: 1.5 }}>
-                            Tell Karl what you want this template to produce. For example:<br />
-                            <span style={{ color: '#555', fontStyle: 'italic' }}>"A weekly status report summarizing my completions by context area, with key wins and open risks"</span>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Assist history */}
-                      {assistHistory.length > 0 && (
-                        <div style={{ maxHeight: 200, overflowY: 'auto', padding: '0.6rem 0.75rem', background: '#0a0a0a', scrollbarWidth: 'thin', scrollbarColor: '#222 transparent' }}>
-                          {assistHistory.map((m, i) => (
-                            <div key={i} style={{ marginBottom: '0.5rem', fontSize: '0.75rem', color: m.role === 'user' ? '#86efac' : '#d4d4d4', paddingLeft: m.role === 'user' ? '0.5rem' : 0, borderLeft: m.role === 'user' ? '2px solid #2a4a2a' : 'none', lineHeight: 1.5 }}>
-                              {m.content}
-                            </div>
-                          ))}
-                          {assistLoading && (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.25rem 0' }}>
-                              <KarlSpinner size="sm" color={ACCENT} />
-                              <span style={{ color: '#555', fontSize: '0.72rem' }}>Karl is thinking...</span>
-                            </div>
-                          )}
-                          <div ref={assistBottomRef} />
-                        </div>
-                      )}
-
-                      {/* Assist input */}
-                      <div style={{ display: 'flex', gap: '0.5rem', padding: '0.5rem 0.75rem', background: '#0d0d0d' }}>
-                        <textarea
-                          value={assistInput}
-                          onChange={e => setAssistInput(e.target.value)}
-                          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAssist(); } }}
-                          placeholder={assistHistory.length > 0 ? 'Refine further...' : 'Describe what you want this template to produce...'}
-                          rows={2}
-                          style={{ flex: 1, background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.35rem 0.6rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.72rem', outline: 'none', resize: 'vertical', minHeight: 36 }}
-                          onFocus={e => (e.target.style.borderColor = ACCENT)}
-                          onBlur={e => (e.target.style.borderColor = '#222')}
-                        />
-                        <button onClick={handleAssist} disabled={!assistInput.trim() || assistLoading}
-                          style={{ background: assistInput.trim() ? ACCENT_BG : 'transparent', border: `1px solid ${assistInput.trim() ? ACCENT : '#333'}`, color: assistInput.trim() ? ACCENT : '#555', padding: '0.35rem 0.65rem', borderRadius: 4, fontSize: '0.7rem', fontFamily: 'monospace', cursor: assistInput.trim() ? 'pointer' : 'not-allowed', alignSelf: 'flex-end' }}>
-                          ask
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* ── GENERATION INSTRUCTIONS — SECONDARY ── */}
-                  <div style={{ marginBottom: '0.5rem' }}>
-                    <div
-                      onClick={() => setShowInstructions(v => !v)}
-                      style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', marginBottom: showInstructions ? '0.5rem' : 0 }}
-                    >
-                      <span style={{ color: showInstructions ? ACCENT : '#444', fontSize: '0.65rem', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>
-                        {showInstructions ? '▾' : '▸'} Generation Instructions {!isSystem && <span style={{ color: '#333', textTransform: 'none', fontWeight: 400, letterSpacing: 0 }}>(Karl-authored — edit carefully)</span>}
-                      </span>
-                      {editInstructions && !showInstructions && (
-                        <span style={{ fontSize: '0.62rem', color: '#2d6e65', background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, borderRadius: 3, padding: '0.05rem 0.3rem' }}>✓ drafted</span>
-                      )}
-                      {!editInstructions && !showInstructions && (
-                        <span style={{ fontSize: '0.62rem', color: '#444' }}>use Karl Assist above to build</span>
-                      )}
-                    </div>
-
-                    {showInstructions && (
-                      <textarea
-                        value={editInstructions}
-                        onChange={e => setEditInstructions(e.target.value)}
-                        disabled={isSystem}
-                        rows={8}
-                        placeholder="Use Karl Assist above to draft these instructions, or write them manually. Be specific about document format, sections, tone, and what data to emphasize..."
-                        style={{ ...inputSt(isSystem), resize: 'vertical', minHeight: 160, lineHeight: 1.5 } as any}
-                      />
-                    )}
-                  </div>
-
-                </div>
-
-                {/* Footer */}
-                <div style={{ padding: '0.75rem 1rem', borderTop: '1px solid #1a1a1a', background: '#0d0d0d', display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
-                  {saveErr && <span style={{ color: '#ef4444', fontSize: '0.7rem', flex: 1 }}>{saveErr}</span>}
-                  {!saveErr && <span style={{ flex: 1 }} />}
-
-                  {!isSystem && selected && (
-                    <button onClick={handleDelete}
-                      style={{ background: 'transparent', border: '1px solid #3a1a1a', color: '#ef4444', padding: '0.35rem 0.75rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer' }}>
-                      delete
-                    </button>
-                  )}
-
-                  {!isSystem && (
-                    <button onClick={handleSave} disabled={saving}
-                      style={{ background: '#0a1f1d', border: `1px solid ${ACCENT}`, color: ACCENT, padding: '0.35rem 0.9rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer' }}>
-                      {saving ? 'saving...' : 'save'}
-                    </button>
-                  )}
-
-                  {selected && (
-                    <button onClick={handleRun}
-                      style={{ background: ACCENT, border: 'none', color: '#000', padding: '0.35rem 1rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer', fontWeight: 700 }}>
-                      ▶ preview
-                    </button>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Running state */}
-            {running && (
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '1.25rem' }}>
-                <KarlSpinner size="lg" color={ACCENT} />
-                <div style={{ color: '#555', fontSize: '0.8rem' }}>Karl is previewing your template...</div>
-                <div style={{ color: '#333', fontSize: '0.7rem' }}>This is a test run — nothing is saved yet</div>
-              </div>
-            )}
-
-            {/* Preview output */}
-            {runOutput && !running && (
-              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-
-                <div style={{ padding: '0.5rem 1rem', borderBottom: '1px solid #1a1a1a', background: '#0d0d0d', display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
-                  <span style={{ color: ACCENT, fontSize: '0.7rem', fontWeight: 600 }}>PREVIEW</span>
-                  <span style={{ color: '#333', fontSize: '0.65rem' }}>· test run · nothing saved</span>
-                  <span style={{ flex: 1 }} />
-                  <button onClick={handleCopy}
-                    style={{ background: copied ? ACCENT_BG : 'transparent', border: `1px solid ${copied ? ACCENT : '#333'}`, color: copied ? ACCENT : '#666', padding: '0.25rem 0.6rem', borderRadius: 3, fontSize: '0.68rem', fontFamily: 'monospace', cursor: 'pointer' }}>
-                    {copied ? '✓ copied' : 'copy'}
-                  </button>
-                  <button onClick={handleDownloadMd}
-                    style={{ background: 'transparent', border: '1px solid #333', color: '#666', padding: '0.25rem 0.6rem', borderRadius: 3, fontSize: '0.68rem', fontFamily: 'monospace', cursor: 'pointer' }}>
-                    ↓ .md
-                  </button>
-                  <button onClick={() => { setRunOutput(null); setRunErr(''); setSavePrompt(false); }}
-                    style={{ background: 'transparent', border: '1px solid #333', color: '#666', padding: '0.25rem 0.6rem', borderRadius: 3, fontSize: '0.68rem', fontFamily: 'monospace', cursor: 'pointer' }}>
-                    ← back
-                  </button>
-                </div>
-
-                <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem', scrollbarWidth: 'thin', scrollbarColor: '#222 transparent' }}>
-                  <pre style={{ color: '#d4d4d4', fontSize: '0.8rem', lineHeight: 1.7, whiteSpace: 'pre-wrap', fontFamily: 'monospace', margin: 0 }}>{runOutput}</pre>
-                </div>
-
-                <div style={{ padding: '0.75rem 1rem', borderTop: '1px solid #1a1a1a', background: '#0d0d0d', flexShrink: 0 }}>
-                  {!savePrompt && !savedToRefs && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ color: '#888', fontSize: '0.72rem' }}>Happy with this?</div>
-                        <div style={{ color: '#444', fontSize: '0.65rem', marginTop: '0.1rem' }}>Save to your Extracts so you can rerun it anytime — or just copy and go.</div>
-                      </div>
-                      <button onClick={handleRun} style={{ background: 'transparent', border: '1px solid #333', color: '#666', padding: '0.35rem 0.75rem', borderRadius: 4, fontSize: '0.7rem', fontFamily: 'monospace', cursor: 'pointer' }}>▶ preview again</button>
-                      <button onClick={() => setSavePrompt(true)} style={{ background: ACCENT, border: 'none', color: '#000', padding: '0.35rem 1rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer', fontWeight: 700 }}>Save & Track</button>
-                    </div>
-                  )}
-                  {savePrompt && !savedToRefs && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ color: '#e5e5e5', fontSize: '0.72rem' }}>Save this to your Extracts?</div>
-                        <div style={{ color: '#555', fontSize: '0.65rem', marginTop: '0.1rem' }}>We'll keep a copy so you can rerun it anytime.</div>
-                      </div>
-                      <button onClick={() => setSavePrompt(false)} style={{ background: 'transparent', border: '1px solid #333', color: '#666', padding: '0.35rem 0.75rem', borderRadius: 4, fontSize: '0.7rem', fontFamily: 'monospace', cursor: 'pointer' }}>no thanks</button>
-                      <button onClick={handleSaveToRefs} disabled={savingToRefs} style={{ background: ACCENT, border: 'none', color: '#000', padding: '0.35rem 1rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer', fontWeight: 700 }}>{savingToRefs ? 'saving...' : 'yes, save it'}</button>
-                    </div>
-                  )}
-                  {savedToRefs && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                      <span style={{ color: ACCENT, fontSize: '0.72rem' }}>✓ Saved to Extracts.</span>
-                      <span style={{ color: '#444', fontSize: '0.65rem' }}>Find it anytime in your Extracts — or rerun it from there.</span>
-                      <span style={{ flex: 1 }} />
-                      <button onClick={handleRun} style={{ background: 'transparent', border: '1px solid #333', color: '#666', padding: '0.35rem 0.75rem', borderRadius: 4, fontSize: '0.7rem', fontFamily: 'monospace', cursor: 'pointer' }}>▶ preview again</button>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Run error */}
-            {runErr && !running && (
-              <div style={{ padding: '1rem', color: '#ef4444', fontSize: '0.75rem' }}>
-                Error: {runErr}
-                <button onClick={() => setRunErr('')} style={{ marginLeft: '1rem', background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: '0.7rem' }}>dismiss</button>
-              </div>
-            )}
-
           </div>
         </div>
 
-        {/* RESIZE HANDLE */}
-        <div
-          onMouseDown={e => { resizing.current = true; resizeStart.current = { x: e.clientX, y: e.clientY, w: size.w, h: size.h }; }}
-          style={{ position: 'absolute', bottom: 0, right: 0, width: 16, height: 16, cursor: 'nwse-resize' }}
-        />
+        {/* Save bar */}
+        <div style={{ padding: '0.65rem 1rem', borderTop: `1px solid ${ACCENT_BORDER}`, background: '#fafafa', flexShrink: 0 }}>
+          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '0.35rem' }}>
+            <input value={saveTitle} onChange={e => setSaveTitle(e.target.value)} placeholder="Title *"
+              style={{ ...inputSt, flex: 2 }} onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} />
+            <select value={saveContext} onChange={e => setSaveContext(e.target.value)} style={{ ...inputSt, flex: 1 } as any}
+              onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')}>
+              <option value="">— context —</option>
+              {contexts.map(c => <option key={c.context_id} value={c.context_id}>{c.name}</option>)}
+            </select>
+            <div style={{ position: 'relative', flex: 1 }}>
+              <input value={saveTagSearch} onChange={e => { setSaveTagSearch(e.target.value); setShowSaveTagDrop(true); }}
+                onFocus={e => { setShowSaveTagDrop(true); e.target.style.borderColor = ACCENT; }}
+                onBlur={e => { setTimeout(() => setShowSaveTagDrop(false), 150); e.target.style.borderColor = '#ddd'; }}
+                placeholder="Tags..." style={inputSt} />
+              {showSaveTagDrop && filteredSaveTags.length > 0 && (
+                <div style={{ position: 'absolute', bottom: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #ddd', borderRadius: 4, maxHeight: 110, overflowY: 'auto', boxShadow: '0 -4px 12px rgba(0,0,0,0.1)', zIndex: 20 }}>
+                  {filteredSaveTags.map(t => <div key={t.tag_id} onMouseDown={() => { toggleSaveTag(t.name); setSaveTagSearch(''); }} style={{ padding: '0.3rem 0.6rem', fontSize: '0.73rem', cursor: 'pointer' }} onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BG)} onMouseLeave={e => (e.currentTarget.style.background = '#fff')}>{t.name}</div>)}
+                </div>
+              )}
+            </div>
+          </div>
+          {saveTags.length > 0 && (
+            <div style={{ display: 'flex', gap: '0.3rem', marginBottom: '0.35rem', flexWrap: 'wrap' }}>
+              {saveTags.map(t => <span key={t} onClick={() => toggleSaveTag(t)} style={{ fontSize: '0.67rem', color: '#fff', background: ACCENT, borderRadius: 3, padding: '0.08rem 0.3rem', cursor: 'pointer' }}>{t} ✕</span>)}
+            </div>
+          )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'flex-end' }}>
+            {saveErr && <span style={{ color: '#ef4444', fontSize: '0.7rem', flex: 1 }}>{saveErr}</span>}
+            <button onClick={() => setRightMode('empty')} style={{ background: 'none', border: '1px solid #ddd', color: '#888', padding: '0.35rem 0.7rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.72rem', cursor: 'pointer' }}>cancel</button>
+            <button onClick={handleSaveGenerated} disabled={saving}
+              style={{ background: ACCENT, border: 'none', color: '#fff', padding: '0.35rem 1rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.72rem', cursor: 'pointer', fontWeight: 600 }}>
+              {saving ? 'saving...' : 'save extract'}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
 
+    // Manual path
+    return (
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '0.85rem', scrollbarWidth: 'thin', scrollbarColor: `${ACCENT_BORDER} transparent` }}>
+          <div style={labelSt}>Manual Extract</div>
+
+          <div>
+            <div style={labelSt}>Title <span style={{ color: '#ef4444' }}>*</span></div>
+            <input value={manualTitle} onChange={e => setManualTitle(e.target.value)} style={inputSt}
+              onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} />
+          </div>
+
+          <div>
+            <div style={labelSt}>Filename</div>
+            <input value={manualFilename} onChange={e => setManualFilename(e.target.value)} placeholder="report.pdf, notes.md..." style={inputSt}
+              onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} />
+          </div>
+
+          <div>
+            <div style={labelSt}>Context</div>
+            <select value={manualContext} onChange={e => setManualContext(e.target.value)} style={{ ...inputSt, cursor: 'pointer' } as any}
+              onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')}>
+              <option value="">— none —</option>
+              {contexts.map(c => <option key={c.context_id} value={c.context_id}>{c.name}</option>)}
+            </select>
+          </div>
+
+          <div>
+            <div style={labelSt}>Tags</div>
+            {manualTags.length > 0 && (
+              <div style={{ display: 'flex', gap: '0.3rem', marginBottom: '0.4rem', flexWrap: 'wrap' }}>
+                {manualTags.map(t => <span key={t} onClick={() => toggleManualTag(t)} style={{ fontSize: '0.68rem', color: '#fff', background: ACCENT, borderRadius: 3, padding: '0.1rem 0.35rem', cursor: 'pointer' }}>{t} ✕</span>)}
+              </div>
+            )}
+            <div style={{ position: 'relative' }}>
+              <input value={manualTagSearch} onChange={e => { setManualTagSearch(e.target.value); setShowManualTagDrop(true); }}
+                onFocus={e => { setShowManualTagDrop(true); e.target.style.borderColor = ACCENT; }}
+                onBlur={e => { setTimeout(() => setShowManualTagDrop(false), 150); e.target.style.borderColor = '#ddd'; }}
+                placeholder="Search tags..." style={inputSt} />
+              {showManualTagDrop && filteredManualTags.length > 0 && (
+                <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #ddd', borderRadius: 4, maxHeight: 110, overflowY: 'auto', boxShadow: '0 4px 12px rgba(0,0,0,0.1)', zIndex: 20 }}>
+                  {filteredManualTags.map(t => <div key={t.tag_id} onMouseDown={() => { toggleManualTag(t.name); setManualTagSearch(''); }} style={{ padding: '0.3rem 0.6rem', fontSize: '0.73rem', cursor: 'pointer' }} onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BG)} onMouseLeave={e => (e.currentTarget.style.background = '#fff')}>{t.name}</div>)}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div>
+            <div style={labelSt}>Notes / Content</div>
+            <textarea value={manualNotes} onChange={e => setManualNotes(e.target.value)} rows={7}
+              placeholder="Write your content here, or use Karl Assist below..."
+              style={{ ...inputSt, resize: 'vertical', minHeight: 140 } as any}
+              onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} />
+          </div>
+
+          {/* Karl Assist */}
+          <div style={{ border: `1px solid ${ACCENT_BORDER}`, borderRadius: 6, overflow: 'hidden' }}>
+            <div style={{ padding: '0.4rem 0.75rem', background: ACCENT_BG, borderBottom: `1px solid ${ACCENT_BORDER}`, display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              <span style={{ color: ACCENT, fontSize: '0.63rem', fontWeight: 600 }}>KARL ASSIST</span>
+              <span style={{ color: '#bbb', fontSize: '0.63rem' }}>— describe what you want, Karl drafts the content</span>
+            </div>
+            {karlAssistHistory.length > 0 && (
+              <div style={{ maxHeight: 120, overflowY: 'auto', padding: '0.5rem 0.75rem', background: '#fff' }}>
+                {karlAssistHistory.map((m, i) => (
+                  <div key={i} style={{ marginBottom: '0.4rem', fontSize: '0.7rem', color: m.role === 'user' ? '#444' : ACCENT, paddingLeft: m.role === 'user' ? '0.5rem' : 0, borderLeft: m.role === 'user' ? `2px solid ${ACCENT_BORDER}` : 'none' }}>{m.content}</div>
+                ))}
+                {karlAssistLoading && <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}><KarlSpinner size="sm" color={ACCENT} /><span style={{ color: '#aaa', fontSize: '0.7rem' }}>Karl is thinking...</span></div>}
+                <div ref={karlBottomRef} />
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: '0.5rem', padding: '0.5rem', background: '#fafafa' }}>
+              <input value={karlAssistInput} onChange={e => setKarlAssistInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleKarlAssist(); }}
+                placeholder="What should go in this extract?" style={{ ...inputSt, marginBottom: 0 }}
+                onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} />
+              <button onClick={handleKarlAssist} disabled={!karlAssistInput.trim() || karlAssistLoading}
+                style={{ background: karlAssistInput.trim() ? ACCENT : '#e5e7eb', border: 'none', color: karlAssistInput.trim() ? '#fff' : '#aaa', padding: '0 0.75rem', borderRadius: 4, fontSize: '0.7rem', fontFamily: 'monospace', cursor: karlAssistInput.trim() ? 'pointer' : 'not-allowed', flexShrink: 0 }}>
+                ask
+              </button>
+            </div>
+          </div>
+
+          {saveErr && <div style={{ color: '#ef4444', fontSize: '0.72rem' }}>{saveErr}</div>}
+        </div>
+
+        <div style={{ padding: '0.75rem 1.25rem', borderTop: `1px solid ${ACCENT_BORDER}`, background: '#fafafa', display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', flexShrink: 0 }}>
+          <button onClick={() => setCreatePath('choose')} style={{ background: 'none', border: '1px solid #ddd', color: '#888', padding: '0.4rem 0.8rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer' }}>← back</button>
+          <button onClick={handleSaveManual} disabled={saving}
+            style={{ background: ACCENT, border: 'none', color: '#fff', padding: '0.4rem 1rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer', fontWeight: 600 }}>
+            {saving ? 'saving...' : 'save extract'}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 100, pointerEvents: 'none' }}>
+      <div style={{ position: 'absolute', left: pos.x, top: pos.y, width: size.w, height: size.h, background: '#fff', border: `2px solid ${ACCENT}`, borderRadius: 8, display: 'flex', flexDirection: 'column', fontFamily: 'monospace', boxShadow: '0 20px 60px rgba(0,0,0,0.3)', overflow: 'hidden', pointerEvents: 'all' }}>
+
+        <div onMouseDown={e => { dragging.current = true; dragStart.current = { mx: e.clientX, my: e.clientY, px: pos.x, py: pos.y }; }}
+          style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.85rem 1.25rem', background: ACCENT, cursor: 'grab', userSelect: 'none', flexShrink: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <span style={{ color: '#000', fontSize: '0.85rem', fontWeight: 700 }}>Extracts</span>
+            <span style={{ color: '#000', fontSize: '0.7rem', opacity: 0.5 }}>{extracts.length} total</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <button onClick={openCreate}
+              style={{ background: '#000', border: 'none', color: ACCENT, padding: '0.25rem 0.75rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer', fontWeight: 600 }}
+              onMouseEnter={e => (e.currentTarget.style.background = '#222')} onMouseLeave={e => (e.currentTarget.style.background = '#000')}>
+              + new extract
+            </button>
+            <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#000', cursor: 'pointer', fontSize: '1rem', lineHeight: 1, opacity: 0.6 }}
+              onMouseEnter={e => (e.currentTarget.style.opacity = '1')} onMouseLeave={e => (e.currentTarget.style.opacity = '0.6')}>✕</button>
+          </div>
+        </div>
+
+        <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+          {renderLeft()}
+          {rightMode === 'empty'  && renderEmpty()}
+          {rightMode === 'view'   && renderView()}
+          {rightMode === 'create' && renderCreate()}
+        </div>
+
+        <div onMouseDown={e => { resizing.current = true; resizeStart.current = { mx: e.clientX, my: e.clientY, w: size.w, h: size.h }; }}
+          style={{ position: 'absolute', bottom: 0, right: 0, width: 18, height: 18, cursor: 'se-resize', display: 'flex', alignItems: 'flex-end', justifyContent: 'flex-end', padding: 4 }}>
+          <svg width="8" height="8" viewBox="0 0 8 8" fill="none"><path d="M1 7L7 1M4 7L7 4" stroke={ACCENT} strokeWidth="1.5" strokeLinecap="round"/></svg>
+        </div>
       </div>
     </div>
   );
 }
 
-// ─── STYLES ───────────────────────────────────────────────────────────────────
-
 const labelSt: React.CSSProperties = {
-  color: '#555', fontSize: '0.65rem', textTransform: 'uppercase',
-  letterSpacing: '0.05em', marginBottom: '0.3rem',
+  color: '#666', fontSize: '0.63rem', marginBottom: '0.3rem',
+  textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600,
 };
 
-const inputSt = (disabled: boolean): React.CSSProperties => ({
-  width: '100%', background: disabled ? '#0d0d0d' : '#111', border: '1px solid #222',
-  color: disabled ? '#444' : '#e5e5e5', padding: '0.45rem 0.6rem', borderRadius: 4,
+const inputSt: React.CSSProperties = {
+  width: '100%', background: '#fafafa', border: '1px solid #ddd',
+  color: '#222', padding: '0.45rem 0.6rem', borderRadius: 4,
   fontFamily: 'monospace', fontSize: '0.8rem', outline: 'none',
-  boxSizing: 'border-box', cursor: disabled ? 'not-allowed' : 'text',
-});
+  boxSizing: 'border-box', transition: 'border-color 0.15s',
+};
