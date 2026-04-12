@@ -1,0 +1,725 @@
+'use client';
+
+import { useEffect, useState, useRef } from 'react';
+import { supabase } from '@/lib/supabase';
+import KarlSpinner from './KarlSpinner';
+
+// ─── TYPES ────────────────────────────────────────────────────────────────────
+
+interface Template {
+  document_template_id: string;
+  name: string;
+  description: string | null;
+  doc_type: string | null;
+  prompt_template: string;
+  data_sources: DataSources;
+  output_format: string;
+  tags: string[];
+  is_system: boolean;
+  is_active: boolean;
+  implementation_type: string | null;
+  created_at: string;
+}
+
+interface DataSources {
+  situation?: boolean;
+  tasks?: { buckets: string[]; context: string | null; tags: string[] } | false;
+  completions?: { window_days: number; context: string | null; tags: string[] } | false;
+  meetings?: { window_days: number; completed_only: boolean } | false;
+  references?: boolean;
+}
+
+interface AssistMessage { role: 'user' | 'assistant'; content: string; }
+
+interface TemplatesModalProps {
+  userId: string;
+  accessToken: string;
+  onClose: () => void;
+  onCountChange?: (count: number) => void;
+}
+
+// ─── CONSTANTS ────────────────────────────────────────────────────────────────
+
+const ACCENT   = '#14b8a6';
+const ACCENT_BG = '#0a1f1d';
+const ACCENT_BORDER = '#0f3330';
+
+const BUCKET_OPTS = ['now', 'soon', 'realwork', 'later', 'delegate', 'capture'];
+
+const DEFAULT_DS: DataSources = {
+  situation:   true,
+  tasks:       { buckets: ['now', 'soon', 'realwork'], context: null, tags: [] },
+  completions: { window_days: 30, context: null, tags: [] },
+  meetings:    { window_days: 30, completed_only: true },
+  references:  false,
+};
+
+// ─── HELPERS ──────────────────────────────────────────────────────────────────
+
+function fmtDate(d: string) {
+  return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
+}
+
+// ─── SUBCOMPONENTS ────────────────────────────────────────────────────────────
+
+function DataSourcesEditor({ ds, onChange }: { ds: DataSources; onChange: (ds: DataSources) => void }) {
+  const hasTasks       = !!ds.tasks;
+  const hasCompletions = !!ds.completions;
+  const hasMeetings    = !!ds.meetings;
+
+  const toggle = (key: keyof DataSources, defaultVal: any) => {
+    const next = { ...ds };
+    if (next[key]) { (next as any)[key] = false; }
+    else           { (next as any)[key] = defaultVal; }
+    onChange(next);
+  };
+
+  const row = (label: string, active: boolean, onToggle: () => void, children?: React.ReactNode) => (
+    <div style={{ marginBottom: '0.75rem' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: active && children ? '0.4rem' : 0 }}>
+        <div onClick={onToggle} style={{ width: 14, height: 14, border: `1px solid ${active ? ACCENT : '#444'}`, borderRadius: 3, background: active ? ACCENT : 'transparent', cursor: 'pointer', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          {active && <span style={{ color: '#000', fontSize: 9, fontWeight: 700 }}>✓</span>}
+        </div>
+        <span style={{ color: active ? '#e5e5e5' : '#666', fontSize: '0.75rem' }}>{label}</span>
+      </div>
+      {active && children && (
+        <div style={{ marginLeft: '1.5rem', padding: '0.5rem', background: '#111', border: '1px solid #222', borderRadius: 4 }}>
+          {children}
+        </div>
+      )}
+    </div>
+  );
+
+  return (
+    <div>
+      {row('Situation brief', !!ds.situation, () => toggle('situation', true))}
+
+      {row('Tasks', hasTasks, () => toggle('tasks', { buckets: ['now', 'soon', 'realwork'], context: null, tags: [] }),
+        hasTasks && typeof ds.tasks === 'object' ? (
+          <div>
+            <div style={{ color: '#666', fontSize: '0.65rem', marginBottom: '0.3rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Buckets</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem' }}>
+              {BUCKET_OPTS.map(b => {
+                const active = (ds.tasks as any).buckets?.includes(b);
+                return (
+                  <button key={b} onClick={() => {
+                    const cur = (ds.tasks as any).buckets ?? [];
+                    const next = active ? cur.filter((x: string) => x !== b) : [...cur, b];
+                    onChange({ ...ds, tasks: { ...(ds.tasks as any), buckets: next } });
+                  }} style={{ background: active ? '#0a1f1d' : 'transparent', border: `1px solid ${active ? ACCENT : '#333'}`, color: active ? ACCENT : '#666', padding: '0.15rem 0.4rem', borderRadius: 3, fontSize: '0.65rem', fontFamily: 'monospace', cursor: 'pointer' }}>{b}</button>
+                );
+              })}
+            </div>
+          </div>
+        ) : null
+      )}
+
+      {row('Completions', hasCompletions, () => toggle('completions', { window_days: 30, context: null, tags: [] }),
+        hasCompletions && typeof ds.completions === 'object' ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <span style={{ color: '#666', fontSize: '0.65rem' }}>Last</span>
+            <input type="number" min={1} max={365} value={(ds.completions as any).window_days}
+              onChange={e => onChange({ ...ds, completions: { ...(ds.completions as any), window_days: parseInt(e.target.value) || 30 } })}
+              style={{ width: 50, background: '#0a0a0a', border: '1px solid #333', color: '#e5e5e5', padding: '0.2rem 0.4rem', borderRadius: 3, fontFamily: 'monospace', fontSize: '0.75rem' }} />
+            <span style={{ color: '#666', fontSize: '0.65rem' }}>days</span>
+          </div>
+        ) : null
+      )}
+
+      {row('Meetings', hasMeetings, () => toggle('meetings', { window_days: 30, completed_only: true }),
+        hasMeetings && typeof ds.meetings === 'object' ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <span style={{ color: '#666', fontSize: '0.65rem' }}>Last</span>
+            <input type="number" min={1} max={365} value={(ds.meetings as any).window_days}
+              onChange={e => onChange({ ...ds, meetings: { ...(ds.meetings as any), window_days: parseInt(e.target.value) || 30 } })}
+              style={{ width: 50, background: '#0a0a0a', border: '1px solid #333', color: '#e5e5e5', padding: '0.2rem 0.4rem', borderRadius: 3, fontFamily: 'monospace', fontSize: '0.75rem' }} />
+            <span style={{ color: '#666', fontSize: '0.65rem' }}>days</span>
+          </div>
+        ) : null
+      )}
+
+      {row('References', !!ds.references, () => toggle('references', true))}
+    </div>
+  );
+}
+
+// ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
+
+export default function TemplatesModal({ userId, accessToken, onClose, onCountChange }: TemplatesModalProps) {
+
+  // ── State ──────────────────────────────────────────────────────────────────
+
+  const [templates, setTemplates]         = useState<Template[]>([]);
+  const [loading, setLoading]             = useState(true);
+  const [selected, setSelected]           = useState<Template | null>(null);
+  const [isNew, setIsNew]                 = useState(false);
+  const [search, setSearch]               = useState('');
+  const [filterType, setFilterType]       = useState<'all' | 'system' | 'mine'>('all');
+
+  // Edit state
+  const [editName, setEditName]           = useState('');
+  const [editDesc, setEditDesc]           = useState('');
+  const [editDocType, setEditDocType]     = useState('');
+  const [editFormat, setEditFormat]       = useState('markdown');
+  const [editDs, setEditDs]               = useState<DataSources>(DEFAULT_DS);
+  const [editInstructions, setEditInstructions] = useState('');
+  const [saving, setSaving]               = useState(false);
+  const [saveErr, setSaveErr]             = useState('');
+
+  // Run state
+  const [running, setRunning]             = useState(false);
+  const [runOutput, setRunOutput]         = useState<string | null>(null);
+  const [runErr, setRunErr]               = useState('');
+  const [copied, setCopied]               = useState(false);
+
+  // Assist state
+  const [assistInput, setAssistInput]     = useState('');
+  const [assistHistory, setAssistHistory] = useState<AssistMessage[]>([]);
+  const [assistLoading, setAssistLoading] = useState(false);
+
+  // Modal drag/resize
+  const [pos, setPos]   = useState({ x: Math.max(0, window.innerWidth / 2 - 550), y: Math.max(0, window.innerHeight / 2 - 420) });
+  const [size, setSize] = useState({ w: 1100, h: 780 });
+  const dragging        = useRef(false);
+  const resizing        = useRef(false);
+  const dragStart       = useRef({ x: 0, y: 0, px: 0, py: 0 });
+  const resizeStart     = useRef({ x: 0, y: 0, w: 0, h: 0 });
+
+  const assistBottomRef = useRef<HTMLDivElement>(null);
+
+  // ── Data ───────────────────────────────────────────────────────────────────
+
+  useEffect(() => { loadTemplates(); }, []);
+
+  useEffect(() => {
+    assistBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [assistHistory, assistLoading]);
+
+  const loadTemplates = async () => {
+    setLoading(true);
+    const { data } = await supabase
+      .from('document_template')
+      .select('*')
+      .or(`user_id.eq.${userId},is_system.eq.true`)
+      .eq('is_active', true)
+      .order('is_system', { ascending: false })
+      .order('name');
+    if (data) {
+      setTemplates(data as Template[]);
+      onCountChange?.(data.length);
+    }
+    setLoading(false);
+  };
+
+  // ── Drag / Resize ──────────────────────────────────────────────────────────
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (dragging.current) {
+        setPos({ x: Math.max(0, dragStart.current.px + e.clientX - dragStart.current.x), y: Math.max(0, dragStart.current.py + e.clientY - dragStart.current.y) });
+      }
+      if (resizing.current) {
+        setSize({ w: Math.max(800, resizeStart.current.w + e.clientX - resizeStart.current.x), h: Math.max(500, resizeStart.current.h + e.clientY - resizeStart.current.y) });
+      }
+    };
+    const onUp = () => { dragging.current = false; resizing.current = false; };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    return () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+  }, []);
+
+  // ── Handlers ───────────────────────────────────────────────────────────────
+
+  const selectTemplate = (t: Template) => {
+    setSelected(t);
+    setIsNew(false);
+    setEditName(t.name);
+    setEditDesc(t.description ?? '');
+    setEditDocType(t.doc_type ?? '');
+    setEditFormat(t.output_format ?? 'markdown');
+    setEditDs(t.data_sources ?? DEFAULT_DS);
+    setEditInstructions(t.prompt_template ?? '');
+    setRunOutput(null);
+    setRunErr('');
+    setSaveErr('');
+    setAssistHistory([]);
+  };
+
+  const startNew = () => {
+    setSelected(null);
+    setIsNew(true);
+    setEditName('');
+    setEditDesc('');
+    setEditDocType('');
+    setEditFormat('markdown');
+    setEditDs(DEFAULT_DS);
+    setEditInstructions('');
+    setRunOutput(null);
+    setRunErr('');
+    setSaveErr('');
+    setAssistHistory([]);
+  };
+
+  const handleSave = async () => {
+    if (!editName.trim())         { setSaveErr('Name is required'); return; }
+    if (!editInstructions.trim()) { setSaveErr('Instructions are required'); return; }
+    setSaving(true); setSaveErr('');
+
+    try {
+      if (isNew) {
+        const { error } = await supabase.from('document_template').insert({
+          user_id:          userId,
+          name:             editName.trim(),
+          description:      editDesc.trim() || null,
+          doc_type:         editDocType.trim() || null,
+          output_format:    editFormat,
+          data_sources:     editDs,
+          prompt_template:  editInstructions.trim(),
+          is_system:        false,
+          is_active:        true,
+        });
+        if (error) throw error;
+      } else if (selected && !selected.is_system) {
+        const { error } = await supabase.from('document_template').update({
+          name:            editName.trim(),
+          description:     editDesc.trim() || null,
+          doc_type:        editDocType.trim() || null,
+          output_format:   editFormat,
+          data_sources:    editDs,
+          prompt_template: editInstructions.trim(),
+          updated_at:      new Date().toISOString(),
+        }).eq('document_template_id', selected.document_template_id);
+        if (error) throw error;
+      }
+
+      await loadTemplates();
+      setIsNew(false);
+    } catch (err: any) {
+      setSaveErr(err.message ?? 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!selected || selected.is_system) return;
+    if (!confirm(`Delete "${selected.name}"? This cannot be undone.`)) return;
+    await supabase.from('document_template')
+      .update({ is_active: false })
+      .eq('document_template_id', selected.document_template_id);
+    setSelected(null);
+    setIsNew(false);
+    await loadTemplates();
+  };
+
+  const handleRun = async () => {
+    const templateId = selected?.document_template_id;
+    if (!templateId) return;
+    setRunning(true); setRunOutput(null); setRunErr('');
+    try {
+      const res = await fetch('/api/ko/template/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
+        body: JSON.stringify({ template_id: templateId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Run failed');
+      setRunOutput(data.output);
+    } catch (err: any) {
+      setRunErr(err.message ?? 'Run failed');
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const handleCopy = async () => {
+    if (!runOutput) return;
+    await navigator.clipboard.writeText(runOutput);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleDownloadMd = () => {
+    if (!runOutput) return;
+    const blob = new Blob([runOutput], { type: 'text/markdown' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `${editName || 'document'}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleAssist = async () => {
+    const msg = assistInput.trim();
+    if (!msg || assistLoading) return;
+    setAssistInput('');
+    setAssistLoading(true);
+
+    const userMsg: AssistMessage = { role: 'user', content: msg };
+    setAssistHistory(h => [...h, userMsg]);
+
+    try {
+      const res = await fetch('/api/ko/template/assist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
+        body: JSON.stringify({
+          message:                  msg,
+          history:                  assistHistory.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content })),
+          current_instructions:     editInstructions,
+          current_data_sources:     editDs,
+        }),
+      });
+      const data = await res.json();
+
+      setAssistHistory(h => [...h, { role: 'assistant', content: data.response ?? '' }]);
+
+      if (data.suggested_instructions) setEditInstructions(data.suggested_instructions);
+      if (data.suggested_data_sources) setEditDs(data.suggested_data_sources);
+
+    } catch (err: any) {
+      setAssistHistory(h => [...h, { role: 'assistant', content: 'Something went wrong. Try again.' }]);
+    } finally {
+      setAssistLoading(false);
+    }
+  };
+
+  // ── Filtered list ──────────────────────────────────────────────────────────
+
+  const filtered = templates.filter(t => {
+    const matchSearch = !search || t.name.toLowerCase().includes(search.toLowerCase()) || (t.description ?? '').toLowerCase().includes(search.toLowerCase());
+    const matchType   = filterType === 'all' ? true : filterType === 'system' ? t.is_system : !t.is_system;
+    return matchSearch && matchType;
+  });
+
+  const isEditing  = isNew || !!selected;
+  const isSystem   = selected?.is_system ?? false;
+  const canEdit    = isNew || (!!selected && !isSystem);
+
+  // ── Render ─────────────────────────────────────────────────────────────────
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 200, pointerEvents: 'none' }}>
+      <div style={{ position: 'absolute', left: pos.x, top: pos.y, width: size.w, height: size.h, background: '#0d0d0d', border: `1px solid ${ACCENT_BORDER}`, borderRadius: 8, display: 'flex', flexDirection: 'column', fontFamily: 'monospace', overflow: 'hidden', pointerEvents: 'all', boxShadow: '0 8px 40px rgba(0,0,0,0.6)' }}>
+
+        {/* HEADER */}
+        <div
+          onMouseDown={e => { dragging.current = true; dragStart.current = { x: e.clientX, y: e.clientY, px: pos.x, py: pos.y }; }}
+          style={{ background: ACCENT, padding: '0 1rem', height: 44, display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'grab', flexShrink: 0 }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <span style={{ color: '#000', fontWeight: 700, fontSize: '0.85rem' }}>Templates</span>
+            <span style={{ color: '#000', fontSize: '0.7rem', opacity: 0.6 }}>TM</span>
+            <span style={{ color: '#000', fontSize: '0.7rem', opacity: 0.5 }}>·</span>
+            <span style={{ color: '#000', fontSize: '0.7rem' }}>{templates.length} template{templates.length !== 1 ? 's' : ''}</span>
+          </div>
+          <button onMouseDown={e => e.stopPropagation()} onClick={onClose}
+            style={{ background: 'none', border: 'none', color: '#000', cursor: 'pointer', fontSize: '1rem', opacity: 0.6, lineHeight: 1 }}>✕</button>
+        </div>
+
+        {/* BODY */}
+        <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+
+          {/* LEFT PANEL */}
+          <div style={{ width: 320, flexShrink: 0, borderRight: `1px solid #1a1a1a`, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+
+            {/* Search + filter */}
+            <div style={{ padding: '0.75rem', borderBottom: '1px solid #1a1a1a', flexShrink: 0 }}>
+              <input
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="Search templates..."
+                style={{ width: '100%', background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.4rem 0.6rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.75rem', outline: 'none', boxSizing: 'border-box', marginBottom: '0.5rem' }}
+              />
+              <div style={{ display: 'flex', gap: '0.3rem' }}>
+                {(['all', 'system', 'mine'] as const).map(f => (
+                  <button key={f} onClick={() => setFilterType(f)}
+                    style={{ background: filterType === f ? ACCENT_BG : 'transparent', border: `1px solid ${filterType === f ? ACCENT : '#333'}`, color: filterType === f ? ACCENT : '#666', padding: '0.2rem 0.5rem', borderRadius: 3, fontSize: '0.65rem', fontFamily: 'monospace', cursor: 'pointer' }}>{f}</button>
+                ))}
+              </div>
+            </div>
+
+            {/* New button */}
+            <div style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #1a1a1a', flexShrink: 0 }}>
+              <button onClick={startNew}
+                style={{ width: '100%', background: isNew ? ACCENT_BG : 'transparent', border: `1px solid ${isNew ? ACCENT : '#333'}`, color: isNew ? ACCENT : '#888', padding: '0.4rem', borderRadius: 4, fontSize: '0.75rem', fontFamily: 'monospace', cursor: 'pointer' }}>
+                + new template
+              </button>
+            </div>
+
+            {/* List */}
+            <div style={{ flex: 1, overflowY: 'auto', scrollbarWidth: 'thin', scrollbarColor: '#222 transparent' }}>
+              {loading
+                ? <div style={{ padding: '1rem', color: '#555', fontSize: '0.75rem' }}>Loading...</div>
+                : filtered.length === 0
+                  ? <div style={{ padding: '1rem', color: '#444', fontSize: '0.75rem' }}>No templates found</div>
+                  : filtered.map((t, idx) => {
+                      const isActive = selected?.document_template_id === t.document_template_id;
+                      return (
+                        <div key={t.document_template_id} onClick={() => selectTemplate(t)}
+                          style={{ padding: '0.6rem 0.75rem', borderBottom: '1px solid #111', cursor: 'pointer', background: isActive ? ACCENT_BG : 'transparent', borderLeft: isActive ? `2px solid ${ACCENT}` : '2px solid transparent', transition: 'background 0.1s' }}
+                          onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = '#111'; }}
+                          onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.2rem' }}>
+                            <span style={{ color: ACCENT, fontSize: '0.6rem', opacity: 0.5, fontWeight: 600 }}>TM{idx + 1}</span>
+                            <span style={{ color: '#e5e5e5', fontSize: '0.78rem', flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.name}</span>
+                          </div>
+                          <div style={{ display: 'flex', gap: '0.3rem', alignItems: 'center' }}>
+                            {t.is_system && <span style={{ fontSize: '0.6rem', color: ACCENT, background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, padding: '0.05rem 0.3rem', borderRadius: 2 }}>system</span>}
+                            {t.implementation_type && <span style={{ fontSize: '0.6rem', color: '#8b5cf6', background: '#120a1a', border: '1px solid #3a1a5a', padding: '0.05rem 0.3rem', borderRadius: 2 }}>{t.implementation_type}</span>}
+                            {t.doc_type && <span style={{ fontSize: '0.6rem', color: '#888', background: '#1a1a1a', border: '1px solid #2a2a2a', padding: '0.05rem 0.3rem', borderRadius: 2 }}>{t.doc_type}</span>}
+                          </div>
+                        </div>
+                      );
+                    })
+              }
+            </div>
+          </div>
+
+          {/* RIGHT PANEL */}
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+
+            {/* Empty state */}
+            {!isEditing && (
+              <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#333', fontSize: '0.8rem' }}>
+                Select a template or create a new one
+              </div>
+            )}
+
+            {/* Edit / view panel */}
+            {isEditing && !runOutput && !running && (
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+
+                {/* Scrollable form area */}
+                <div style={{ flex: 1, overflowY: 'auto', padding: '1rem', scrollbarWidth: 'thin', scrollbarColor: '#222 transparent' }}>
+
+                  {isSystem && (
+                    <div style={{ padding: '0.4rem 0.7rem', background: '#1a1a00', border: '1px solid #3a3a00', borderRadius: 4, color: '#aaa', fontSize: '0.7rem', marginBottom: '1rem' }}>
+                      System template — read only. Duplicate to customize.
+                    </div>
+                  )}
+
+                  {/* Name */}
+                  <div style={{ marginBottom: '0.75rem' }}>
+                    <div style={labelStyle}>Name {!isSystem && <span style={{ color: '#ef4444' }}>*</span>}</div>
+                    <input value={editName} onChange={e => setEditName(e.target.value)} disabled={isSystem}
+                      style={inputStyle(isSystem)} placeholder="Weekly Status Report" />
+                  </div>
+
+                  {/* Description */}
+                  <div style={{ marginBottom: '0.75rem' }}>
+                    <div style={labelStyle}>Description</div>
+                    <input value={editDesc} onChange={e => setEditDesc(e.target.value)} disabled={isSystem}
+                      style={inputStyle(isSystem)} placeholder="What this template produces..." />
+                  </div>
+
+                  {/* Doc type + Format */}
+                  <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '0.75rem' }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={labelStyle}>Category</div>
+                      <input value={editDocType} onChange={e => setEditDocType(e.target.value)} disabled={isSystem}
+                        style={inputStyle(isSystem)} placeholder="report / debrief / pip..." />
+                    </div>
+                    <div style={{ width: 140 }}>
+                      <div style={labelStyle}>Output Format</div>
+                      <select value={editFormat} onChange={e => setEditFormat(e.target.value)} disabled={isSystem}
+                        style={{ ...inputStyle(isSystem), cursor: isSystem ? 'not-allowed' : 'pointer' }}>
+                        <option value="markdown">Markdown</option>
+                        <option value="docx">Word (.docx)</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Data Sources */}
+                  <div style={{ marginBottom: '0.75rem' }}>
+                    <div style={labelStyle}>Data Sources</div>
+                    <div style={{ padding: '0.75rem', background: '#111', border: '1px solid #222', borderRadius: 4 }}>
+                      {isSystem
+                        ? <div style={{ color: '#555', fontSize: '0.72rem' }}>{JSON.stringify(editDs, null, 2)}</div>
+                        : <DataSourcesEditor ds={editDs} onChange={setEditDs} />
+                      }
+                    </div>
+                  </div>
+
+                  {/* Instructions */}
+                  <div style={{ marginBottom: '0.75rem' }}>
+                    <div style={labelStyle}>Instructions {!isSystem && <span style={{ color: '#ef4444' }}>*</span>}</div>
+                    <textarea
+                      value={editInstructions}
+                      onChange={e => setEditInstructions(e.target.value)}
+                      disabled={isSystem}
+                      rows={10}
+                      placeholder="Tell Karl what document to produce and how to structure it. Be specific about format, sections, tone, and what data to emphasize..."
+                      style={{ ...inputStyle(isSystem), resize: 'vertical', minHeight: 200, lineHeight: 1.5 } as any}
+                    />
+                  </div>
+
+                  {/* Karl Assist */}
+                  {!isSystem && (
+                    <div style={{ border: '1px solid #1a1a1a', borderRadius: 6, overflow: 'hidden', marginBottom: '0.5rem' }}>
+                      <div style={{ padding: '0.4rem 0.75rem', background: '#111', borderBottom: '1px solid #1a1a1a', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <span style={{ color: ACCENT, fontSize: '0.65rem', fontWeight: 600 }}>KARL ASSIST</span>
+                        <span style={{ color: '#444', fontSize: '0.65rem' }}>— describe what you want, Karl will draft the instructions</span>
+                      </div>
+
+                      {/* Assist history */}
+                      {assistHistory.length > 0 && (
+                        <div style={{ maxHeight: 180, overflowY: 'auto', padding: '0.5rem 0.75rem', background: '#0a0a0a', scrollbarWidth: 'thin', scrollbarColor: '#222 transparent' }}>
+                          {assistHistory.map((m, i) => (
+                            <div key={i} style={{ marginBottom: '0.4rem', fontSize: '0.75rem', color: m.role === 'user' ? '#86efac' : '#d4d4d4', paddingLeft: m.role === 'user' ? '0.5rem' : 0, borderLeft: m.role === 'user' ? '2px solid #2a4a2a' : 'none' }}>
+                              {m.content}
+                            </div>
+                          ))}
+                          {assistLoading && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.25rem 0' }}>
+                              <KarlSpinner size="sm" color={ACCENT} />
+                              <span style={{ color: '#555', fontSize: '0.72rem' }}>Karl is thinking...</span>
+                            </div>
+                          )}
+                          <div ref={assistBottomRef} />
+                        </div>
+                      )}
+
+                      {/* Assist input */}
+                      <div style={{ display: 'flex', gap: '0.5rem', padding: '0.5rem 0.75rem', background: '#0d0d0d', borderTop: assistHistory.length > 0 ? '1px solid #1a1a1a' : 'none' }}>
+                        <input
+                          value={assistInput}
+                          onChange={e => setAssistInput(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter') handleAssist(); }}
+                          placeholder="Describe what you want this template to produce..."
+                          style={{ flex: 1, background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.35rem 0.6rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.72rem', outline: 'none' }}
+                        />
+                        <button onClick={handleAssist} disabled={!assistInput.trim() || assistLoading}
+                          style={{ background: assistInput.trim() ? ACCENT_BG : 'transparent', border: `1px solid ${assistInput.trim() ? ACCENT : '#333'}`, color: assistInput.trim() ? ACCENT : '#555', padding: '0.35rem 0.65rem', borderRadius: 4, fontSize: '0.7rem', fontFamily: 'monospace', cursor: assistInput.trim() ? 'pointer' : 'not-allowed' }}>
+                          ask
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                </div>
+
+                {/* Footer */}
+                <div style={{ padding: '0.75rem 1rem', borderTop: '1px solid #1a1a1a', background: '#0d0d0d', display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
+                  {saveErr && <span style={{ color: '#ef4444', fontSize: '0.7rem', flex: 1 }}>{saveErr}</span>}
+                  {!saveErr && <span style={{ flex: 1 }} />}
+
+                  {!isSystem && selected && (
+                    <button onClick={handleDelete}
+                      style={{ background: 'transparent', border: '1px solid #3a1a1a', color: '#ef4444', padding: '0.35rem 0.75rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer' }}>
+                      delete
+                    </button>
+                  )}
+
+                  {!isSystem && (
+                    <button onClick={handleSave} disabled={saving}
+                      style={{ background: '#0a1f1d', border: `1px solid ${ACCENT}`, color: ACCENT, padding: '0.35rem 0.9rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer' }}>
+                      {saving ? 'saving...' : 'save'}
+                    </button>
+                  )}
+
+                  {selected && (
+                    <button onClick={handleRun}
+                      style={{ background: ACCENT, border: 'none', color: '#000', padding: '0.35rem 1rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer', fontWeight: 700 }}>
+                      ▶ run
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Running state */}
+            {running && (
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '1.25rem' }}>
+                <KarlSpinner size="lg" color={ACCENT} />
+                <div style={{ color: '#555', fontSize: '0.8rem' }}>Karl is generating your document...</div>
+              </div>
+            )}
+
+            {/* Run output */}
+            {runOutput && !running && (
+              <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+
+                {/* Output toolbar */}
+                <div style={{ padding: '0.5rem 1rem', borderBottom: '1px solid #1a1a1a', background: '#0d0d0d', display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
+                  <span style={{ color: ACCENT, fontSize: '0.7rem', fontWeight: 600 }}>OUTPUT</span>
+                  <span style={{ color: '#444', fontSize: '0.7rem' }}>·</span>
+                  <span style={{ color: '#555', fontSize: '0.7rem' }}>{editName}</span>
+                  <span style={{ flex: 1 }} />
+                  <button onClick={handleCopy}
+                    style={{ background: copied ? '#0a1f1d' : 'transparent', border: `1px solid ${copied ? ACCENT : '#333'}`, color: copied ? ACCENT : '#888', padding: '0.25rem 0.6rem', borderRadius: 3, fontSize: '0.68rem', fontFamily: 'monospace', cursor: 'pointer' }}>
+                    {copied ? '✓ copied' : 'copy'}
+                  </button>
+                  <button onClick={handleDownloadMd}
+                    style={{ background: 'transparent', border: '1px solid #333', color: '#888', padding: '0.25rem 0.6rem', borderRadius: 3, fontSize: '0.68rem', fontFamily: 'monospace', cursor: 'pointer' }}>
+                    ↓ .md
+                  </button>
+                  <button onClick={() => { setRunOutput(null); setRunErr(''); }}
+                    style={{ background: 'transparent', border: '1px solid #333', color: '#888', padding: '0.25rem 0.6rem', borderRadius: 3, fontSize: '0.68rem', fontFamily: 'monospace', cursor: 'pointer' }}>
+                    ← back
+                  </button>
+                </div>
+
+                {/* Output content */}
+                <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem', scrollbarWidth: 'thin', scrollbarColor: '#222 transparent' }}>
+                  <pre style={{ color: '#d4d4d4', fontSize: '0.8rem', lineHeight: 1.7, whiteSpace: 'pre-wrap', fontFamily: 'monospace', margin: 0 }}>
+                    {runOutput}
+                  </pre>
+                </div>
+
+                {/* Run again */}
+                <div style={{ padding: '0.75rem 1rem', borderTop: '1px solid #1a1a1a', background: '#0d0d0d', display: 'flex', justifyContent: 'flex-end', flexShrink: 0 }}>
+                  <button onClick={handleRun}
+                    style={{ background: ACCENT, border: 'none', color: '#000', padding: '0.35rem 1rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer', fontWeight: 700 }}>
+                    ▶ run again
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Run error */}
+            {runErr && !running && (
+              <div style={{ padding: '1rem', color: '#ef4444', fontSize: '0.75rem' }}>
+                Error: {runErr}
+                <button onClick={() => setRunErr('')} style={{ marginLeft: '1rem', background: 'none', border: 'none', color: '#888', cursor: 'pointer', fontSize: '0.7rem' }}>dismiss</button>
+              </div>
+            )}
+
+          </div>
+        </div>
+
+        {/* RESIZE HANDLE */}
+        <div
+          onMouseDown={e => { resizing.current = true; resizeStart.current = { x: e.clientX, y: e.clientY, w: size.w, h: size.h }; }}
+          style={{ position: 'absolute', bottom: 0, right: 0, width: 16, height: 16, cursor: 'nwse-resize' }}
+        />
+
+      </div>
+    </div>
+  );
+}
+
+// ─── Style helpers ────────────────────────────────────────────────────────────
+
+const labelStyle: React.CSSProperties = {
+  color: '#555',
+  fontSize: '0.65rem',
+  textTransform: 'uppercase',
+  letterSpacing: '0.05em',
+  marginBottom: '0.3rem',
+};
+
+const inputStyle = (disabled: boolean): React.CSSProperties => ({
+  width: '100%',
+  background: disabled ? '#0d0d0d' : '#111',
+  border: '1px solid #222',
+  color: disabled ? '#555' : '#e5e5e5',
+  padding: '0.45rem 0.6rem',
+  borderRadius: 4,
+  fontFamily: 'monospace',
+  fontSize: '0.8rem',
+  outline: 'none',
+  boxSizing: 'border-box',
+  cursor: disabled ? 'not-allowed' : 'text',
+});

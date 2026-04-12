@@ -7,6 +7,7 @@ import CompletionsModal from '@/app/components/CompletionsModal';
 import MeetingsModal from '@/app/components/MeetingsModal';
 import ReferencesModal from '@/app/components/ReferencesModal';
 import TaskListModal from '@/app/components/TaskListModal';
+import TemplatesModal from '@/app/components/TemplatesModal';
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -281,7 +282,7 @@ function CaptureModal({ onClose, onCapture }: { onClose: () => void; onCapture: 
 
 export default function WorkspacePage() {
 
-  // ─── PAGE: State ───────────────────────────────────────────────────────────
+  // ─── State ─────────────────────────────────────────────────────────────────
 
   const [koUser, setKoUser]                   = useState<KOUser | null>(null);
   const [tasks, setTasks]                     = useState<Task[]>([]);
@@ -301,9 +302,11 @@ export default function WorkspacePage() {
   const [showMeetings, setShowMeetings]       = useState(false);
   const [showReferences, setShowReferences]   = useState(false);
   const [showTaskList, setShowTaskList]       = useState(false);
+  const [showTemplates, setShowTemplates]     = useState(false);   // ← NEW
   const [completionCount, setCompletionCount] = useState(0);
   const [meetingCount, setMeetingCount]       = useState(0);
   const [referenceCount, setReferenceCount]   = useState(0);
+  const [templateCount, setTemplateCount]     = useState(0);       // ← NEW
   const [selectedTask, setSelectedTask]       = useState<Task | null>(null);
 
   const chatBottomRef = useRef<HTMLDivElement>(null);
@@ -314,7 +317,7 @@ export default function WorkspacePage() {
   const splitStartX            = useRef(0);
   const splitStartW            = useRef(340);
 
-  // ─── PAGE: Auth & Init ─────────────────────────────────────────────────────
+  // ─── Auth & Init ───────────────────────────────────────────────────────────
 
   useEffect(() => {
     const init = async (session: any) => {
@@ -345,6 +348,7 @@ export default function WorkspacePage() {
         await loadCompletionCount(session.user.id);
         await loadMeetingCount(session.user.id);
         await loadReferenceCount(session.user.id);
+        await loadTemplateCount(session.user.id);   // ← NEW
         setSessionReady(true);
 
         setChat([{
@@ -377,7 +381,7 @@ export default function WorkspacePage() {
     });
   }, []);
 
-  // ─── PAGE: Data loaders ────────────────────────────────────────────────────
+  // ─── Data loaders ──────────────────────────────────────────────────────────
 
   const loadBuckets = async (implementationType: string) => {
     const { data } = await supabase
@@ -446,6 +450,16 @@ export default function WorkspacePage() {
     if (count !== null) setReferenceCount(count);
   };
 
+  // ← NEW
+  const loadTemplateCount = async (userId: string) => {
+    const { count } = await supabase
+      .from('document_template')
+      .select('document_template_id', { count: 'exact', head: true })
+      .or(`user_id.eq.${userId},is_system.eq.true`)
+      .eq('is_active', true);
+    if (count !== null) setTemplateCount(count);
+  };
+
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chat, thinking]);
@@ -472,7 +486,7 @@ export default function WorkspacePage() {
     };
   }, []);
 
-  // ─── PAGE: Handlers ────────────────────────────────────────────────────────
+  // ─── Handlers ──────────────────────────────────────────────────────────────
 
   const addMessage = (role: 'user' | 'assistant', content: string) => {
     setChat(prev => [...prev, { role, content, timestamp: new Date() }]);
@@ -565,7 +579,7 @@ export default function WorkspacePage() {
     );
   };
 
-  // ─── PAGE: Error state ─────────────────────────────────────────────────────
+  // ─── Error state ───────────────────────────────────────────────────────────
 
   if (sessionError) {
     return (
@@ -579,14 +593,14 @@ export default function WorkspacePage() {
     );
   }
 
-  // ─── PAGE: Derived state ───────────────────────────────────────────────────
+  // ─── Derived state ─────────────────────────────────────────────────────────
 
   const filteredTasks = contextFilter ? tasks.filter(t => t.context_id === contextFilter) : tasks;
   const grouped       = groupTasksByBucket(filteredTasks);
   const totalOpen     = tasks.length;
   const totalFiltered = filteredTasks.length;
 
-  // ─── PAGE: Render ──────────────────────────────────────────────────────────
+  // ─── Render ────────────────────────────────────────────────────────────────
 
   return (
     <div style={{ minHeight: '100vh', height: '100vh', display: 'flex', flexDirection: 'column', background: '#0a0a0a', fontFamily: 'monospace', overflow: 'hidden' }}>
@@ -623,6 +637,14 @@ export default function WorkspacePage() {
           accessToken={accessToken}
           onClose={() => setShowTaskList(false)}
           onSaved={() => loadTasks(koUser.id)}
+        />
+      )}
+      {showTemplates && koUser && (                          /* ← NEW */
+        <TemplatesModal
+          userId={koUser.id}
+          accessToken={accessToken}
+          onClose={() => setShowTemplates(false)}
+          onCountChange={setTemplateCount}
         />
       )}
       {selectedTask && koUser && (
@@ -680,6 +702,13 @@ export default function WorkspacePage() {
               onMouseEnter={e => (e.currentTarget.style.background = '#1e1030')}
               onMouseLeave={e => (e.currentTarget.style.background = '#120a1a')}
             ><span style={{ color: '#8b5cf6' }}>+reference</span><span style={{ color: '#ffffff' }}>({referenceCount})</span></button>
+
+            {/* +template(n) — NEW */}
+            <button onClick={() => setShowTemplates(true)}
+              style={{ background: '#0a1f1d', border: '1px solid #0f3330', color: '#14b8a6', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
+              onMouseEnter={e => (e.currentTarget.style.background = '#0f2a27')}
+              onMouseLeave={e => (e.currentTarget.style.background = '#0a1f1d')}
+            ><span style={{ color: '#14b8a6' }}>+template</span><span style={{ color: '#ffffff' }}>({templateCount})</span></button>
 
           </div>
 
