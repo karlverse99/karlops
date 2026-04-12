@@ -302,7 +302,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
       const res  = await fetch('/api/ko/template/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
-        body: JSON.stringify({ template_id: templateId }),
+        body: JSON.stringify({ template_id: templateId, override_instructions: editInstructions.trim() || undefined }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Run failed');

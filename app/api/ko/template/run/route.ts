@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
     const { data: { user }, error: authErr } = await supabase.auth.getUser(token);
     if (authErr || !user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-    const { template_id } = await req.json();
+    const { template_id, override_instructions, focus_prompt } = await req.json();
     if (!template_id) return NextResponse.json({ error: 'template_id required' }, { status: 400 });
 
     // Load template
@@ -32,6 +32,9 @@ export async function POST(req: NextRequest) {
       .single();
 
     if (tErr || !template) return NextResponse.json({ error: 'Template not found' }, { status: 404 });
+
+    // Use override instructions if provided (e.g. from template builder preview)
+    const instructions = override_instructions || template.prompt_template;
 
     // Load ko_user for implementation_type
     const { data: koUser } = await supabase
@@ -52,7 +55,7 @@ export async function POST(req: NextRequest) {
       .eq('is_active', true)
       .single();
 
-    const systemPrompt = buildSystemPrompt(template.prompt_template, situation?.brief ?? '', context);
+    const systemPrompt = buildSystemPrompt(instructions, situation?.brief ?? '', context, focus_prompt);
 
     // Call Anthropic via fetch
     const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -198,7 +201,7 @@ async function buildTemplateContext(supabase: any, userId: string, ds: any, impl
 
 // ─── System prompt builder ────────────────────────────────────────────────────
 
-function buildSystemPrompt(instructions: string, situation: string, context: string): string {
+function buildSystemPrompt(instructions: string, situation: string, context: string, focusPrompt?: string): string {
   return `You are Karl, an operational AI assistant. You are generating a document for the user based on their workspace data.
 
 ${situation ? `## User Situation\n${situation}\n` : ''}
@@ -209,5 +212,6 @@ ${context}
 ## Document Instructions
 ${instructions}
 
+${focusPrompt ? `## Additional Focus\n${focusPrompt}\n` : ''}
 Generate the document now. Write in clear, professional prose. Use markdown formatting. Be specific and concrete — use the actual data provided, not placeholders. Do not add preamble or meta-commentary about what you're about to do. Just produce the document.`;
 }
