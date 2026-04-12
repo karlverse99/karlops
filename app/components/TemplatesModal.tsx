@@ -18,6 +18,7 @@ interface Template {
   is_system: boolean;
   is_active: boolean;
   implementation_type: string | null;
+  context_id: string | null;
   created_at: string;
 }
 
