@@ -77,8 +77,8 @@ function downloadTXT(content: string, title: string) {
 
 async function downloadPDF(content: string, title: string) {
   try {
-    const jsPDFModule = await import('jspdf' as any);
-    const jsPDF = jsPDFModule.default ?? jsPDFModule.jsPDF;
+    // @ts-ignore
+    const { jsPDF } = await import(/* webpackIgnore: true */ 'jspdf');
     const doc   = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
     const lines = doc.splitTextToSize(content, 170);
     let y = 20;
@@ -90,14 +90,16 @@ async function downloadPDF(content: string, title: string) {
     }
     doc.save(`${slugify(title)}.pdf`);
   } catch {
-    alert('PDF export requires jspdf. Run: npm install jspdf');
+    // fallback — open print dialog
+    const win = window.open('', '_blank');
+    if (win) { win.document.write(`<pre style="font-family:monospace;font-size:12px;padding:2rem">${content}</pre>`); win.print(); }
   }
 }
 
 async function downloadDOCX(content: string, title: string) {
   try {
-    const docxModule = await import('docx' as any);
-    const { Document, Packer, Paragraph, TextRun, HeadingLevel } = docxModule;
+    // @ts-ignore
+    const { Document, Packer, Paragraph, TextRun, HeadingLevel } = await import(/* webpackIgnore: true */ 'docx');
     const lines    = content.split('\n');
     const children: any[] = [];
     for (const line of lines) {
@@ -112,7 +114,8 @@ async function downloadDOCX(content: string, title: string) {
     a.href = url; a.download = `${slugify(title)}.docx`; a.click();
     URL.revokeObjectURL(url);
   } catch {
-    alert('DOCX export requires docx package. Run: npm install docx');
+    // fallback — download as txt
+    downloadTXT(content, title);
   }
 }
 
