@@ -171,6 +171,9 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const [runOutput, setRunOutput]         = useState<string | null>(null);
   const [runErr, setRunErr]               = useState('');
   const [copied, setCopied]               = useState(false);
+  const [savePrompt, setSavePrompt]       = useState(false);
+  const [savingToRefs, setSavingToRefs]   = useState(false);
+  const [savedToRefs, setSavedToRefs]     = useState(false);
 
   // Assist state
   const [assistInput, setAssistInput]     = useState('');
@@ -243,6 +246,8 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     setRunErr('');
     setSaveErr('');
     setAssistHistory([]);
+    setSavePrompt(false);
+    setSavedToRefs(false);
   };
 
   const startNew = () => {
@@ -316,6 +321,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     const templateId = selected?.document_template_id;
     if (!templateId) return;
     setRunning(true); setRunOutput(null); setRunErr('');
+    setSavePrompt(false); setSavedToRefs(false);
     try {
       const res = await fetch('/api/ko/template/run', {
         method: 'POST',
@@ -329,6 +335,29 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
       setRunErr(err.message ?? 'Run failed');
     } finally {
       setRunning(false);
+    }
+  };
+
+  const handleSaveToRefs = async () => {
+    if (!runOutput || !selected) return;
+    setSavingToRefs(true);
+    try {
+      const { error } = await supabase.from('external_reference').insert({
+        user_id:              userId,
+        title:                `${editName} — ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`,
+        description:          editDesc || null,
+        notes:                runOutput,
+        document_template_id: selected.document_template_id,
+        tags:                 [],
+      });
+      if (error) throw error;
+      setSavedToRefs(true);
+      setSavePrompt(false);
+    } catch (err: any) {
+      setRunErr(err.message ?? 'Save failed');
+      setSavePrompt(false);
+    } finally {
+      setSavingToRefs(false);
     }
   };
 
@@ -622,7 +651,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                   {selected && (
                     <button onClick={handleRun}
                       style={{ background: ACCENT, border: 'none', color: '#000', padding: '0.35rem 1rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer', fontWeight: 700 }}>
-                      ▶ run
+                      ▶ preview
                     </button>
                   )}
                 </div>
@@ -633,7 +662,8 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
             {running && (
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '1.25rem' }}>
                 <KarlSpinner size="lg" color={ACCENT} />
-                <div style={{ color: '#555', fontSize: '0.8rem' }}>Karl is generating your document...</div>
+                <div style={{ color: '#555', fontSize: '0.8rem' }}>Karl is previewing your template...</div>
+                <div style={{ color: '#333', fontSize: '0.7rem' }}>This is a test run — nothing is saved yet</div>
               </div>
             )}
 
@@ -643,9 +673,10 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
 
                 {/* Output toolbar */}
                 <div style={{ padding: '0.5rem 1rem', borderBottom: '1px solid #1a1a1a', background: '#0d0d0d', display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
-                  <span style={{ color: ACCENT, fontSize: '0.7rem', fontWeight: 600 }}>OUTPUT</span>
+                  <span style={{ color: ACCENT, fontSize: '0.7rem', fontWeight: 600 }}>PREVIEW</span>
                   <span style={{ color: '#444', fontSize: '0.7rem' }}>·</span>
                   <span style={{ color: '#555', fontSize: '0.7rem' }}>{editName}</span>
+                  <span style={{ color: '#333', fontSize: '0.65rem', marginLeft: '0.25rem' }}>— this is a test run, nothing saved</span>
                   <span style={{ flex: 1 }} />
                   <button onClick={handleCopy}
                     style={{ background: copied ? '#0a1f1d' : 'transparent', border: `1px solid ${copied ? ACCENT : '#333'}`, color: copied ? ACCENT : '#888', padding: '0.25rem 0.6rem', borderRadius: 3, fontSize: '0.68rem', fontFamily: 'monospace', cursor: 'pointer' }}>
@@ -655,7 +686,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                     style={{ background: 'transparent', border: '1px solid #333', color: '#888', padding: '0.25rem 0.6rem', borderRadius: 3, fontSize: '0.68rem', fontFamily: 'monospace', cursor: 'pointer' }}>
                     ↓ .md
                   </button>
-                  <button onClick={() => { setRunOutput(null); setRunErr(''); }}
+                  <button onClick={() => { setRunOutput(null); setRunErr(''); setSavePrompt(false); }}
                     style={{ background: 'transparent', border: '1px solid #333', color: '#888', padding: '0.25rem 0.6rem', borderRadius: 3, fontSize: '0.68rem', fontFamily: 'monospace', cursor: 'pointer' }}>
                     ← back
                   </button>
@@ -668,12 +699,55 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                   </pre>
                 </div>
 
-                {/* Run again */}
-                <div style={{ padding: '0.75rem 1rem', borderTop: '1px solid #1a1a1a', background: '#0d0d0d', display: 'flex', justifyContent: 'flex-end', flexShrink: 0 }}>
-                  <button onClick={handleRun}
-                    style={{ background: ACCENT, border: 'none', color: '#000', padding: '0.35rem 1rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer', fontWeight: 700 }}>
-                    ▶ run again
-                  </button>
+                {/* Footer — save prompt or preview again */}
+                <div style={{ padding: '0.75rem 1rem', borderTop: '1px solid #1a1a1a', background: '#0d0d0d', flexShrink: 0 }}>
+
+                  {!savePrompt && !savedToRefs && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ color: '#888', fontSize: '0.72rem' }}>Happy with this?</div>
+                        <div style={{ color: '#444', fontSize: '0.65rem', marginTop: '0.15rem' }}>Save a copy so you can rerun it anytime — or just copy and go.</div>
+                      </div>
+                      <button onClick={handleRun}
+                        style={{ background: 'transparent', border: '1px solid #333', color: '#666', padding: '0.35rem 0.75rem', borderRadius: 4, fontSize: '0.7rem', fontFamily: 'monospace', cursor: 'pointer' }}>
+                        ▶ preview again
+                      </button>
+                      <button onClick={() => setSavePrompt(true)}
+                        style={{ background: ACCENT, border: 'none', color: '#000', padding: '0.35rem 1rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer', fontWeight: 700 }}>
+                        Save & Track
+                      </button>
+                    </div>
+                  )}
+
+                  {savePrompt && !savedToRefs && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ color: '#e5e5e5', fontSize: '0.72rem' }}>Save this report to your archive?</div>
+                        <div style={{ color: '#555', fontSize: '0.65rem', marginTop: '0.15rem' }}>We'll keep a copy so you can rerun it anytime from your saved reports.</div>
+                      </div>
+                      <button onClick={() => setSavePrompt(false)}
+                        style={{ background: 'transparent', border: '1px solid #333', color: '#666', padding: '0.35rem 0.75rem', borderRadius: 4, fontSize: '0.7rem', fontFamily: 'monospace', cursor: 'pointer' }}>
+                        no thanks
+                      </button>
+                      <button onClick={handleSaveToRefs} disabled={savingToRefs}
+                        style={{ background: ACCENT, border: 'none', color: '#000', padding: '0.35rem 1rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer', fontWeight: 700 }}>
+                        {savingToRefs ? 'saving...' : 'yes, save it'}
+                      </button>
+                    </div>
+                  )}
+
+                  {savedToRefs && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                      <span style={{ color: ACCENT, fontSize: '0.72rem' }}>✓ Saved to your reports.</span>
+                      <span style={{ color: '#444', fontSize: '0.65rem' }}>Find it anytime in your saved reports — or rerun it from there.</span>
+                      <span style={{ flex: 1 }} />
+                      <button onClick={handleRun}
+                        style={{ background: 'transparent', border: '1px solid #333', color: '#666', padding: '0.35rem 0.75rem', borderRadius: 4, fontSize: '0.7rem', fontFamily: 'monospace', cursor: 'pointer' }}>
+                        ▶ preview again
+                      </button>
+                    </div>
+                  )}
+
                 </div>
               </div>
             )}
