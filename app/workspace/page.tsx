@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase';
 import TaskDetailModal from '@/app/components/TaskDetailModal';
 import CompletionsModal from '@/app/components/CompletionsModal';
 import MeetingsModal from '@/app/components/MeetingsModal';
-import ReferencesModal from '@/app/components/ReferencesModal';
+import ExtractsModal from '@/app/components/ExtractsModal';
 import TaskListModal from '@/app/components/TaskListModal';
 import TemplatesModal from '@/app/components/TemplatesModal';
 
@@ -300,12 +300,12 @@ export default function WorkspacePage() {
   const [showCapture, setShowCapture]         = useState(false);
   const [showCompletions, setShowCompletions] = useState(false);
   const [showMeetings, setShowMeetings]       = useState(false);
-  const [showReferences, setShowReferences]   = useState(false);
+  const [showExtracts, setShowExtracts]   = useState(false);
   const [showTaskList, setShowTaskList]       = useState(false);
   const [showTemplates, setShowTemplates]     = useState(false);   // ← NEW
   const [completionCount, setCompletionCount] = useState(0);
   const [meetingCount, setMeetingCount]       = useState(0);
-  const [referenceCount, setReferenceCount]   = useState(0);
+  const [extractCount, setExtractCount]   = useState(0);
   const [templateCount, setTemplateCount]     = useState(0);       // ← NEW
   const [selectedTask, setSelectedTask]       = useState<Task | null>(null);
 
@@ -347,7 +347,7 @@ export default function WorkspacePage() {
         await loadStatuses(session.user.id);
         await loadCompletionCount(session.user.id);
         await loadMeetingCount(session.user.id);
-        await loadReferenceCount(session.user.id);
+        await loadExtractCount(session.user.id);
         await loadTemplateCount(session.user.id);   // ← NEW
         setSessionReady(true);
 
@@ -442,12 +442,12 @@ export default function WorkspacePage() {
     if (count !== null) setMeetingCount(count);
   };
 
-  const loadReferenceCount = async (userId: string) => {
+  const loadExtractCount = async (userId: string) => {
     const { count } = await supabase
       .from('external_reference')
       .select('external_reference_id', { count: 'exact', head: true })
       .eq('user_id', userId);
-    if (count !== null) setReferenceCount(count);
+    if (count !== null) setExtractCount(count);
   };
 
   // ← NEW
@@ -519,7 +519,7 @@ export default function WorkspacePage() {
             await loadTasks(koUser.id);
             await loadCompletionCount(koUser.id);
             await loadMeetingCount(koUser.id);
-            await loadReferenceCount(koUser.id);
+            await loadExtractCount(koUser.id);
           }
           return;
         }
@@ -623,12 +623,12 @@ export default function WorkspacePage() {
           onCountChange={setMeetingCount}
         />
       )}
-      {showReferences && koUser && (
-        <ReferencesModal
+      {showExtracts && koUser && (
+        <ExtractsModal
           userId={koUser.id}
           accessToken={accessToken}
-          onClose={() => setShowReferences(false)}
-          onCountChange={setReferenceCount}
+          onClose={() => setShowExtracts(false)}
+          onCountChange={setExtractCount}
         />
       )}
       {showTaskList && koUser && (
@@ -696,12 +696,12 @@ export default function WorkspacePage() {
               onMouseLeave={e => (e.currentTarget.style.background = '#0a0f1a')}
             ><span style={{ color: '#3b82f6' }}>+meeting</span><span style={{ color: '#ffffff' }}>({meetingCount})</span></button>
 
-            {/* +reference(n) */}
-            <button onClick={() => setShowReferences(true)}
+            {/* +extracts(n) */}
+            <button onClick={() => setShowExtracts(true)}
               style={{ background: '#120a1a', border: '1px solid #3a1a5a', color: '#8b5cf6', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
               onMouseEnter={e => (e.currentTarget.style.background = '#1e1030')}
               onMouseLeave={e => (e.currentTarget.style.background = '#120a1a')}
-            ><span style={{ color: '#8b5cf6' }}>+reference</span><span style={{ color: '#ffffff' }}>({referenceCount})</span></button>
+            ><span style={{ color: '#8b5cf6' }}>+extracts</span><span style={{ color: '#ffffff' }}>({extractCount})</span></button>
 
             {/* +template(n) — NEW */}
             <button onClick={() => setShowTemplates(true)}

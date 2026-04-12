@@ -714,7 +714,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                       <div style={{ flex: 1 }}>
                         <div style={{ color: '#888', fontSize: '0.72rem' }}>Happy with this?</div>
-                        <div style={{ color: '#444', fontSize: '0.65rem', marginTop: '0.15rem' }}>Save a copy so you can rerun it anytime — or just copy and go.</div>
+                        <div style={{ color: '#444', fontSize: '0.65rem', marginTop: '0.15rem' }}>Save to your Extracts so you can rerun it anytime — or just copy and go.</div>
                       </div>
                       <button onClick={handleRun}
                         style={{ background: 'transparent', border: '1px solid #333', color: '#666', padding: '0.35rem 0.75rem', borderRadius: 4, fontSize: '0.7rem', fontFamily: 'monospace', cursor: 'pointer' }}>
@@ -730,8 +730,8 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                   {savePrompt && !savedToRefs && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                       <div style={{ flex: 1 }}>
-                        <div style={{ color: '#e5e5e5', fontSize: '0.72rem' }}>Save this report to your archive?</div>
-                        <div style={{ color: '#555', fontSize: '0.65rem', marginTop: '0.15rem' }}>We'll keep a copy so you can rerun it anytime from your saved reports.</div>
+                        <div style={{ color: '#e5e5e5', fontSize: '0.72rem' }}>Save this to your Extracts?</div>
+                        <div style={{ color: '#555', fontSize: '0.65rem', marginTop: '0.15rem' }}>We'll keep a copy so you can rerun it anytime.</div>
                       </div>
                       <button onClick={() => setSavePrompt(false)}
                         style={{ background: 'transparent', border: '1px solid #333', color: '#666', padding: '0.35rem 0.75rem', borderRadius: 4, fontSize: '0.7rem', fontFamily: 'monospace', cursor: 'pointer' }}>
@@ -746,8 +746,8 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
 
                   {savedToRefs && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                      <span style={{ color: ACCENT, fontSize: '0.72rem' }}>✓ Saved to your reports.</span>
-                      <span style={{ color: '#444', fontSize: '0.65rem' }}>Find it anytime in your saved reports — or rerun it from there.</span>
+                      <span style={{ color: ACCENT, fontSize: '0.72rem' }}>✓ Saved to Extracts.</span>
+                      <span style={{ color: '#444', fontSize: '0.65rem' }}>Find it anytime in your Extracts — or rerun it from there.</span>
                       <span style={{ flex: 1 }} />
                       <button onClick={handleRun}
                         style={{ background: 'transparent', border: '1px solid #333', color: '#666', padding: '0.35rem 0.75rem', borderRadius: 4, fontSize: '0.7rem', fontFamily: 'monospace', cursor: 'pointer' }}>
