@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
+import KarlSpinner from '@/app/components/KarlSpinner';
 import { supabase } from '@/lib/supabase';
 
 type Tab = 'tag_groups' | 'tags' | 'task_status' | 'defaults' | 'field_meta' | 'list_config' | 'concepts' | 'contexts' | 'situations';
@@ -239,6 +240,7 @@ function ContextsTab({ token }: { token: string }) {
   const [newDesc, setNewDesc] = useState('');
   const [adding, setAdding] = useState(false);
   const [addErr, setAddErr] = useState('');
+  const [context, setContext] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -453,6 +455,7 @@ function TagsTab({ token }: { token: string }) {
   const [newGroupId, setNewGroupId] = useState('');
   const [adding, setAdding] = useState(false);
   const [addErr, setAddErr] = useState('');
+  const [context, setContext] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -501,7 +504,7 @@ function TagsTab({ token }: { token: string }) {
       const res = await fetch('/api/ko/suggest-tags', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ mode: 'admin' }),
+        body: JSON.stringify({ mode: 'admin', context: context.trim() || undefined }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Suggestion failed');
@@ -575,12 +578,35 @@ function TagsTab({ token }: { token: string }) {
           style={{ background: '#1a2a1a', border: '1px solid #2a4a2a', color: '#4ade80', padding: '0.35rem 0.75rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer', height: '30px' }}
         >{adding ? '...' : '+ Add'}</button>
         {addErr && <span style={{ color: '#ef4444', fontSize: '0.72rem' }}>{addErr}</span>}
-        <div style={{ marginLeft: 'auto' }}>
+        <div style={{ marginLeft: 'auto', display: 'flex', flexDirection: 'column', gap: '0.4rem', alignItems: 'flex-end' }}>
+          <div style={{ width: '100%' }}>
+            <div style={{ color: '#555', fontSize: '0.63rem', marginBottom: '0.2rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Additional Context <span style={{ color: '#333', textTransform: 'none', letterSpacing: 0 }}>— optional</span></div>
+            <textarea
+              value={context}
+              onChange={e => setContext(e.target.value)}
+              placeholder="Paste a doc, vendor profile, role description... Karl will use this to suggest more relevant tags"
+              rows={2}
+              style={{ width: '380px', background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.35rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.72rem', outline: 'none', resize: 'vertical' }}
+            />
+          </div>
           <button onClick={handleSuggest} disabled={suggesting}
-            style={{ background: suggesting ? '#111' : '#0a1f1d', border: '1px solid #14b8a6', color: '#14b8a6', padding: '0.35rem 0.85rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: suggesting ? 'wait' : 'pointer', height: '30px' }}
-          >{suggesting ? 'Karl is thinking...' : '✶ Suggest Tags'}</button>
+            style={{ background: suggesting ? '#111' : '#0a1f1d', border: '1px solid #14b8a6', color: '#14b8a6', padding: '0.35rem 0.85rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: suggesting ? 'wait' : 'pointer', height: '30px', display: 'flex', alignItems: 'center', gap: '0.5rem' }}
+          >
+            {suggesting ? 'Karl is thinking...' : '✶ Suggest Tags'}
+          </button>
         </div>
       </div>
+
+      {/* Spinner — shown while Karl thinks */}
+      {suggesting && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', padding: '1.5rem', background: '#0a1a18', border: '1px solid #14b8a640', borderRadius: '6px', marginBottom: '1rem' }}>
+          <KarlSpinner size="md" color="#14b8a6" />
+          <div>
+            <div style={{ color: '#14b8a6', fontSize: '0.78rem', fontWeight: 600 }}>Karl is thinking...</div>
+            <div style={{ color: '#555', fontSize: '0.68rem', marginTop: '0.2rem' }}>Reading your situation and building a tag set</div>
+          </div>
+        </div>
+      )}
 
       {/* Suggestions panel */}
       {suggestions.length > 0 && (
