@@ -1241,7 +1241,6 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [tagGroupFilter, setTagGroupFilter] = useState('');
-  const [tagGroups, setTagGroups] = useState<Row[]>([]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -1267,9 +1266,7 @@ export default function AdminPage() {
       setFields(tabFields);
       setFkMap(fks);
 
-      if (t === 'tags' && fks['tag_group_id']) {
-        setTagGroups(fks['tag_group_id'].options.map(o => ({ tag_group_id: o.value, name: o.label })));
-      }
+
     } catch (e: any) { setError(e.message); }
     finally { setLoading(false); }
   }, [token]);
@@ -1278,9 +1275,7 @@ export default function AdminPage() {
 
   const cfg = TAB_CONFIG[tab];
 
-  const filteredRows = tab === 'tags' && tagGroupFilter
-    ? rows.filter(r => r.tag_group_id === tagGroupFilter)
-    : rows;
+  const filteredRows = rows;
 
   const tabContent = () => {
     if (tab === 'field_meta') return <FieldMetaTab token={token} />;
@@ -1289,18 +1284,7 @@ export default function AdminPage() {
     if (tab === 'contexts')   return <ContextsTab token={token} />;
     if (tab === 'tags')       return <TagsTab token={token} />;
 
-    const filterNode = tab === 'tags' ? (
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-        <span style={{ color: '#555', fontSize: '0.7rem' }}>Group:</span>
-        <select value={tagGroupFilter} onChange={e => setTagGroupFilter(e.target.value)}
-          style={{ background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.3rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem' }}
-        >
-          <option value="">All</option>
-          {tagGroups.map(g => <option key={g.tag_group_id} value={g.tag_group_id}>{g.name}</option>)}
-        </select>
-        <span style={{ color: '#333', fontSize: '0.7rem' }}>{filteredRows.length} tags</span>
-      </div>
-    ) : undefined;
+    const filterNode = undefined;
 
     const canAdd = ['tag_groups', 'tags', 'task_status', 'situations'].includes(tab);
 
