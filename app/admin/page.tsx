@@ -229,6 +229,201 @@ function ReadCell({ value, fieldType }: { value: any; fieldType: string }) {
   return <span style={{ color: '#555', fontSize: '0.75rem', wordBreak: 'break-word' }}>{String(value)}</span>;
 }
 
+// ─── Contexts Tab — custom, supports hide/show + delete ───────────────────────
+
+function ContextsTab({ token }: { token: string }) {
+  const [rows, setRows] = useState<Row[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState('');
+  const [newName, setNewName] = useState('');
+  const [newDesc, setNewDesc] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [addErr, setAddErr] = useState('');
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      // Load ALL contexts (including hidden) so admin can see and restore them
+      const data = await adminFetch(token, 'context');
+      // Sort: visible first, then hidden, then archived; alpha within each group
+      const sorted = [...data].sort((a, b) => {
+        if (a.is_archived !== b.is_archived) return a.is_archived ? 1 : -1;
+        if (a.is_visible !== b.is_visible) return a.is_visible ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+      setRows(sorted);
+    } catch (e: any) { setErr(e.message); }
+    finally { setLoading(false); }
+  }, [token]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleToggleVisible = async (row: Row) => {
+    try {
+      await adminPatch(token, 'context', 'context_id', row.context_id, { is_visible: !row.is_visible });
+      load();
+    } catch (e: any) { setErr(e.message); }
+  };
+
+  const handleDelete = async (row: Row) => {
+    if (!confirm(`Delete context "${row.name}"? This cannot be undone.`)) return;
+    try {
+      await adminDelete(token, 'context', 'context_id', row.context_id);
+      load();
+    } catch (e: any) { setErr(e.message); }
+  };
+
+  const handleAdd = async () => {
+    if (!newName.trim()) { setAddErr('Name is required'); return; }
+    setAdding(true); setAddErr('');
+    try {
+      await adminPost(token, 'context', { name: newName.trim(), description: newDesc.trim() || null });
+      setNewName(''); setNewDesc('');
+      load();
+    } catch (e: any) { setAddErr(e.message); }
+    finally { setAdding(false); }
+  };
+
+  const handleNameSave = async (id: string, name: string) => {
+    await adminPatch(token, 'context', 'context_id', id, { name });
+    load();
+  };
+
+  const visibleCount  = rows.filter(r => !r.is_archived && r.is_visible).length;
+  const hiddenCount   = rows.filter(r => !r.is_archived && !r.is_visible).length;
+  const archivedCount = rows.filter(r => r.is_archived).length;
+
+  return (
+    <div>
+      {err && <div style={{ color: '#ef4444', fontSize: '0.72rem', marginBottom: '0.5rem' }}>{err}</div>}
+
+      {/* Add form */}
+      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end', flexWrap: 'wrap', padding: '0.75rem', background: '#0d0d0d', border: '1px solid #1a1a1a', borderRadius: '6px', marginBottom: '1rem' }}>
+        <div>
+          <div style={{ color: '#aaa', fontSize: '0.63rem', marginBottom: '0.2rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Name<span style={{ color: '#ef4444' }}>*</span></div>
+          <input
+            value={newName}
+            onChange={e => setNewName(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') handleAdd(); }}
+            placeholder="Work, Personal..."
+            style={{ background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.35rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', width: '160px' }}
+          />
+        </div>
+        <div>
+          <div style={{ color: '#555', fontSize: '0.63rem', marginBottom: '0.2rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Description</div>
+          <input
+            value={newDesc}
+            onChange={e => setNewDesc(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') handleAdd(); }}
+            placeholder="Optional"
+            style={{ background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.35rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', width: '200px' }}
+          />
+        </div>
+        <button onClick={handleAdd} disabled={adding}
+          style={{ background: '#1a2a1a', border: '1px solid #2a4a2a', color: '#4ade80', padding: '0.35rem 0.75rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer', height: '30px' }}
+        >{adding ? '...' : '+ Add'}</button>
+        {addErr && <span style={{ color: '#ef4444', fontSize: '0.72rem' }}>{addErr}</span>}
+      </div>
+
+      {/* Legend */}
+      <div style={{ display: 'flex', gap: '1rem', marginBottom: '0.75rem', fontSize: '0.65rem', color: '#444' }}>
+        <span><span style={{ color: '#4ade80' }}>●</span> visible ({visibleCount})</span>
+        <span><span style={{ color: '#555' }}>●</span> hidden ({hiddenCount})</span>
+        {archivedCount > 0 && <span><span style={{ color: '#333' }}>●</span> archived ({archivedCount})</span>}
+        <span style={{ marginLeft: 'auto', color: '#333' }}>👁 = toggle navbar visibility · ✕ = permanent delete</span>
+      </div>
+
+      {loading ? <div style={{ color: '#444', fontSize: '0.75rem' }}>Loading...</div> : (
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
+          <thead>
+            <tr>
+              {['Name', 'Description', 'Visible', 'Archived', ''].map(h => (
+                <th key={h} style={{ textAlign: 'left', color: '#555', fontWeight: 600, padding: '0.3rem 0.5rem', borderBottom: '1px solid #1a1a1a', fontSize: '0.7rem', whiteSpace: 'nowrap' }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 && (
+              <tr><td colSpan={5} style={{ color: '#333', padding: '1rem 0.5rem' }}>No contexts</td></tr>
+            )}
+            {rows.map(row => {
+              const isHidden   = !row.is_visible && !row.is_archived;
+              const isArchived = row.is_archived;
+              const rowOpacity = isArchived ? 0.35 : isHidden ? 0.6 : 1;
+
+              return (
+                <tr key={row.context_id}
+                  style={{ borderBottom: '1px solid #0f0f0f', opacity: rowOpacity }}
+                  onMouseEnter={e => (e.currentTarget.style.background = '#0d0d0d')}
+                  onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                >
+                  {/* Name — editable */}
+                  <td style={{ padding: '0.2rem 0.5rem', verticalAlign: 'top' }}>
+                    <EditCell
+                      value={row.name}
+                      fieldType="text"
+                      onSave={v => handleNameSave(row.context_id, v)}
+                    />
+                  </td>
+
+                  {/* Description — editable */}
+                  <td style={{ padding: '0.2rem 0.5rem', verticalAlign: 'top' }}>
+                    <EditCell
+                      value={row.description}
+                      fieldType="text"
+                      onSave={v => adminPatch(token, 'context', 'context_id', row.context_id, { description: v }).then(load)}
+                    />
+                  </td>
+
+                  {/* is_visible badge + toggle */}
+                  <td style={{ padding: '0.2rem 0.5rem', verticalAlign: 'top' }}>
+                    <button
+                      onClick={() => !isArchived && handleToggleVisible(row)}
+                      disabled={isArchived}
+                      title={isArchived ? 'Archived — restore first' : row.is_visible ? 'Hide from navbar' : 'Show in navbar'}
+                      style={{
+                        background: 'none',
+                        border: `1px solid ${row.is_visible && !isArchived ? '#2a4a2a' : '#2a2a2a'}`,
+                        color: row.is_visible && !isArchived ? '#4ade80' : '#444',
+                        padding: '0.15rem 0.5rem',
+                        borderRadius: '3px',
+                        fontFamily: 'monospace',
+                        fontSize: '0.65rem',
+                        cursor: isArchived ? 'not-allowed' : 'pointer',
+                        transition: 'all 0.15s',
+                      }}
+                      onMouseEnter={e => { if (!isArchived) e.currentTarget.style.borderColor = '#555'; }}
+                      onMouseLeave={e => { if (!isArchived) e.currentTarget.style.borderColor = row.is_visible ? '#2a4a2a' : '#2a2a2a'; }}
+                    >
+                      {row.is_visible ? '👁 shown' : '👁 hidden'}
+                    </button>
+                  </td>
+
+                  {/* is_archived — read only display */}
+                  <td style={{ padding: '0.2rem 0.5rem', verticalAlign: 'top' }}>
+                    <ReadCell value={row.is_archived} fieldType="boolean" />
+                  </td>
+
+                  {/* Actions: delete */}
+                  <td style={{ padding: '0.2rem 0.5rem', textAlign: 'right', verticalAlign: 'top' }}>
+                    <button
+                      onClick={() => handleDelete(row)}
+                      title="Permanently delete"
+                      style={{ background: 'none', border: 'none', color: '#2a2a2a', cursor: 'pointer', fontSize: '0.72rem' }}
+                      onMouseEnter={e => (e.currentTarget.style.color = '#ef4444')}
+                      onMouseLeave={e => (e.currentTarget.style.color = '#2a2a2a')}
+                    >✕</button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
 // ─── Metadata-driven Table ────────────────────────────────────────────────────
 
 function MetaTable({ rows, fields, idField, token, table, onRefresh, addForm, fkMap, filterNode, readOnly }: {
@@ -791,7 +986,7 @@ export default function AdminPage() {
   }, []);
 
   const loadTab = useCallback(async (t: Tab) => {
-    if (!token || t === 'field_meta' || t === 'defaults' || t === 'concepts') return;
+    if (!token || t === 'field_meta' || t === 'defaults' || t === 'concepts' || t === 'contexts') return;
     setLoading(true); setError(''); setTagGroupFilter('');
     try {
       const cfg = TAB_CONFIG[t];
@@ -826,6 +1021,7 @@ export default function AdminPage() {
     if (tab === 'field_meta') return <FieldMetaTab token={token} />;
     if (tab === 'defaults')   return <DefaultsTab token={token} />;
     if (tab === 'concepts')   return <ConceptsTab token={token} />;
+    if (tab === 'contexts')   return <ContextsTab token={token} />;
 
     const filterNode = tab === 'tags' ? (
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
@@ -840,7 +1036,7 @@ export default function AdminPage() {
       </div>
     ) : undefined;
 
-    const canAdd = ['tag_groups', 'tags', 'task_status', 'contexts', 'situations'].includes(tab);
+    const canAdd = ['tag_groups', 'tags', 'task_status', 'situations'].includes(tab);
 
     return (
       <MetaTable
