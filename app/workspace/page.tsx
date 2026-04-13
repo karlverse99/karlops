@@ -3,6 +3,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import TaskDetailModal from '@/app/components/TaskDetailModal';
+import TaskAddModal from '@/app/components/TaskAddModal';
 import CompletionsModal from '@/app/components/CompletionsModal';
 import MeetingsModal from '@/app/components/MeetingsModal';
 import ExtractsModal from '@/app/components/ExtractsModal';
@@ -225,7 +226,7 @@ function ChatBubble({ msg }: { msg: ChatMessage }) {
   );
 }
 
-// ─── COMPONENTS: CaptureModal ────────────────────────────────────────────────
+// ─── COMPONENTS: CaptureModal (kept until TaskAddModal verified) ──────────────
 
 function CaptureModal({ onClose, onCapture }: { onClose: () => void; onCapture: (titles: string[]) => Promise<void> }) {
   const [value, setValue]   = useState('');
@@ -318,15 +319,16 @@ export default function WorkspacePage() {
   const [pending, setPending]                 = useState<PendingAction | null>(null);
   const [accessToken, setAccessToken]         = useState('');
   const [showCapture, setShowCapture]         = useState(false);
+  const [showTaskAdd, setShowTaskAdd]         = useState(false);
   const [showCompletions, setShowCompletions] = useState(false);
   const [showMeetings, setShowMeetings]       = useState(false);
-  const [showExtracts, setShowExtracts]   = useState(false);
+  const [showExtracts, setShowExtracts]       = useState(false);
   const [showTaskList, setShowTaskList]       = useState(false);
-  const [showTemplates, setShowTemplates]     = useState(false);   // ← NEW
+  const [showTemplates, setShowTemplates]     = useState(false);
   const [completionCount, setCompletionCount] = useState(0);
   const [meetingCount, setMeetingCount]       = useState(0);
-  const [extractCount, setExtractCount]   = useState(0);
-  const [templateCount, setTemplateCount]     = useState(0);       // ← NEW
+  const [extractCount, setExtractCount]       = useState(0);
+  const [templateCount, setTemplateCount]     = useState(0);
   const [selectedTask, setSelectedTask]       = useState<Task | null>(null);
   const draggedTask                            = useRef<Task | null>(null);
 
@@ -369,7 +371,7 @@ export default function WorkspacePage() {
         await loadCompletionCount(session.user.id);
         await loadMeetingCount(session.user.id);
         await loadExtractCount(session.user.id);
-        await loadTemplateCount(session.user.id);   // ← NEW
+        await loadTemplateCount(session.user.id);
         setSessionReady(true);
 
         setChat([{
@@ -420,8 +422,15 @@ export default function WorkspacePage() {
     }
   };
 
+  // ── loadContexts: is_archived=false AND is_visible=true ───────────────────
   const loadContexts = async (userId: string) => {
-    
+    const { data } = await supabase
+      .from('context')
+      .select('context_id, name')
+      .eq('user_id', userId)
+      .eq('is_archived', false)
+      .eq('is_visible', true)
+      .order('name');
     if (data) setContexts(data);
   };
 
@@ -471,7 +480,6 @@ export default function WorkspacePage() {
     if (count !== null) setExtractCount(count);
   };
 
-  // ← NEW
   const loadTemplateCount = async (userId: string) => {
     const { count } = await supabase
       .from('document_template')
@@ -608,9 +616,8 @@ export default function WorkspacePage() {
     const task = draggedTask.current;
     draggedTask.current = null;
     if (!task || !koUser) return;
-    if (task.bucket_key === targetBucketKey) return; // no-op same bucket
+    if (task.bucket_key === targetBucketKey) return;
 
-    // Optimistic update
     setTasks(prev => prev.map(t => t.id === task.id ? { ...t, bucket_key: targetBucketKey } : t));
 
     const { error } = await supabase
@@ -621,7 +628,7 @@ export default function WorkspacePage() {
 
     if (error) {
       console.error('[handleDrop]', error);
-      await loadTasks(koUser.id); // revert on error
+      await loadTasks(koUser.id);
     }
   };
 
@@ -653,6 +660,14 @@ export default function WorkspacePage() {
 
       {/* MODALS */}
       {showCapture && <CaptureModal onClose={() => setShowCapture(false)} onCapture={handleModalCapture} />}
+      {showTaskAdd && koUser && (
+        <TaskAddModal
+          userId={koUser.id}
+          accessToken={accessToken}
+          onClose={() => setShowTaskAdd(false)}
+          onSaved={() => { loadTasks(koUser.id); setShowTaskAdd(false); }}
+        />
+      )}
       {showCompletions && koUser && (
         <CompletionsModal
           userId={koUser.id}
@@ -685,7 +700,7 @@ export default function WorkspacePage() {
           onSaved={() => loadTasks(koUser.id)}
         />
       )}
-      {showTemplates && koUser && (                          /* ← NEW */
+      {showTemplates && koUser && (
         <TemplatesModal
           userId={koUser.id}
           accessToken={accessToken}
@@ -721,12 +736,19 @@ export default function WorkspacePage() {
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
 
-            {/* +capture */}
+            {/* +capture (legacy — kept until TaskAddModal verified) */}
             <button onClick={() => setShowCapture(true)}
               style={{ background: '#0d1a0d', border: '1px solid #2a4a2a', color: '#4ade80', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
               onMouseEnter={e => (e.currentTarget.style.background = '#1a2a1a')}
               onMouseLeave={e => (e.currentTarget.style.background = '#0d1a0d')}
             >+capture</button>
+
+            {/* +add task (new TaskAddModal) */}
+            <button onClick={() => setShowTaskAdd(true)}
+              style={{ background: '#0d1a14', border: '1px solid #10b981', color: '#10b981', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
+              onMouseEnter={e => (e.currentTarget.style.background = '#0f2a20')}
+              onMouseLeave={e => (e.currentTarget.style.background = '#0d1a14')}
+            >+add task</button>
 
             {/* +complete(n) */}
             <button onClick={() => setShowCompletions(true)}
@@ -749,7 +771,7 @@ export default function WorkspacePage() {
               onMouseLeave={e => (e.currentTarget.style.background = '#120a1a')}
             ><span style={{ color: '#8b5cf6' }}>+extracts</span><span style={{ color: '#ffffff' }}>({extractCount})</span></button>
 
-            {/* +template(n) — NEW */}
+            {/* +template(n) */}
             <button onClick={() => setShowTemplates(true)}
               style={{ background: '#0a1f1d', border: '1px solid #0f3330', color: '#14b8a6', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
               onMouseEnter={e => (e.currentTarget.style.background = '#0f2a27')}
