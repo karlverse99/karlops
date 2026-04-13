@@ -424,6 +424,271 @@ function ContextsTab({ token }: { token: string }) {
   );
 }
 
+
+// ─── Tags Tab — custom, with Karl tag suggester ───────────────────────────────
+
+interface TagSuggestion {
+  name: string;
+  group: string;
+  group_id: string | null;
+  description: string;
+}
+
+function TagsTab({ token }: { token: string }) {
+  const [rows, setRows] = useState<Row[]>([]);
+  const [tagGroups, setTagGroups] = useState<Row[]>([]);
+  const [groupFilter, setGroupFilter] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState('');
+
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestions, setSuggestions] = useState<TagSuggestion[]>([]);
+  const [reasoning, setReasoning] = useState('');
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [creating, setCreating] = useState(false);
+  const [createMsg, setCreateMsg] = useState('');
+
+  const [newName, setNewName] = useState('');
+  const [newDesc, setNewDesc] = useState('');
+  const [newGroupId, setNewGroupId] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [addErr, setAddErr] = useState('');
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [tagData, groupData] = await Promise.all([
+        adminFetch(token, 'tag'),
+        adminFetch(token, 'tag_group'),
+      ]);
+      setRows(tagData);
+      setTagGroups([...groupData].sort((a: Row, b: Row) => (a.display_order ?? 0) - (b.display_order ?? 0)));
+    } catch (e: any) { setErr(e.message); }
+    finally { setLoading(false); }
+  }, [token]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('Delete this tag?')) return;
+    try { await adminDelete(token, 'tag', 'tag_id', id); load(); }
+    catch (e: any) { setErr(e.message); }
+  };
+
+  const handleSave = async (id: string, field: string, value: any) => {
+    await adminPatch(token, 'tag', 'tag_id', id, { [field]: value });
+    load();
+  };
+
+  const handleAdd = async () => {
+    if (!newName.trim()) { setAddErr('Name is required'); return; }
+    setAdding(true); setAddErr('');
+    try {
+      await adminPost(token, 'tag', {
+        name: newName.trim(),
+        description: newDesc.trim() || null,
+        tag_group_id: newGroupId || null,
+      });
+      setNewName(''); setNewDesc(''); setNewGroupId('');
+      load();
+    } catch (e: any) { setAddErr(e.message); }
+    finally { setAdding(false); }
+  };
+
+  const handleSuggest = async () => {
+    setSuggesting(true); setSuggestions([]); setReasoning(''); setSelected(new Set()); setCreateMsg('');
+    try {
+      const res = await fetch('/api/ko/suggest-tags', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ mode: 'admin' }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Suggestion failed');
+      setSuggestions(data.suggestions ?? []);
+      setReasoning(data.reasoning ?? '');
+      setSelected(new Set((data.suggestions ?? []).map((_: any, i: number) => i)));
+    } catch (e: any) { setErr(e.message); }
+    finally { setSuggesting(false); }
+  };
+
+  const handleCreateSelected = async () => {
+    const toCreate = suggestions.filter((_, i) => selected.has(i));
+    if (toCreate.length === 0) return;
+    setCreating(true); setCreateMsg('');
+    let created = 0; let failed = 0;
+    for (const s of toCreate) {
+      try {
+        await adminPost(token, 'tag', {
+          name: s.name,
+          description: s.description || null,
+          tag_group_id: s.group_id || null,
+        });
+        created++;
+      } catch { failed++; }
+    }
+    setCreateMsg(`Created ${created} tag${created !== 1 ? 's' : ''}${failed > 0 ? `, ${failed} failed` : ''}.`);
+    setSuggestions([]); setSelected(new Set());
+    load(); setCreating(false);
+  };
+
+  const toggleSelect = (i: number) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i); else next.add(i);
+      return next;
+    });
+  };
+
+  const filteredRows = groupFilter ? rows.filter(r => r.tag_group_id === groupFilter) : rows;
+
+  return (
+    <div>
+      {err && <div style={{ color: '#ef4444', fontSize: '0.72rem', marginBottom: '0.5rem' }}>{err}</div>}
+
+      {/* Add form + Suggest button */}
+      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end', flexWrap: 'wrap', padding: '0.75rem', background: '#0d0d0d', border: '1px solid #1a1a1a', borderRadius: '6px', marginBottom: '1rem' }}>
+        <div>
+          <div style={{ color: '#aaa', fontSize: '0.63rem', marginBottom: '0.2rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Name<span style={{ color: '#ef4444' }}>*</span></div>
+          <input value={newName} onChange={e => setNewName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') handleAdd(); }}
+            placeholder="Mike, KarlOps, Gym..."
+            style={{ background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.35rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', width: '140px' }}
+          />
+        </div>
+        <div>
+          <div style={{ color: '#555', fontSize: '0.63rem', marginBottom: '0.2rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Group</div>
+          <select value={newGroupId} onChange={e => setNewGroupId(e.target.value)}
+            style={{ background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.35rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', minWidth: '120px' }}
+          >
+            <option value="">— none —</option>
+            {tagGroups.map(g => <option key={g.tag_group_id} value={g.tag_group_id}>{g.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <div style={{ color: '#555', fontSize: '0.63rem', marginBottom: '0.2rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Description</div>
+          <input value={newDesc} onChange={e => setNewDesc(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') handleAdd(); }}
+            placeholder="Helps Karl infer usage"
+            style={{ background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.35rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', width: '200px' }}
+          />
+        </div>
+        <button onClick={handleAdd} disabled={adding}
+          style={{ background: '#1a2a1a', border: '1px solid #2a4a2a', color: '#4ade80', padding: '0.35rem 0.75rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer', height: '30px' }}
+        >{adding ? '...' : '+ Add'}</button>
+        {addErr && <span style={{ color: '#ef4444', fontSize: '0.72rem' }}>{addErr}</span>}
+        <div style={{ marginLeft: 'auto' }}>
+          <button onClick={handleSuggest} disabled={suggesting}
+            style={{ background: suggesting ? '#111' : '#0a1f1d', border: '1px solid #14b8a6', color: '#14b8a6', padding: '0.35rem 0.85rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: suggesting ? 'wait' : 'pointer', height: '30px' }}
+          >{suggesting ? 'Karl is thinking...' : '✶ Suggest Tags'}</button>
+        </div>
+      </div>
+
+      {/* Suggestions panel */}
+      {suggestions.length > 0 && (
+        <div style={{ background: '#0a1a18', border: '1px solid #14b8a6', borderRadius: '6px', padding: '1rem', marginBottom: '1rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
+            <div>
+              <span style={{ color: '#14b8a6', fontSize: '0.78rem', fontWeight: 600 }}>✶ Karl suggests {suggestions.length} tags</span>
+              {reasoning && <div style={{ color: '#555', fontSize: '0.68rem', marginTop: '0.2rem' }}>{reasoning}</div>}
+            </div>
+            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              <button onClick={() => setSelected(new Set(suggestions.map((_, i) => i)))}
+                style={{ background: 'none', border: '1px solid #333', color: '#666', padding: '0.2rem 0.5rem', borderRadius: '3px', fontFamily: 'monospace', fontSize: '0.65rem', cursor: 'pointer' }}
+              >all</button>
+              <button onClick={() => setSelected(new Set())}
+                style={{ background: 'none', border: '1px solid #333', color: '#666', padding: '0.2rem 0.5rem', borderRadius: '3px', fontFamily: 'monospace', fontSize: '0.65rem', cursor: 'pointer' }}
+              >none</button>
+              <button onClick={handleCreateSelected} disabled={creating || selected.size === 0}
+                style={{ background: selected.size > 0 ? '#0a1f1d' : '#111', border: `1px solid ${selected.size > 0 ? '#14b8a6' : '#222'}`, color: selected.size > 0 ? '#14b8a6' : '#444', padding: '0.2rem 0.75rem', borderRadius: '3px', fontFamily: 'monospace', fontSize: '0.72rem', cursor: selected.size > 0 ? 'pointer' : 'not-allowed' }}
+              >{creating ? 'creating...' : `create ${selected.size} selected`}</button>
+              <button onClick={() => { setSuggestions([]); setSelected(new Set()); }}
+                style={{ background: 'none', border: 'none', color: '#444', cursor: 'pointer', fontSize: '0.8rem' }}
+              >✕</button>
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: '0.4rem' }}>
+            {suggestions.map((s, i) => (
+              <div key={i} onClick={() => toggleSelect(i)}
+                style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', padding: '0.5rem 0.65rem', background: selected.has(i) ? '#0d2a26' : '#111', border: `1px solid ${selected.has(i) ? '#14b8a6' : '#1a1a1a'}`, borderRadius: '4px', cursor: 'pointer', transition: 'all 0.15s' }}
+              >
+                <span style={{ color: selected.has(i) ? '#14b8a6' : '#333', fontSize: '0.7rem', marginTop: '0.1rem', flexShrink: 0 }}>{selected.has(i) ? '☑' : '☐'}</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.15rem' }}>
+                    <span style={{ color: selected.has(i) ? '#e5e5e5' : '#aaa', fontSize: '0.75rem', fontWeight: 600 }}>{s.name}</span>
+                    <span style={{ color: '#14b8a6', fontSize: '0.6rem', background: '#0a1f1d', border: '1px solid #14b8a620', borderRadius: '3px', padding: '0 0.3rem' }}>{s.group}</span>
+                  </div>
+                  {s.description && <div style={{ color: '#555', fontSize: '0.68rem', lineHeight: 1.3 }}>{s.description}</div>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {createMsg && (
+        <div style={{ color: '#4ade80', fontSize: '0.72rem', marginBottom: '0.75rem', padding: '0.4rem 0.75rem', background: '#0d1a0d', border: '1px solid #1a3a1a', borderRadius: '4px' }}>{createMsg}</div>
+      )}
+
+      {/* Filter bar */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem' }}>
+        <span style={{ color: '#555', fontSize: '0.7rem' }}>Group:</span>
+        <select value={groupFilter} onChange={e => setGroupFilter(e.target.value)}
+          style={{ background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.3rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem' }}
+        >
+          <option value="">All</option>
+          {tagGroups.map(g => <option key={g.tag_group_id} value={g.tag_group_id}>{g.name}</option>)}
+        </select>
+        <span style={{ color: '#333', fontSize: '0.7rem' }}>{filteredRows.length} tags</span>
+      </div>
+
+      {/* Tags table */}
+      {loading ? <div style={{ color: '#444', fontSize: '0.75rem' }}>Loading...</div> : (
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
+          <thead>
+            <tr>
+              {['Name', 'Group', 'Description', ''].map(h => (
+                <th key={h} style={{ textAlign: 'left', color: '#555', fontWeight: 600, padding: '0.3rem 0.5rem', borderBottom: '1px solid #1a1a1a', fontSize: '0.7rem' }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {filteredRows.length === 0 && (
+              <tr><td colSpan={4} style={{ color: '#333', padding: '1rem 0.5rem' }}>No tags yet — use ✶ Suggest Tags to get started</td></tr>
+            )}
+            {filteredRows.map(row => (
+              <tr key={row.tag_id} style={{ borderBottom: '1px solid #0f0f0f' }}
+                onMouseEnter={e => (e.currentTarget.style.background = '#0d0d0d')}
+                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+              >
+                <td style={{ padding: '0.2rem 0.5rem', verticalAlign: 'top' }}>
+                  <EditCell value={row.name} fieldType="text" onSave={v => handleSave(row.tag_id, 'name', v)} />
+                </td>
+                <td style={{ padding: '0.2rem 0.5rem', verticalAlign: 'top' }}>
+                  <select value={row.tag_group_id ?? ''} onChange={async e => { await handleSave(row.tag_id, 'tag_group_id', e.target.value || null); }}
+                    style={{ background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.2rem 0.35rem', borderRadius: '3px', fontFamily: 'monospace', fontSize: '0.72rem' }}
+                  >
+                    <option value="">— none —</option>
+                    {tagGroups.map(g => <option key={g.tag_group_id} value={g.tag_group_id}>{g.name}</option>)}
+                  </select>
+                </td>
+                <td style={{ padding: '0.2rem 0.5rem', verticalAlign: 'top' }}>
+                  <EditCell value={row.description} fieldType="text" onSave={v => handleSave(row.tag_id, 'description', v)} />
+                </td>
+                <td style={{ padding: '0.2rem 0.5rem', textAlign: 'right', verticalAlign: 'top' }}>
+                  <button onClick={() => handleDelete(row.tag_id)}
+                    style={{ background: 'none', border: 'none', color: '#2a2a2a', cursor: 'pointer', fontSize: '0.72rem' }}
+                    onMouseEnter={e => (e.currentTarget.style.color = '#ef4444')}
+                    onMouseLeave={e => (e.currentTarget.style.color = '#2a2a2a')}
+                  >✕</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
 // ─── Metadata-driven Table ────────────────────────────────────────────────────
 
 function MetaTable({ rows, fields, idField, token, table, onRefresh, addForm, fkMap, filterNode, readOnly }: {
@@ -986,7 +1251,7 @@ export default function AdminPage() {
   }, []);
 
   const loadTab = useCallback(async (t: Tab) => {
-    if (!token || t === 'field_meta' || t === 'defaults' || t === 'concepts' || t === 'contexts') return;
+    if (!token || t === 'field_meta' || t === 'defaults' || t === 'concepts' || t === 'contexts' || t === 'tags') return;
     setLoading(true); setError(''); setTagGroupFilter('');
     try {
       const cfg = TAB_CONFIG[t];
@@ -1022,6 +1287,7 @@ export default function AdminPage() {
     if (tab === 'defaults')   return <DefaultsTab token={token} />;
     if (tab === 'concepts')   return <ConceptsTab token={token} />;
     if (tab === 'contexts')   return <ContextsTab token={token} />;
+    if (tab === 'tags')       return <TagsTab token={token} />;
 
     const filterNode = tab === 'tags' ? (
       <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
