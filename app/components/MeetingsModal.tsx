@@ -120,14 +120,15 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
   const [filterDateRange, setFilterDateRange] = useState<'all' | 'week' | 'month'>('all');
 
   // ─── Drag/resize ───────────────────────────────────────────────────────────
-  const [pos, setPos]           = useState({ x: 0, y: 0 });
-  const [size, setSize]         = useState({ w: 1000, h: 860 });
-  const [centered, setCentered] = useState(true);
-  const dragging                = useRef(false);
-  const resizing                = useRef(false);
-  const dragStart               = useRef({ mx: 0, my: 0, x: 0, y: 0 });
-  const resizeStart             = useRef({ mx: 0, my: 0, w: 0, h: 0 });
-  const modalRef                = useRef<HTMLDivElement>(null);
+  const initX = Math.max(20, Math.round(window.innerWidth  / 2 - 500));
+  const initY = Math.max(20, Math.round(window.innerHeight / 2 - 430));
+  const [pos, setPos]   = useState({ x: initX, y: initY });
+  const [size, setSize] = useState({ w: 1000, h: 860 });
+  const dragging        = useRef(false);
+  const resizing        = useRef(false);
+  const dragStart       = useRef({ mx: 0, my: 0, px: 0, py: 0 });
+  const resizeStart     = useRef({ mx: 0, my: 0, w: 0, h: 0 });
+  const modalRef        = useRef<HTMLDivElement>(null);
 
   // ─── Meeting form state ────────────────────────────────────────────────────
   const [editId, setEditId]                   = useState<string | null>(null);
@@ -207,7 +208,7 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
-      if (dragging.current) { setPos({ x: dragStart.current.x + (e.clientX - dragStart.current.mx), y: dragStart.current.y + (e.clientY - dragStart.current.my) }); setCentered(false); }
+      if (dragging.current) { setPos({ x: Math.max(0, dragStart.current.px + e.clientX - dragStart.current.mx), y: Math.max(0, dragStart.current.py + e.clientY - dragStart.current.my) }); }
       if (resizing.current) { setSize({ w: Math.max(700, resizeStart.current.w + (e.clientX - resizeStart.current.mx)), h: Math.max(400, resizeStart.current.h + (e.clientY - resizeStart.current.my)) }); }
     };
     const onUp = () => { dragging.current = false; resizing.current = false; };
@@ -532,21 +533,15 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
     </div>
   );
 
-  // ─── Modal position ────────────────────────────────────────────────────────
-
-  const modalStyle: React.CSSProperties = centered
-    ? { position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: size.w, height: size.h }
-    : { position: 'fixed', top: pos.y, left: pos.x, width: size.w, height: size.h };
-
   // ─── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 100 }}>
-      <div ref={modalRef} style={{ ...modalStyle, background: '#ffffff', border: `2px solid ${ACCENT}`, borderRadius: '8px', display: 'flex', flexDirection: 'column', fontFamily: 'monospace', boxShadow: '0 20px 60px rgba(0,0,0,0.3)', overflow: 'hidden' }}>
+    <div style={{ position: 'fixed', inset: 0, zIndex: 100, pointerEvents: 'none' }}>
+      <div ref={modalRef} style={{ position: 'absolute', left: pos.x, top: pos.y, width: size.w, height: size.h, background: '#ffffff', border: `2px solid ${ACCENT}`, borderRadius: '8px', display: 'flex', flexDirection: 'column', fontFamily: 'monospace', boxShadow: '0 20px 60px rgba(0,0,0,0.3)', overflow: 'hidden', pointerEvents: 'all' }}>
 
         {/* Header */}
         <div
-          onMouseDown={e => { dragging.current = true; const rect = modalRef.current!.getBoundingClientRect(); dragStart.current = { mx: e.clientX, my: e.clientY, x: rect.left, y: rect.top }; setCentered(false); }}
+          onMouseDown={e => { dragging.current = true; dragStart.current = { mx: e.clientX, my: e.clientY, px: pos.x, py: pos.y }; }}
           style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.85rem 1.25rem', background: ACCENT, cursor: 'grab', userSelect: 'none', flexShrink: 0 }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>

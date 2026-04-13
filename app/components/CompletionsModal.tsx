@@ -107,6 +107,8 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
   const [saving, setSaving]           = useState(false);
   const [err, setErr]                 = useState('');
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const [confirmDelete, setConfirmDelete]   = useState(false);
+  const [deleting, setDeleting]             = useState(false);
 
   // ─── Search/filter ─────────────────────────────────────────────────────────
   const [search, setSearch]               = useState('');
@@ -115,14 +117,15 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
   const [filterDateRange, setFilterDateRange] = useState<'all' | 'week' | 'month'>('all');
 
   // ─── Drag/resize ───────────────────────────────────────────────────────────
-  const [pos, setPos]           = useState({ x: 0, y: 0 });
-  const [size, setSize]         = useState({ w: 1000, h: 720 });
-  const [centered, setCentered] = useState(true);
-  const dragging                = useRef(false);
-  const resizing                = useRef(false);
-  const dragStart               = useRef({ mx: 0, my: 0, x: 0, y: 0 });
-  const resizeStart             = useRef({ mx: 0, my: 0, w: 0, h: 0 });
-  const modalRef                = useRef<HTMLDivElement>(null);
+  const initX = Math.max(20, Math.round(window.innerWidth  / 2 - 500));
+  const initY = Math.max(20, Math.round(window.innerHeight / 2 - 360));
+  const [pos, setPos]   = useState({ x: initX, y: initY });
+  const [size, setSize] = useState({ w: 1000, h: 720 });
+  const dragging        = useRef(false);
+  const resizing        = useRef(false);
+  const dragStart       = useRef({ mx: 0, my: 0, px: 0, py: 0 });
+  const resizeStart     = useRef({ mx: 0, my: 0, w: 0, h: 0 });
+  const modalRef        = useRef<HTMLDivElement>(null);
 
   // ─── Form state ────────────────────────────────────────────────────────────
   const [editId, setEditId]                   = useState<string | null>(null);
@@ -185,7 +188,7 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
-      if (dragging.current) { setPos({ x: dragStart.current.x + (e.clientX - dragStart.current.mx), y: dragStart.current.y + (e.clientY - dragStart.current.my) }); setCentered(false); }
+      if (dragging.current) { setPos({ x: Math.max(0, dragStart.current.px + e.clientX - dragStart.current.mx), y: Math.max(0, dragStart.current.py + e.clientY - dragStart.current.my) }); }
       if (resizing.current) { setSize({ w: Math.max(700, resizeStart.current.w + (e.clientX - resizeStart.current.mx)), h: Math.max(400, resizeStart.current.h + (e.clientY - resizeStart.current.my)) }); }
     };
     const onUp = () => { dragging.current = false; resizing.current = false; };
@@ -256,6 +259,18 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
       setMode('empty'); setSelected(null);
     } catch (e: any) { setErr(e.message); }
     finally { setSaving(false); }
+  };
+
+  const handleDelete = async () => {
+    if (!editId) return;
+    setDeleting(true); setErr('');
+    try {
+      const { error } = await supabase.from('completion').delete().eq('completion_id', editId).eq('user_id', userId);
+      if (error) throw error;
+      await loadCompletions();
+      setMode('empty'); setSelected(null); setConfirmDelete(false);
+    } catch (e: any) { setErr(e.message); }
+    finally { setDeleting(false); }
   };
 
   const toggleTag = (name: string) => setFormTags(prev => prev.includes(name) ? prev.filter(t => t !== name) : [...prev, name]);
@@ -416,33 +431,41 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
         </div>
         {visibleFields.map(f => renderField(f))}
         {err && <div style={{ color: '#ef4444', fontSize: '0.72rem', marginBottom: '0.75rem' }}>{err}</div>}
-        <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: 'auto', paddingTop: '1rem' }}>
-          <button onClick={() => { setMode('empty'); setSelected(null); }}
-            style={{ background: 'none', border: '1px solid #ddd', color: '#666', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer' }}
-          >cancel</button>
-          <button onClick={handleSave} disabled={saving}
-            style={{ background: ACCENT, border: `1px solid ${ACCENT}`, color: '#fff', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer', fontWeight: 600 }}
-          >{saving ? '...' : isAdd ? 'save completion' : 'save changes'}</button>
+        <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'space-between', marginTop: 'auto', paddingTop: '1rem' }}>
+          {mode === 'edit' && !confirmDelete && (
+            <button onClick={() => setConfirmDelete(true)}
+              style={{ background: 'none', border: '1px solid #fca5a5', color: '#ef4444', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer' }}>
+              ✕ delete
+            </button>
+          )}
+          {confirmDelete ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1 }}>
+              <span style={{ fontSize: '0.72rem', color: '#ef4444', flex: 1 }}>Delete this completion?</span>
+              <button onClick={() => setConfirmDelete(false)} style={{ background: 'none', border: '1px solid #ddd', color: '#666', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer' }}>cancel</button>
+              <button onClick={handleDelete} disabled={deleting} style={{ background: '#ef4444', border: 'none', color: '#fff', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer', fontWeight: 600 }}>{deleting ? '...' : 'confirm delete'}</button>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', gap: '0.5rem', marginLeft: 'auto' }}>
+              <button onClick={() => { setMode('empty'); setSelected(null); setConfirmDelete(false); }}
+                style={{ background: 'none', border: '1px solid #ddd', color: '#666', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer' }}>cancel</button>
+              <button onClick={handleSave} disabled={saving}
+                style={{ background: ACCENT, border: `1px solid ${ACCENT}`, color: '#fff', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer', fontWeight: 600 }}>{saving ? '...' : isAdd ? 'save completion' : 'save changes'}</button>
+            </div>
+          )}
         </div>
       </div>
     );
   };
 
-  // ─── Modal position ────────────────────────────────────────────────────────
-
-  const modalStyle: React.CSSProperties = centered
-    ? { position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: size.w, height: size.h }
-    : { position: 'fixed', top: pos.y, left: pos.x, width: size.w, height: size.h };
-
   // ─── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 100 }}>
-      <div ref={modalRef} style={{ ...modalStyle, background: '#ffffff', border: `2px solid ${ACCENT}`, borderRadius: '8px', display: 'flex', flexDirection: 'column', fontFamily: 'monospace', boxShadow: '0 20px 60px rgba(0,0,0,0.3)', overflow: 'hidden' }}>
+    <div style={{ position: 'fixed', inset: 0, zIndex: 100, pointerEvents: 'none' }}>
+      <div ref={modalRef} style={{ position: 'absolute', left: pos.x, top: pos.y, width: size.w, height: size.h, background: '#ffffff', border: `2px solid ${ACCENT}`, borderRadius: '8px', display: 'flex', flexDirection: 'column', fontFamily: 'monospace', boxShadow: '0 20px 60px rgba(0,0,0,0.3)', overflow: 'hidden', pointerEvents: 'all' }}>
 
         {/* Header */}
         <div
-          onMouseDown={e => { dragging.current = true; const rect = modalRef.current!.getBoundingClientRect(); dragStart.current = { mx: e.clientX, my: e.clientY, x: rect.left, y: rect.top }; setCentered(false); }}
+          onMouseDown={e => { dragging.current = true; dragStart.current = { mx: e.clientX, my: e.clientY, px: pos.x, py: pos.y }; }}
           style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.85rem 1.25rem', background: ACCENT, cursor: 'grab', userSelect: 'none', flexShrink: 0 }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>

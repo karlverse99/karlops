@@ -119,35 +119,31 @@ function TagPicker({ selected, allTags, tagGroups, onChange }: {
             <span onClick={() => toggle(tag)} style={{ cursor: 'pointer', fontWeight: 700, marginLeft: '0.1rem' }}>×</span>
           </span>
         ))}
-        <div
-          onClick={() => setOpen(o => !o)}
-          style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', background: '#111', border: '1px solid #222', borderRadius: '4px', padding: '0.15rem 0.5rem', fontSize: '0.72rem', color: '#555', cursor: 'pointer' }}
-        >
-          {selected.length === 0 ? 'Add tags' : '+'} <span style={{ fontSize: '0.6rem' }}>{open ? '▴' : '▾'}</span>
-        </div>
       </div>
-
+      <button
+        onClick={() => setOpen(v => !v)}
+        style={{ background: '#111', border: '1px solid #222', color: '#4ade80', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.72rem', cursor: 'pointer' }}
+      >
+        {open ? '▲ close' : '▼ add tags'}
+      </button>
       {open && (
-        <div style={{ position: 'absolute', top: '100%', left: 0, zIndex: 200, background: '#0d0d0d', border: '1px solid #222', borderRadius: '6px', padding: '0.5rem', minWidth: '220px', maxHeight: '260px', overflowY: 'auto', boxShadow: '0 4px 20px rgba(0,0,0,0.6)' }}>
+        <div style={{ position: 'absolute', top: '100%', left: 0, zIndex: 30, background: '#111', border: '1px solid #222', borderRadius: '6px', padding: '0.5rem', width: '280px', maxHeight: '260px', overflowY: 'auto', marginTop: '0.25rem', boxShadow: '0 8px 24px rgba(0,0,0,0.5)' }}>
           <input
-            autoFocus
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="Search tags..."
-            style={{ width: '100%', background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.3rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', outline: 'none', marginBottom: '0.5rem', boxSizing: 'border-box' }}
+            style={{ width: '100%', background: '#0d0d0d', border: '1px solid #333', color: '#e5e5e5', padding: '0.35rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', outline: 'none', boxSizing: 'border-box', marginBottom: '0.5rem' }}
           />
-          {tagGroups.map(group => {
-            const groupTags = tagsByGroup[group.tag_group_id] ?? [];
+          {tagGroups.map(g => {
+            const groupTags = tagsByGroup[g.tag_group_id] ?? [];
             if (groupTags.length === 0) return null;
             return (
-              <div key={group.tag_group_id} style={{ marginBottom: '0.5rem' }}>
-                <div style={{ color: '#444', fontSize: '0.6rem', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '0.25rem', padding: '0 0.25rem' }}>{group.name}</div>
+              <div key={g.tag_group_id} style={{ marginBottom: '0.5rem' }}>
+                <div style={{ color: '#444', fontSize: '0.6rem', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '0.25rem', paddingLeft: '0.25rem' }}>{g.name}</div>
                 {groupTags.map(tag => (
                   <div key={tag.tag_id}
                     onClick={() => toggle(tag.name)}
-                    style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.25rem 0.5rem', borderRadius: '4px', cursor: 'pointer', color: selected.includes(tag.name) ? '#4ade80' : '#aaa', fontSize: '0.78rem', background: selected.includes(tag.name) ? '#0d1a0d' : 'transparent' }}
-                    onMouseEnter={e => { if (!selected.includes(tag.name)) e.currentTarget.style.background = '#111'; }}
-                    onMouseLeave={e => { e.currentTarget.style.background = selected.includes(tag.name) ? '#0d1a0d' : 'transparent'; }}
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.25rem 0.5rem', borderRadius: '4px', cursor: 'pointer', color: selected.includes(tag.name) ? '#4ade80' : '#aaa', fontSize: '0.78rem' }}
                   >
                     <span style={{ fontSize: '0.65rem', width: '12px' }}>{selected.includes(tag.name) ? '☑' : '☐'}</span>
                     {tag.name}
@@ -205,19 +201,38 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
   const [err, setErr]             = useState('');
 
   // ─── Complete flow state ─────────────────────────────────────────────────
-  const [completing, setCompleting]       = useState(false);
-  const [completionTitle, setCompletionTitle] = useState('');
+  const [completing, setCompleting]               = useState(false);
+  const [completionTitle, setCompletionTitle]     = useState('');
   const [completionOutcome, setCompletionOutcome] = useState('');
   const [completionSaving, setCompletionSaving]   = useState(false);
 
+  // ─── Delete state ────────────────────────────────────────────────────────
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting]           = useState(false);
+
   // ─── Drag & resize state ────────────────────────────────────────────────
-  const [pos, setPos]   = useState({ x: window.innerWidth / 2 - DEFAULT_W / 2, y: window.innerHeight / 2 - DEFAULT_H / 2 });
+  const initX = Math.max(20, Math.round(window.innerWidth  / 2 - DEFAULT_W / 2));
+  const initY = Math.max(20, Math.round(window.innerHeight / 2 - DEFAULT_H / 2));
+  const [pos, setPos]   = useState({ x: initX, y: initY });
   const [size, setSize] = useState({ w: DEFAULT_W, h: DEFAULT_H });
   const dragging        = useRef(false);
   const resizing        = useRef(false);
   const dragOffset      = useRef({ x: 0, y: 0 });
   const resizeStart     = useRef({ x: 0, y: 0, w: 0, h: 0 });
   const modalRef        = useRef<HTMLDivElement>(null);
+
+  // ─── ESC to close ────────────────────────────────────────────────────────
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (confirmDelete) { setConfirmDelete(false); return; }
+        if (completing)    { setCompleting(false); setErr(''); return; }
+        onClose();
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [onClose, confirmDelete, completing]);
 
   // ─── Drag handlers ──────────────────────────────────────────────────────
   const onDragStart = useCallback((e: React.MouseEvent) => {
@@ -323,7 +338,6 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
     if (!completionTitle.trim()) { setErr('Completion title is required'); return; }
     setCompletionSaving(true); setErr('');
     try {
-      // Insert completion record
       const { error: compErr } = await supabase.from('completion').insert({
         user_id:      userId,
         task_id:      taskId,
@@ -335,7 +349,6 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
       });
       if (compErr) throw compErr;
 
-      // Mark task complete
       const { error: taskErr } = await supabase.from('task').update({
         is_completed:  true,
         completed_at:  new Date().toISOString(),
@@ -348,6 +361,21 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
       setErr(e.message);
     } finally {
       setCompletionSaving(false);
+    }
+  };
+
+  // ─── Delete ───────────────────────────────────────────────────────────────
+  const handleDelete = async () => {
+    setDeleting(true); setErr('');
+    try {
+      const { error } = await supabase.from('task').delete().eq('task_id', taskId).eq('user_id', userId);
+      if (error) throw error;
+      onSaved();
+      onClose();
+    } catch (e: any) {
+      setErr(e.message);
+      setDeleting(false);
+      setConfirmDelete(false);
     }
   };
 
@@ -444,6 +472,19 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
               {err && <div style={{ color: '#ef4444', fontSize: '0.72rem', marginTop: '0.75rem' }}>{err}</div>}
             </div>
 
+          ) : confirmDelete ? (
+
+            // ─── DELETE CONFIRM ─────────────────────────────────────────────
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '1rem', padding: '2rem', textAlign: 'center' }}>
+              <div style={{ fontSize: '1.5rem', opacity: 0.4 }}>⚠</div>
+              <div style={{ color: '#ef4444', fontSize: '0.88rem', fontWeight: 600 }}>Delete this task?</div>
+              <div style={{ color: '#555', fontSize: '0.78rem', lineHeight: 1.6, maxWidth: 320 }}>
+                <strong style={{ color: '#aaa' }}>{task?.title}</strong> will be permanently deleted.
+                This cannot be undone.
+              </div>
+              {err && <div style={{ color: '#ef4444', fontSize: '0.72rem' }}>{err}</div>}
+            </div>
+
           ) : (
 
             // ─── TASK DETAIL FORM ───────────────────────────────────────────
@@ -515,10 +556,7 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
           {completing ? (
             // ─── COMPLETION FOOTER ────────────────────────────────────────
             <>
-              <button
-                onClick={() => { setCompleting(false); setErr(''); }}
-                style={cancelBtn}
-              >← back</button>
+              <button onClick={() => { setCompleting(false); setErr(''); }} style={cancelBtn}>← back</button>
               <button
                 onClick={handleCompleteConfirm}
                 disabled={completionSaving || !completionTitle.trim()}
@@ -527,16 +565,25 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
                 {completionSaving ? 'logging...' : '✓ log completion'}
               </button>
             </>
+          ) : confirmDelete ? (
+            // ─── DELETE FOOTER ────────────────────────────────────────────
+            <>
+              <button onClick={() => { setConfirmDelete(false); setErr(''); }} style={cancelBtn}>← cancel</button>
+              <button onClick={handleDelete} disabled={deleting} style={deleteBtn}>
+                {deleting ? 'deleting...' : '✕ delete forever'}
+              </button>
+            </>
           ) : (
             // ─── NORMAL FOOTER ────────────────────────────────────────────
             <>
-              <button
-                onClick={() => { setCompleting(true); setErr(''); }}
-                disabled={loading}
-                style={completeBtn}
-              >
-                ✓ complete
-              </button>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <button onClick={() => { setCompleting(true); setErr(''); }} disabled={loading} style={completeBtn}>
+                  ✓ complete
+                </button>
+                <button onClick={() => { setConfirmDelete(true); setErr(''); }} disabled={loading} style={ghostDeleteBtn}>
+                  ✕ delete
+                </button>
+              </div>
               <div style={{ display: 'flex', gap: '0.5rem' }}>
                 <button onClick={onClose} style={cancelBtn}>cancel</button>
                 <button onClick={handleSave} disabled={saving || loading} style={{ ...saveBtn, opacity: saving ? 0.6 : 1 }}>
@@ -599,4 +646,16 @@ const completeBtn: React.CSSProperties = {
   background: '#1a1000', border: '1px solid #3a2800', color: '#f97316',
   padding: '0.4rem 0.9rem', borderRadius: '4px', fontFamily: 'monospace',
   fontSize: '0.75rem', cursor: 'pointer',
+};
+
+const ghostDeleteBtn: React.CSSProperties = {
+  background: 'none', border: '1px solid #3a1a1a', color: '#7f1d1d',
+  padding: '0.4rem 0.9rem', borderRadius: '4px', fontFamily: 'monospace',
+  fontSize: '0.75rem', cursor: 'pointer',
+};
+
+const deleteBtn: React.CSSProperties = {
+  background: '#3a1a1a', border: '1px solid #7f1d1d', color: '#ef4444',
+  padding: '0.4rem 0.9rem', borderRadius: '4px', fontFamily: 'monospace',
+  fontSize: '0.75rem', cursor: 'pointer', fontWeight: 600,
 };
