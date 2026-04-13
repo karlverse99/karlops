@@ -58,8 +58,9 @@ export async function buildKarlContext(user_id: string): Promise<KarlContextBund
       .select('messages')
       .eq('user_id', user_id).maybeSingle(),
     db.from('task')
-      .select('task_id, title, bucket_key')
+      .select('task_id, title, bucket_key, sort_order')
       .eq('user_id', user_id).eq('is_completed', false).eq('is_archived', false)
+      .order('sort_order', { ascending: true, nullsFirst: false })
       .order('created_at', { ascending: true }),
     db.from('karl_observation')
       .select('content, observation_type')

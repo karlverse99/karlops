@@ -24,6 +24,7 @@ interface Task {
   context_id: string | null;
   task_status_id: string | null;
   target_date: string | null;
+  sort_order: number | null;
 }
 interface ChatMessage { role: 'user' | 'assistant'; content: string; timestamp: Date; }
 interface BucketDef { key: string; label: string; icon: string; color: string; accent: string; }
@@ -125,25 +126,38 @@ function TaskPill({ task, bucket, statusLabel, taskIndex, onClick, onDragStart }
 
 const DROPPABLE_BUCKETS = ['now', 'soon', 'realwork', 'later'];
 
-function BucketSection({ bucket, tasks, statusMap, onTaskClick, onDragStart, onDrop }: {
+function BucketSection({ bucket, tasks, statusMap, onTaskClick, onDragStart, onDrop, onReorder }: {
   bucket: BucketDef;
   tasks: Task[];
   statusMap: Record<string, string>;
   onTaskClick: (task: Task) => void;
   onDragStart: (task: Task) => void;
   onDrop: (bucketKey: string) => void;
+  onReorder: (taskId: string, newIndex: number, bucketTasks: Task[]) => void;
 }) {
   const defaultCollapsed = !['now', 'soon', 'realwork'].includes(bucket.key);
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
   const isDroppable = DROPPABLE_BUCKETS.includes(bucket.key);
 
   return (
     <div
       style={{ marginBottom: '1.25rem' }}
       onDragOver={e => { if (isDroppable) { e.preventDefault(); setIsDragOver(true); } }}
-      onDragLeave={() => setIsDragOver(false)}
-      onDrop={e => { e.preventDefault(); setIsDragOver(false); if (isDroppable) onDrop(bucket.key); }}
+      onDragLeave={e => {
+        // Only clear if leaving the bucket section entirely
+        if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+          setIsDragOver(false);
+          setDragOverIndex(null);
+        }
+      }}
+      onDrop={e => {
+        e.preventDefault();
+        setIsDragOver(false);
+        setDragOverIndex(null);
+        if (isDroppable) onDrop(bucket.key);
+      }}
     >
       <div
         onClick={() => setCollapsed(c => !c)}
@@ -160,15 +174,31 @@ function BucketSection({ bucket, tasks, statusMap, onTaskClick, onDragStart, onD
           {tasks.length === 0
             ? <div style={{ color: '#444', fontSize: '0.75rem', paddingLeft: '1rem', paddingBottom: '0.25rem' }}>empty</div>
             : tasks.map((task, idx) => (
-                <TaskPill
+                <div
                   key={task.id}
-                  task={task}
-                  bucket={bucket}
-                  statusLabel={task.task_status_id ? statusMap[task.task_status_id] : undefined}
-                  taskIndex={idx + 1}
-                  onClick={() => onTaskClick(task)}
-                  onDragStart={onDragStart}
-                />
+                  onDragOver={e => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setDragOverIndex(idx);
+                  }}
+                  onDrop={e => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setDragOverIndex(null);
+                    setIsDragOver(false);
+                    onReorder(task.id, idx, tasks);
+                  }}
+                  style={{ borderTop: dragOverIndex === idx ? `2px solid ${bucket.color}` : '2px solid transparent', transition: 'border-color 0.1s' }}
+                >
+                  <TaskPill
+                    task={task}
+                    bucket={bucket}
+                    statusLabel={task.task_status_id ? statusMap[task.task_status_id] : undefined}
+                    taskIndex={idx + 1}
+                    onClick={() => onTaskClick(task)}
+                    onDragStart={onDragStart}
+                  />
+                </div>
               ))
           }
         </div>
@@ -372,11 +402,12 @@ export default function WorkspacePage() {
   const loadTasks = async (userId: string) => {
     const { data: taskData } = await supabase
       .from('task')
-      .select('task_id, title, bucket_key, tags, is_completed, is_archived, created_at, context_id, task_status_id, target_date')
+      .select('task_id, title, bucket_key, tags, is_completed, is_archived, created_at, context_id, task_status_id, target_date, sort_order')
       .eq('user_id', userId)
       .eq('is_completed', false)
       .eq('is_archived', false)
-      .order('created_at', { ascending: false });
+      .order('sort_order', { ascending: true, nullsFirst: false })
+      .order('created_at', { ascending: true });
 
     if (taskData) setTasks(taskData.map((t: any) => ({ ...t, id: t.task_id })));
   };
@@ -532,7 +563,7 @@ export default function WorkspacePage() {
 
     const { error } = await supabase
       .from('task')
-      .update({ bucket_key: targetBucketKey })
+      .update({ bucket_key: targetBucketKey, sort_order: null })
       .eq('task_id', task.id)
       .eq('user_id', koUser.id);
 
@@ -542,7 +573,42 @@ export default function WorkspacePage() {
     }
   };
 
-  // ─── Error state ───────────────────────────────────────────────────────────
+  // ─── Reorder within bucket ────────────────────────────────────────────────────
+
+  const handleReorder = async (dropTargetId: string, dropIndex: number, bucketTasks: Task[]) => {
+    const draggedId = draggedTask.current?.id;
+    draggedTask.current = null;
+    if (!draggedId || !koUser) return;
+    if (draggedId === dropTargetId) return; // dropped on self
+
+    // Find dragged task's current index
+    const draggedIndex = bucketTasks.findIndex(t => t.id === draggedId);
+    if (draggedIndex === -1) return; // dragged from different bucket — let cross-bucket handle it
+
+    // Build new order
+    const reordered = [...bucketTasks];
+    const [moved] = reordered.splice(draggedIndex, 1);
+    const insertAt = draggedIndex < dropIndex ? dropIndex - 1 : dropIndex;
+    reordered.splice(insertAt, 0, moved);
+
+    // Optimistic update
+    setTasks(prev => {
+      const otherTasks = prev.filter(t => t.bucket_key !== moved.bucket_key);
+      return [...otherTasks, ...reordered];
+    });
+
+    // Write sort_order for all affected tasks
+    await Promise.all(
+      reordered.map((t, i) =>
+        supabase.from('task')
+          .update({ sort_order: i })
+          .eq('task_id', t.id)
+          .eq('user_id', koUser.id)
+      )
+    );
+  };
+
+  // ─── Error state ───────────────────────────────────────────────────────────────
 
   if (sessionError) {
     return (
@@ -737,6 +803,7 @@ export default function WorkspacePage() {
                     onTaskClick={task => setSelectedTask(task)}
                     onDragStart={handleDragStart}
                     onDrop={handleDrop}
+                    onReorder={handleReorder}
                   />
                 ))}
               </>
