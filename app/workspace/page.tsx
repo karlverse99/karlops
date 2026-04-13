@@ -421,8 +421,7 @@ export default function WorkspacePage() {
   };
 
   const loadContexts = async (userId: string) => {
-    const { data } = await supabase.from('context').select('context_id, name').eq('user_id', userId).eq('is_archived', false).eq('is_visible', true).order('name');
-
+    
     if (data) setContexts(data);
   };
 
