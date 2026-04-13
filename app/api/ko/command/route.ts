@@ -6,6 +6,7 @@ import { createSupabaseAdmin } from '@/lib/supabase-server';
 import { routeCommand } from '@/lib/ko/commandRouter';
 import { captureTask } from '@/lib/ko/commands/captureTask';
 import { captureCompletion } from '@/lib/ko/commands/captureCompletion';
+import { writeKarlObservation } from '@/lib/ko/buildKarlContext';
 
 async function getUser(req: NextRequest) {
   const token = req.headers.get('authorization')?.replace('Bearer ', '');
@@ -30,6 +31,14 @@ export async function POST(req: NextRequest) {
       if (pending.intent === 'capture_task') {
         const result = await captureTask(user.id, pending.payload);
         if (!result.success) throw new Error(result.error);
+
+        // Log capture as a factual pattern observation (fire and forget)
+        writeKarlObservation(
+          user.id,
+          `User captured task: "${result.task?.title}"`,
+          'pattern'
+        ).catch(err => console.error('[command/route] observation write failed:', err));
+
         return NextResponse.json({
           success: true,
           intent: 'capture_task',
@@ -49,6 +58,14 @@ export async function POST(req: NextRequest) {
 
         if (success.length === 0) throw new Error('All captures failed');
 
+        // Log bulk capture as a factual pattern observation (fire and forget)
+        const capturedTitles = success.map(r => `"${r.task?.title}"`).join(', ');
+        writeKarlObservation(
+          user.id,
+          `User bulk-captured ${success.length} task${success.length > 1 ? 's' : ''}: ${capturedTitles}`,
+          'pattern'
+        ).catch(err => console.error('[command/route] observation write failed:', err));
+
         return NextResponse.json({
           success: true,
           intent: 'capture_tasks',
@@ -63,6 +80,14 @@ export async function POST(req: NextRequest) {
       if (pending.intent === 'capture_completion') {
         const result = await captureCompletion(user.id, pending.payload);
         if (!result.success) throw new Error(result.error);
+
+        // Log completion as a factual pattern observation (fire and forget)
+        writeKarlObservation(
+          user.id,
+          `User logged completion: "${result.completion?.title}"${pending.payload.outcome ? ` — outcome: "${pending.payload.outcome}"` : ''}`,
+          'pattern'
+        ).catch(err => console.error('[command/route] observation write failed:', err));
+
         return NextResponse.json({
           success: true,
           intent: 'capture_completion',

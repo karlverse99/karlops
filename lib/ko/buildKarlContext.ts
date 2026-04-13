@@ -15,6 +15,7 @@ export interface KarlContextBundle {
   recentMessages: ChatMessage[]; // last N messages from ko_session
   bucketSnapshot: string;        // open tasks with identifiers by bucket
   recentCompletions: string;     // recent completion titles (windowed)
+  observations: string;          // Karl's running notes on user patterns
 }
 
 export interface KarlDeepBundle extends KarlContextBundle {
@@ -31,6 +32,9 @@ const BUCKET_PREFIX: Record<string, string> = {
   delegate: 'D',
   capture:  'CP',
 };
+
+// Max active observations per user — prune oldest on insert if exceeded
+const MAX_OBSERVATIONS = 50;
 
 // ── Base context — every Karl call ────────────────────────────────────────────
 export async function buildKarlContext(user_id: string): Promise<KarlContextBundle> {
@@ -82,7 +86,6 @@ export async function buildKarlContext(user_id: string): Promise<KarlContextBund
     const prefix = BUCKET_PREFIX[bucket] ?? bucket;
 
     if (bucket === 'capture') {
-      // Capture: count only — no point listing uncurated tasks in every prompt
       snapshotLines.push(`capture: ${items.length} uncurated tasks`);
     } else {
       snapshotLines.push(`${bucket}:`);
@@ -110,11 +113,25 @@ export async function buildKarlContext(user_id: string): Promise<KarlContextBund
     ? completions.map(c => `- ${c.title} (${c.completed_at?.slice(0, 10)})`).join('\n')
     : 'none in window';
 
+  // Karl's observations — active only, most recent first
+  const { data: obsRows } = await db
+    .from('karl_observation')
+    .select('content, observation_type, created_at')
+    .eq('user_id', user_id)
+    .eq('is_active', true)
+    .order('created_at', { ascending: false })
+    .limit(MAX_OBSERVATIONS);
+
+  const observations = obsRows?.length
+    ? obsRows.map(o => `[${o.observation_type}] ${o.content}`).join('\n')
+    : '';
+
   return {
     situationBrief,
     recentMessages,
     bucketSnapshot,
     recentCompletions,
+    observations,
   };
 }
 
@@ -189,6 +206,10 @@ export function formatContextForPrompt(bundle: KarlContextBundle): string {
   parts.push(`## Current Task Load\nTasks are identified as BucketN (e.g. N1, S2, RW1, L1, D1) for reference in commands.\n${bundle.bucketSnapshot}`);
   parts.push(`## Recent Completions\n${bundle.recentCompletions}`);
 
+  if (bundle.observations) {
+    parts.push(`## Karl's Observations\nThese are notes you've written about this user's patterns and preferences. Use them to inform your responses.\n${bundle.observations}`);
+  }
+
   if ('fullCompletions' in bundle) {
     const deep = bundle as KarlDeepBundle;
     parts.push(`## Completion Detail (Evidence Record)\n${deep.fullCompletions}`);
@@ -196,6 +217,50 @@ export function formatContextForPrompt(bundle: KarlContextBundle): string {
   }
 
   return parts.join('\n\n');
+}
+
+// ── Write a Karl observation — service role only, prunes to MAX_OBSERVATIONS ──
+export async function writeKarlObservation(
+  user_id: string,
+  content: string,
+  observation_type: 'pattern' | 'preference' | 'flag' = 'pattern',
+  tags: string[] = []
+): Promise<void> {
+  const db = createSupabaseAdmin();
+
+  // Count active observations for this user
+  const { count } = await db
+    .from('karl_observation')
+    .select('observation_id', { count: 'exact', head: true })
+    .eq('user_id', user_id)
+    .eq('is_active', true);
+
+  // Prune oldest if at or over the limit
+  if ((count ?? 0) >= MAX_OBSERVATIONS) {
+    const { data: oldest } = await db
+      .from('karl_observation')
+      .select('observation_id')
+      .eq('user_id', user_id)
+      .eq('is_active', true)
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (oldest) {
+      await db
+        .from('karl_observation')
+        .update({ is_active: false })
+        .eq('observation_id', oldest.observation_id);
+    }
+  }
+
+  // Insert new observation
+  await db.from('karl_observation').insert({
+    user_id,
+    content,
+    observation_type,
+    tags,
+  });
 }
 
 // ── Append a message to session history ──────────────────────────────────────
@@ -226,8 +291,7 @@ export async function appendSessionMessage(
 
   messages.push({ role, content, ts: new Date().toISOString() });
 
-  // Trim to depth — keep the story but cap the cost
-  const trimmed = messages.slice(-maxDepth * 2); // *2 because each exchange is 2 messages
+  const trimmed = messages.slice(-maxDepth * 2);
 
   await db
     .from('ko_session')

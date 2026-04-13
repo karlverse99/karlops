@@ -7,6 +7,7 @@ import {
   buildKarlDeepContext,
   formatContextForPrompt,
   appendSessionMessage,
+  writeKarlObservation,
 } from '@/lib/ko/buildKarlContext';
 
 export type IntentType =
@@ -120,6 +121,15 @@ export async function routeCommand(
       '- Never pretend inference is fact.',
       '- If the user has no situation brief, gently prompt them to write one.',
       '',
+      isDeep ? [
+        '## Observation Instruction',
+        'Because this is an analysis call, you MUST include an "observation" field in your JSON response.',
+        'Write 1-2 sentences capturing a pattern, preference, or flag you noticed about this user from the data.',
+        'This will be stored as a running note for future calls. Be specific and factual, not generic.',
+        'Example: "User consistently completes communication tasks but lets technical tasks age in realwork."',
+        'observation_type must be one of: pattern, preference, flag',
+        '',
+      ].join('\n') : '',
       '## Response Format',
       'Respond ONLY with valid JSON.',
       '',
@@ -132,8 +142,9 @@ export async function routeCommand(
       'For completion:',
       '{ "intent": "capture_completion", "title": "what was completed", "outcome": "what happened / result", "response": "Karl\'s response" }',
       '',
-      'For question/command/unclear:',
-      '{ "intent": "question", "response": "Karl\'s conversational response" }',
+      isDeep
+        ? 'For question/command/unclear (analysis call — observation required):\n{ "intent": "question", "response": "Karl\'s conversational response", "observation": "1-2 sentence pattern note", "observation_type": "pattern" }'
+        : 'For question/command/unclear:\n{ "intent": "question", "response": "Karl\'s conversational response" }',
     ].join('\n');
 
     const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -168,6 +179,18 @@ export async function routeCommand(
     // ── Persist exchange to session history ────────────────────────────────
     await appendSessionMessage(user_id, 'user', input);
     await appendSessionMessage(user_id, 'karl', karlResponse);
+
+    // ── Write observation after analysis calls (fire and forget) ──────────
+    if (isDeep && parsed.observation) {
+      const obsType = (['pattern', 'preference', 'flag'] as const)
+        .includes(parsed.observation_type)
+        ? parsed.observation_type as 'pattern' | 'preference' | 'flag'
+        : 'pattern';
+
+      writeKarlObservation(user_id, parsed.observation, obsType).catch(err =>
+        console.error('[commandRouter] observation write failed:', err)
+      );
+    }
 
     // ── Return result ──────────────────────────────────────────────────────
     if (intent === 'capture_task') {
