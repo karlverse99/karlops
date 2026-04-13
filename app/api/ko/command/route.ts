@@ -16,6 +16,16 @@ async function getUser(req: NextRequest) {
   return user;
 }
 
+// Human-readable bucket label for confirmation messages
+const BUCKET_LABEL: Record<string, string> = {
+  now:      'On Fire (now)',
+  soon:     'Up Next (soon)',
+  realwork: 'Real Work',
+  later:    'Later',
+  delegate: 'Delegated',
+  capture:  'Capture',
+};
+
 export async function POST(req: NextRequest) {
   const user = await getUser(req);
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -32,10 +42,12 @@ export async function POST(req: NextRequest) {
         const result = await captureTask(user.id, pending.payload);
         if (!result.success) throw new Error(result.error);
 
-        // Log capture as a factual pattern observation (fire and forget)
+        const bucketLabel = BUCKET_LABEL[result.task?.bucket_key ?? 'capture'] ?? result.task?.bucket_key ?? 'capture';
+        const tagNote = result.task?.tags?.length ? ` · tags: ${result.task.tags.join(', ')}` : '';
+
         writeKarlObservation(
           user.id,
-          `User captured task: "${result.task?.title}"`,
+          `User captured task: "${result.task?.title}" → ${bucketLabel}${tagNote}`,
           'pattern'
         ).catch(err => console.error('[command/route] observation write failed:', err));
 
@@ -43,22 +55,25 @@ export async function POST(req: NextRequest) {
           success: true,
           intent: 'capture_task',
           task: result.task,
-          response: `Captured — **${result.task?.title}** is in your capture bucket.`,
+          response: `Captured — **${result.task?.title}** → ${bucketLabel}${tagNote}.`,
         });
       }
 
-      // Bulk task capture
+      // Bulk task capture — now supports full enrichment per task
       if (pending.intent === 'capture_tasks') {
-        const titles: string[] = pending.payload.titles ?? [];
+        // Support both new `tasks` array (enriched) and legacy `titles` array
+        const taskPayloads = pending.payload.tasks
+          ?? (pending.payload.titles ?? []).map((title: string) => ({ title }));
+
         const results = await Promise.all(
-          titles.map(title => captureTask(user.id, { title }))
+          taskPayloads.map((t: any) => captureTask(user.id, typeof t === 'string' ? { title: t } : t))
         );
+
         const failed  = results.filter(r => !r.success);
         const success = results.filter(r => r.success);
 
         if (success.length === 0) throw new Error('All captures failed');
 
-        // Log bulk capture as a factual pattern observation (fire and forget)
         const capturedTitles = success.map(r => `"${r.task?.title}"`).join(', ');
         writeKarlObservation(
           user.id,
@@ -72,7 +87,7 @@ export async function POST(req: NextRequest) {
           tasks: success.map(r => r.task),
           response: failed.length > 0
             ? `Captured ${success.length} task${success.length > 1 ? 's' : ''}. ${failed.length} failed.`
-            : `Captured ${success.length} task${success.length > 1 ? 's' : ''} into your capture bucket.`,
+            : `Captured ${success.length} task${success.length > 1 ? 's' : ''}.`,
         });
       }
 
@@ -81,7 +96,6 @@ export async function POST(req: NextRequest) {
         const result = await captureCompletion(user.id, pending.payload);
         if (!result.success) throw new Error(result.error);
 
-        // Log completion as a factual pattern observation (fire and forget)
         writeKarlObservation(
           user.id,
           `User logged completion: "${result.completion?.title}"${pending.payload.outcome ? ` — outcome: "${pending.payload.outcome}"` : ''}`,

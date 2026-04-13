@@ -1,5 +1,5 @@
 // lib/ko/commandRouter.ts
-// KarlOps L — Intent classification and field extraction
+// KarlOps L — Intent classification, field extraction, and enrichment
 
 import { createSupabaseAdmin } from '@/lib/supabase-server';
 import {
@@ -8,6 +8,7 @@ import {
   formatContextForPrompt,
   appendSessionMessage,
   writeKarlObservation,
+  upsertKarlVocab,
 } from '@/lib/ko/buildKarlContext';
 
 export type IntentType =
@@ -33,7 +34,6 @@ interface FieldMeta {
   insert_behavior: string;
 }
 
-// Analysis keywords — trigger deep context pull
 const ANALYSIS_TRIGGERS = [
   'analyze', 'analysis', 'review', 'summarize', 'summary',
   'make the case', 'what have i done', 'show me', 'evidence',
@@ -53,7 +53,7 @@ export async function routeCommand(
   const db = createSupabaseAdmin();
 
   try {
-    // ── Load capturable object types from field metadata ───────────────────
+    // ── Load field metadata ────────────────────────────────────────────────
     const { data: allMeta } = await db
       .from('ko_field_metadata')
       .select('object_type, field, label, field_type, insert_behavior')
@@ -70,7 +70,7 @@ export async function routeCommand(
 
     const contextBlock = formatContextForPrompt(bundle);
 
-    // ── Build conversation history for Anthropic messages array ───────────
+    // ── Build Anthropic messages array ────────────────────────────────────
     const anthropicMessages: { role: 'user' | 'assistant'; content: string }[] = [
       ...bundle.recentMessages.map(m => ({
         role: (m.role === 'karl' ? 'assistant' : 'user') as 'user' | 'assistant',
@@ -78,20 +78,18 @@ export async function routeCommand(
       })),
       { role: 'user', content: input },
     ];
-
-    // Anthropic requires the first message to be role: 'user'
     while (anthropicMessages.length > 1 && anthropicMessages[0].role === 'assistant') {
       anthropicMessages.shift();
     }
 
-    // ── Call Anthropic ─────────────────────────────────────────────────────
+    // ── System prompt ──────────────────────────────────────────────────────
     const systemPrompt = [
       'You are Karl, an operational assistant inside KarlOps — a personal pressure system for getting things done.',
       '',
       contextBlock,
       '',
       '## Your Job',
-      'Classify user input and extract structured data, informed by the user\'s situation and history above.',
+      'Classify user input, extract structured data, and enrich tasks with full metadata when provided.',
       '',
       '## Available Object Types',
       objectSummaries,
@@ -101,52 +99,64 @@ export async function routeCommand(
       'When the user references a task by identifier or title, use it to act on that specific task.',
       '',
       '## Intent Classification',
-      'Classify into one of these intents:',
-      '- capture_task: A single clear action item. Extract a concise title.',
-      '- capture_tasks: Multiple action items in one message. Extract all titles.',
-      '- capture_completion: User is logging something they completed or accomplished. Extract title and outcome.',
-      '- question: User is asking for information or analysis. Answer using their situation and history.',
-      '- command: Explicit system command (show, list, update, delete, move, etc.)',
-      '- unclear: Ambiguous — needs more info.',
+      '- capture_task: A single clear action item.',
+      '- capture_tasks: Multiple action items in one message.',
+      '- capture_completion: User is logging something they completed.',
+      '- question: User is asking for information or analysis.',
+      '- command: Explicit system command (move, delegate, delete, update, etc.)',
+      '- unclear: Ambiguous — ask for clarification.',
+      '',
+      '## Primary Vocabulary (always recognised)',
+      'These phrases map to fields. Resolve them against Available Tags and Available Contexts above.',
+      '- "bucket X" or "put it in X" or "X bucket" → bucket_key',
+      '  Valid bucket keys: now, soon, realwork, later, delegate, capture',
+      '  Common aliases: "fire" or "on fire" → now, "up next" → soon, "real work" → realwork',
+      '- "code it to X" or "context X" → context_id (resolve X against Available Contexts, return the UUID)',
+      '- "tag it X" or "tagged X" or "tag X" → tags array (resolve X against Available Tags, use exact name)',
+      '- "by DATE" or "due DATE" or "target DATE" → target_date (ISO format YYYY-MM-DD)',
+      '- "delegate to X" or "delegated to X" → delegated_to (person name)',
+      '',
+      '## Enrichment Rules',
+      '- Always attempt to extract bucket, context_id, tags, and target_date from the input.',
+      '- Only use tags from the Available Tags list. If the user names a tag that does not exist, note it in your response and omit it from the payload — do not invent tags.',
+      '- Only use context_id UUIDs from the Available Contexts list. Match by name (case-insensitive). Return the UUID, not the name.',
+      '- If bucket is not specified, use "capture".',
+      '- If multiple tasks are described, extract ALL of them — apply the same metadata to each.',
+      '- For task generation requests ("give me steps to X", "list tasks for Y"), generate the task titles yourself and apply the provided metadata to all of them.',
       '',
       '## Rules',
-      '- Be conservative. Commentary, opinions, or meta-statements = question or unclear.',
-      '- Only capture_* if there are clear actionable items or completions.',
-      '- "I just did X", "I finished X", "I completed X", "log that I did X" → capture_completion.',
+      '- Be conservative on intent. Commentary = question or unclear.',
+      '- "I just did X", "I finished X", "I completed X" → capture_completion.',
       '- Extract the most concise title possible.',
-      '- For capture_tasks, extract ALL distinct tasks from the input.',
-      '- Never capture philosophical statements or system commentary as tasks.',
-      '- For questions and analysis, use the user\'s situation brief and history to give situated, specific answers.',
-      '- Pattern for analysis: "Based on what I see — [fact from data]. My read — [inference]."',
+      '- Never capture philosophical statements as tasks.',
+      '- For questions and analysis, use the situation brief and history for situated answers.',
+      '- Pattern for analysis: "Based on what I see — [fact]. My read — [inference]."',
       '- Never pretend inference is fact.',
-      '- If the user has no situation brief, gently prompt them to write one.',
+      '- If no situation brief, gently prompt the user to write one.',
       '',
       isDeep ? [
         '## Observation Instruction',
-        'Because this is an analysis call, you MUST include an "observation" field in your JSON response.',
-        'Write 1-2 sentences capturing a pattern, preference, or flag you noticed about this user from the data.',
-        'This will be stored as a running note for future calls. Be specific and factual, not generic.',
-        'Example: "User consistently completes communication tasks but lets technical tasks age in realwork."',
-        'observation_type must be one of: pattern, preference, flag',
+        'Include an "observation" field — 1-2 sentences capturing a pattern you noticed.',
+        'observation_type: pattern | preference | flag',
         '',
       ].join('\n') : '',
-      '## Response Format',
-      'Respond ONLY with valid JSON.',
+      '## Response Format — ONLY valid JSON, no markdown fences',
       '',
-      'For single task:',
-      '{ "intent": "capture_task", "title": "concise task title", "response": "Karl\'s response" }',
+      'Single task:',
+      '{ "intent": "capture_task", "title": "concise title", "bucket_key": "soon", "context_id": "uuid-or-null", "tags": ["Tag1"], "target_date": "2026-04-20 or null", "delegated_to": "name or null", "response": "Karl\'s response", "recognised_phrase": "the key phrase that triggered this" }',
       '',
-      'For multiple tasks:',
-      '{ "intent": "capture_tasks", "titles": ["task one", "task two"], "summary": "X tasks found", "response": "Karl\'s response listing what was found" }',
+      'Multiple tasks:',
+      '{ "intent": "capture_tasks", "tasks": [{ "title": "task one", "bucket_key": "soon", "context_id": "uuid-or-null", "tags": ["Tag1"], "target_date": null, "delegated_to": null }], "summary": "X tasks found", "response": "Karl\'s response listing what was captured", "recognised_phrase": "the key phrase" }',
       '',
-      'For completion:',
-      '{ "intent": "capture_completion", "title": "what was completed", "outcome": "what happened / result", "response": "Karl\'s response" }',
+      'Completion:',
+      '{ "intent": "capture_completion", "title": "what was completed", "outcome": "result", "response": "Karl\'s response" }',
       '',
       isDeep
-        ? 'For question/command/unclear (analysis call — observation required):\n{ "intent": "question", "response": "Karl\'s conversational response", "observation": "1-2 sentence pattern note", "observation_type": "pattern" }'
-        : 'For question/command/unclear:\n{ "intent": "question", "response": "Karl\'s conversational response" }',
+        ? 'Question/command/unclear (analysis): { "intent": "question", "response": "Karl\'s response", "observation": "pattern note", "observation_type": "pattern" }'
+        : 'Question/command/unclear: { "intent": "question", "response": "Karl\'s response" }',
     ].join('\n');
 
+    // ── Call Anthropic ─────────────────────────────────────────────────────
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -156,7 +166,7 @@ export async function routeCommand(
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: isDeep ? 1500 : 500,
+        max_tokens: isDeep ? 1500 : 800,
         system: systemPrompt,
         messages: anthropicMessages,
       }),
@@ -176,17 +186,22 @@ export async function routeCommand(
     const intent = parsed.intent as IntentType;
     const karlResponse = parsed.response ?? "I'm not sure what to do with that.";
 
-    // ── Persist exchange to session history ────────────────────────────────
+    // ── Persist exchange ───────────────────────────────────────────────────
     await appendSessionMessage(user_id, 'user', input);
     await appendSessionMessage(user_id, 'karl', karlResponse);
 
-    // ── Write observation after analysis calls (fire and forget) ──────────
+    // ── Write vocab (fire and forget) ─────────────────────────────────────
+    if (parsed.recognised_phrase && (intent === 'capture_task' || intent === 'capture_tasks')) {
+      upsertKarlVocab(user_id, parsed.recognised_phrase, intent, 'task').catch(err =>
+        console.error('[commandRouter] vocab write failed:', err)
+      );
+    }
+
+    // ── Write observation after analysis (fire and forget) ────────────────
     if (isDeep && parsed.observation) {
-      const obsType = (['pattern', 'preference', 'flag'] as const)
-        .includes(parsed.observation_type)
+      const obsType = (['pattern', 'preference', 'flag'] as const).includes(parsed.observation_type)
         ? parsed.observation_type as 'pattern' | 'preference' | 'flag'
         : 'pattern';
-
       writeKarlObservation(user_id, parsed.observation, obsType).catch(err =>
         console.error('[commandRouter] observation write failed:', err)
       );
@@ -196,15 +211,27 @@ export async function routeCommand(
     if (intent === 'capture_task') {
       return {
         intent: 'capture_task',
-        payload: { title: parsed.title },
+        payload: {
+          title:        parsed.title,
+          bucket_key:   parsed.bucket_key   ?? 'capture',
+          context_id:   parsed.context_id   ?? null,
+          tags:         parsed.tags         ?? [],
+          target_date:  parsed.target_date  ?? null,
+          delegated_to: parsed.delegated_to ?? null,
+        },
         response: karlResponse,
       };
     }
 
     if (intent === 'capture_tasks') {
+      // Support both old `titles` array and new `tasks` array with full enrichment
+      const tasks = parsed.tasks ?? parsed.titles?.map((t: string) => ({ title: t })) ?? [];
       return {
         intent: 'capture_tasks',
-        payload: { titles: parsed.titles, summary: parsed.summary ?? `${parsed.titles?.length} tasks` },
+        payload: {
+          tasks,
+          summary: parsed.summary ?? `${tasks.length} tasks`,
+        },
         response: karlResponse,
       };
     }
@@ -220,10 +247,7 @@ export async function routeCommand(
       };
     }
 
-    return {
-      intent,
-      response: karlResponse,
-    };
+    return { intent, response: karlResponse };
 
   } catch (err: any) {
     console.error('[commandRouter]', err);
@@ -238,10 +262,7 @@ function buildObjectSummaries(meta: FieldMeta[]): string {
     byType[f.object_type].push(f);
   }
   return Object.entries(byType).map(([type, fields]) => {
-    const required = fields
-      .filter(f => f.insert_behavior === 'required')
-      .map(f => f.label)
-      .join(', ');
+    const required = fields.filter(f => f.insert_behavior === 'required').map(f => f.label).join(', ');
     return `- ${type}: required fields are ${required}`;
   }).join('\n');
 }
