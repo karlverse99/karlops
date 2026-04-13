@@ -133,6 +133,8 @@ export async function routeCommand(
       '- Pattern for analysis: "Based on what I see — [fact]. My read — [inference]."',
       '- Never pretend inference is fact.',
       '- If no situation brief, gently prompt the user to write one.',
+      '- CRITICAL: When you have enough information to capture, ALWAYS return capture_task or capture_tasks — NEVER return question or unclear. Do not ask the user to confirm or preview what you are about to propose. The UI handles confirmation.',
+      '- CRITICAL: In your response field, always use FUTURE tense for captures — say "Here\'s what I\'ll add..." or "Ready to capture..." NOT "Captured..." or "Added...". The user has not confirmed yet.',
       '',
       isDeep ? [
         '## Observation Instruction',
