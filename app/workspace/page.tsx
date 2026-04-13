@@ -226,79 +226,6 @@ function ChatBubble({ msg }: { msg: ChatMessage }) {
   );
 }
 
-// ─── COMPONENTS: CaptureModal (kept until TaskAddModal verified) ──────────────
-
-function CaptureModal({ onClose, onCapture }: { onClose: () => void; onCapture: (titles: string[]) => Promise<void> }) {
-  const [value, setValue]   = useState('');
-  const [saving, setSaving] = useState(false);
-  const [err, setErr]       = useState('');
-
-  const parseTitles = (raw: string): string[] =>
-    raw.split(',').map(t => t.trim()).filter(t => t.length > 0);
-
-  const previews = parseTitles(value);
-
-  const handleSubmit = async () => {
-    if (previews.length === 0) { setErr('Enter at least one task'); return; }
-    setSaving(true); setErr('');
-    try { await onCapture(previews); onClose(); }
-    catch (e: any) { setErr(e.message); }
-    finally { setSaving(false); }
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSubmit(); }
-    if (e.key === 'Escape') onClose();
-  };
-
-  return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100 }}>
-      <div style={{ background: '#0d0d0d', border: '1px solid #222', borderRadius: '8px', padding: '1.5rem', width: '520px', fontFamily: 'monospace' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem' }}>
-          <span style={{ color: '#fff', fontSize: '0.85rem', fontWeight: 600 }}>Quick Capture</span>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: '0.8rem' }}>✕</button>
-        </div>
-        <div style={{ marginBottom: '0.75rem' }}>
-          <div style={{ color: '#555', fontSize: '0.65rem', marginBottom: '0.35rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-            Task(s)<span style={{ color: '#ef4444' }}>*</span>
-            <span style={{ color: '#333', marginLeft: '0.5rem', textTransform: 'none', letterSpacing: 0 }}>— separate multiple with commas</span>
-          </div>
-          <textarea
-            autoFocus
-            value={value}
-            onChange={e => setValue(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Call Jennifer, Review Q1 numbers, Fix the login bug..."
-            rows={3}
-            style={{ width: '100%', background: '#111', border: '1px solid #333', color: '#e5e5e5', padding: '0.6rem 0.75rem', borderRadius: '6px', fontFamily: 'monospace', fontSize: '0.85rem', outline: 'none', boxSizing: 'border-box', resize: 'vertical' }}
-            onFocus={e => (e.target.style.borderColor = '#555')}
-            onBlur={e => (e.target.style.borderColor = '#333')}
-          />
-        </div>
-        {previews.length > 0 && (
-          <div style={{ marginBottom: '1rem' }}>
-            <div style={{ color: '#555', fontSize: '0.65rem', marginBottom: '0.35rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-              {previews.length} task{previews.length > 1 ? 's' : ''} to capture
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-              {previews.map((t, i) => (
-                <div key={i} style={{ color: '#4ade80', fontSize: '0.75rem', padding: '0.2rem 0.5rem', background: '#0d1a0d', border: '1px solid #1a3a1a', borderRadius: '4px' }}>{t}</div>
-              ))}
-            </div>
-          </div>
-        )}
-        {err && <div style={{ color: '#ef4444', fontSize: '0.72rem', marginBottom: '0.75rem' }}>{err}</div>}
-        <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
-          <button onClick={onClose} style={{ background: 'none', border: '1px solid #333', color: '#666', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer' }}>cancel</button>
-          <button onClick={handleSubmit} disabled={saving || previews.length === 0}
-            style={{ background: previews.length > 0 ? '#1a2a1a' : '#111', border: `1px solid ${previews.length > 0 ? '#2a4a2a' : '#1a1a1a'}`, color: previews.length > 0 ? '#4ade80' : '#555', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: previews.length > 0 ? 'pointer' : 'not-allowed' }}
-          >{saving ? '...' : `capture ${previews.length > 1 ? `${previews.length} tasks` : 'task'}`}</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ─── PAGE: WorkspacePage ─────────────────────────────────────────────────────
 
 export default function WorkspacePage() {
@@ -318,7 +245,6 @@ export default function WorkspacePage() {
   const [thinking, setThinking]               = useState(false);
   const [pending, setPending]                 = useState<PendingAction | null>(null);
   const [accessToken, setAccessToken]         = useState('');
-  const [showCapture, setShowCapture]         = useState(false);
   const [showTaskAdd, setShowTaskAdd]         = useState(false);
   const [showCompletions, setShowCompletions] = useState(false);
   const [showMeetings, setShowMeetings]       = useState(false);
@@ -592,22 +518,6 @@ export default function WorkspacePage() {
     window.location.href = '/login';
   };
 
-  const handleModalCapture = async (titles: string[]) => {
-    const res = await fetch('/api/ko/command', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
-      body: JSON.stringify({ confirm: true, pending: { intent: 'capture_tasks', payload: { titles } } }),
-    });
-    const data = await res.json();
-    if (!data.success) throw new Error(data.error ?? 'Capture failed');
-    if (koUser) await loadTasks(koUser.id);
-    addMessage('assistant',
-      titles.length === 1
-        ? `Captured — **${titles[0]}** is in your capture bucket.`
-        : `Captured ${titles.length} tasks into your capture bucket.`
-    );
-  };
-
   const handleDragStart = (task: Task) => {
     draggedTask.current = task;
   };
@@ -659,7 +569,6 @@ export default function WorkspacePage() {
     <div style={{ minHeight: '100vh', height: '100vh', display: 'flex', flexDirection: 'column', background: '#0a0a0a', fontFamily: 'monospace', overflow: 'hidden' }}>
 
       {/* MODALS */}
-      {showCapture && <CaptureModal onClose={() => setShowCapture(false)} onCapture={handleModalCapture} />}
       {showTaskAdd && koUser && (
         <TaskAddModal
           userId={koUser.id}
@@ -736,19 +645,12 @@ export default function WorkspacePage() {
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
 
-            {/* +capture (legacy — kept until TaskAddModal verified) */}
-            <button onClick={() => setShowCapture(true)}
-              style={{ background: '#0d1a0d', border: '1px solid #2a4a2a', color: '#4ade80', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
-              onMouseEnter={e => (e.currentTarget.style.background = '#1a2a1a')}
-              onMouseLeave={e => (e.currentTarget.style.background = '#0d1a0d')}
-            >+capture</button>
-
-            {/* +add task (new TaskAddModal) */}
+            {/* +add task(s) */}
             <button onClick={() => setShowTaskAdd(true)}
               style={{ background: '#0d1a14', border: '1px solid #10b981', color: '#10b981', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
               onMouseEnter={e => (e.currentTarget.style.background = '#0f2a20')}
               onMouseLeave={e => (e.currentTarget.style.background = '#0d1a14')}
-            >+add task</button>
+            >+add task(s)</button>
 
             {/* +complete(n) */}
             <button onClick={() => setShowCompletions(true)}
