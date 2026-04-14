@@ -2,9 +2,10 @@
 
 // app/components/TaskAddModal.tsx
 // KarlOps L — Add tasks with full metadata
-// Light theme matching other FC modals
-// One or many titles (one per line), defaults pre-filled
-// Has tags + real bucket = curated on save
+// Flow: Task → Bucket → Context/Status → Target Date → Tell Karl More → Tags
+// Tags required for non-capture buckets
+// Auto-suggest fires on task title blur
+// Capture warning shown if saved without tags
 
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
@@ -12,26 +13,10 @@ import TagPicker from '@/app/components/TagPicker';
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
-interface Tag {
-  tag_id: string;
-  name: string;
-  tag_group_id: string;
-}
-
-interface TagGroup {
-  tag_group_id: string;
-  name: string;
-}
-
-interface Context {
-  context_id: string;
-  name: string;
-}
-
-interface TaskStatus {
-  task_status_id: string;
-  label: string;
-}
+interface Tag { tag_id: string; name: string; tag_group_id: string; }
+interface TagGroup { tag_group_id: string; name: string; }
+interface Context { context_id: string; name: string; }
+interface TaskStatus { task_status_id: string; label: string; }
 
 interface Props {
   userId: string;
@@ -55,9 +40,9 @@ const ACCENT        = '#10b981';
 const ACCENT_BG     = '#f0fdf4';
 const ACCENT_BORDER = '#bbf7d0';
 const DEFAULT_W     = 560;
-const DEFAULT_H     = 660;
+const DEFAULT_H     = 700;
 const MIN_W         = 420;
-const MIN_H         = 440;
+const MIN_H         = 500;
 
 // ─── BucketPicker ─────────────────────────────────────────────────────────────
 
@@ -65,22 +50,11 @@ function BucketPicker({ value, onChange }: { value: string; onChange: (v: string
   return (
     <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
       {BUCKET_OPTIONS.map(b => (
-        <div
-          key={b.key}
-          onClick={() => onChange(b.key)}
-          style={{
-            padding: '0.3rem 0.65rem', borderRadius: '4px', fontSize: '0.72rem', cursor: 'pointer',
-            border: `1px solid ${value === b.key ? b.color : '#ddd'}`,
-            background: value === b.key ? `${b.color}15` : '#fafafa',
-            color: value === b.key ? b.color : '#666',
-            fontFamily: 'monospace',
-            transition: 'all 0.15s',
-          }}
+        <div key={b.key} onClick={() => onChange(b.key)}
+          style={{ padding: '0.3rem 0.65rem', borderRadius: '4px', fontSize: '0.72rem', cursor: 'pointer', fontFamily: 'monospace', transition: 'all 0.15s', border: `1px solid ${value === b.key ? b.color : '#ddd'}`, background: value === b.key ? `${b.color}15` : '#fafafa', color: value === b.key ? b.color : '#666' }}
           onMouseEnter={e => { if (value !== b.key) e.currentTarget.style.borderColor = '#bbb'; }}
           onMouseLeave={e => { if (value !== b.key) e.currentTarget.style.borderColor = '#ddd'; }}
-        >
-          {b.label}
-        </div>
+        >{b.label}</div>
       ))}
     </div>
   );
@@ -98,19 +72,20 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
   const [loading, setLoading]     = useState(true);
 
   // ─── Form state ──────────────────────────────────────────────────────────
-  const [bucket, setBucket]       = useState('capture');
-  const [contextId, setContextId] = useState('');
-  const [statusId, setStatusId]   = useState('');
-  const [tags, setTags]           = useState<string[]>([]);
-  const [targetDate, setTargetDate] = useState('');
-  const [rawInput, setRawInput]   = useState('');
-  const [multiMode, setMultiMode] = useState(false);
+  const [rawInput, setRawInput]      = useState('');
+  const [multiMode, setMultiMode]    = useState(false);
+  const [bucket, setBucket]          = useState('capture');
+  const [contextId, setContextId]    = useState('');
+  const [statusId, setStatusId]      = useState('');
+  const [targetDate, setTargetDate]  = useState('');
   const [karlContext, setKarlContext] = useState('');
+  const [tags, setTags]              = useState<string[]>([]);
 
-  // ─── Submit state ────────────────────────────────────────────────────────
-  const [saving, setSaving] = useState(false);
-  const [err, setErr]       = useState('');
-  const [saved, setSaved]   = useState<string[]>([]);
+  // ─── Submit/feedback state ────────────────────────────────────────────────
+  const [saving, setSaving]                 = useState(false);
+  const [err, setErr]                       = useState('');
+  const [savedToCapture, setSavedToCapture] = useState<string[]>([]);
+  const [savedCurated, setSavedCurated]     = useState<string[]>([]);
 
   // ─── Drag & resize ───────────────────────────────────────────────────────
   const initX = Math.max(20, Math.round(window.innerWidth  / 2 - DEFAULT_W / 2));
@@ -146,10 +121,7 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
   useEffect(() => {
     const onMouseMove = (e: MouseEvent) => {
       if (dragging.current) setPos({ x: e.clientX - dragOffset.current.x, y: e.clientY - dragOffset.current.y });
-      if (resizing.current) setSize({
-        w: Math.max(MIN_W, resizeStart.current.w + (e.clientX - resizeStart.current.x)),
-        h: Math.max(MIN_H, resizeStart.current.h + (e.clientY - resizeStart.current.y)),
-      });
+      if (resizing.current) setSize({ w: Math.max(MIN_W, resizeStart.current.w + (e.clientX - resizeStart.current.x)), h: Math.max(MIN_H, resizeStart.current.h + (e.clientY - resizeStart.current.y)) });
     };
     const onMouseUp = () => { dragging.current = false; resizing.current = false; };
     document.addEventListener('mousemove', onMouseMove);
@@ -169,18 +141,15 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
           supabase.from('task_status').select('task_status_id, label').eq('user_id', userId).order('display_order'),
           supabase.from('ko_default_registry').select('field, value').eq('user_id', userId).eq('object_type', 'task'),
         ]);
-
         setAllTags(tagRes.data ?? []);
         setTagGroups(groupRes.data ?? []);
         setContexts(ctxRes.data ?? []);
         setStatuses(statusRes.data ?? []);
-
         const dm: Record<string, string> = {};
         for (const d of defaultRes.data ?? []) dm[d.field] = d.value;
         setBucket(dm['bucket_key']       ?? 'capture');
         setContextId(dm['context_id']    ?? '');
         setStatusId(dm['task_status_id'] ?? '');
-
       } catch (e: any) {
         setErr(e.message);
       } finally {
@@ -197,24 +166,22 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
       ? raw.split('\n').map(t => t.replace(/^[-•*]\s*/, '').trim()).filter(t => t.length > 0)
       : raw.trim() ? [raw.trim()] : [];
 
-  const previews  = parseTitles(rawInput);
-  const isCurated = bucket !== 'capture' && tags.length > 0;
-
-  const curationHint = () => {
-    if (isCurated) return { text: '✓ curated', color: '#16a34a', bg: ACCENT_BG, border: ACCENT_BORDER };
-    const missing = [];
-    if (bucket === 'capture') missing.push('real bucket');
-    if (tags.length === 0) missing.push('tag');
-    return { text: `capture — needs ${missing.join(' + ')} to curate`, color: '#f97316', bg: '#fff8f0', border: '#fed7aa' };
-  };
-
-  const hint = curationHint();
+  const previews     = parseTitles(rawInput);
+  const isCapture    = bucket === 'capture';
+  const isCurated    = !isCapture && tags.length > 0;
+  const needsTagWarn = !isCapture && tags.length === 0;
+  const contextText  = rawInput.trim() + (karlContext.trim() ? '\n' + karlContext.trim() : '');
 
   // ─── Submit ──────────────────────────────────────────────────────────────
 
   const handleSubmit = async () => {
     if (previews.length === 0) { setErr('Enter at least one task'); return; }
-    setSaving(true); setErr(''); setSaved([]);
+    if (!isCapture && tags.length === 0) {
+      setErr(`Tags required for ${bucket} bucket — add at least one tag or move to Capture`);
+      return;
+    }
+    setSaving(true); setErr('');
+    setSavedToCapture([]); setSavedCurated([]);
 
     try {
       const records = previews.map(title => ({
@@ -223,16 +190,23 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
         bucket_key:     bucket,
         context_id:     contextId  || null,
         task_status_id: statusId   || null,
-        tags,
+        tags:           tags,
         target_date:    targetDate || null,
       }));
 
       const { data, error } = await supabase.from('task').insert(records).select('title');
       if (error) throw error;
 
-      setSaved(data?.map(t => t.title) ?? []);
+      const titles = data?.map(t => t.title) ?? [];
+      if (isCapture && tags.length === 0) {
+        setSavedToCapture(titles);
+      } else {
+        setSavedCurated(titles);
+      }
+
       setRawInput('');
       setTags([]);
+      setKarlContext('');
       onSaved();
 
     } catch (e: any) {
@@ -249,29 +223,31 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
       <div style={{ position: 'absolute', left: pos.x, top: pos.y, width: size.w, height: size.h, background: '#ffffff', border: `2px solid ${ACCENT}`, borderRadius: '8px', display: 'flex', flexDirection: 'column', fontFamily: 'monospace', boxShadow: '0 20px 60px rgba(0,0,0,0.2)', pointerEvents: 'all', overflow: 'hidden' }}>
 
         {/* HEADER */}
-        <div
-          onMouseDown={onDragStart}
+        <div onMouseDown={onDragStart}
           style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.85rem 1.25rem', background: ACCENT, cursor: 'grab', flexShrink: 0, userSelect: 'none' }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
             <span style={{ color: '#000', fontSize: '0.85rem', fontWeight: 700 }}>Add Task</span>
-            <span style={{ fontSize: '0.65rem', color: hint.color, background: hint.bg, border: `1px solid ${hint.border}`, borderRadius: '4px', padding: '0.15rem 0.5rem' }}>
-              {hint.text}
-            </span>
+            {isCurated && (
+              <span style={{ fontSize: '0.65rem', color: '#16a34a', background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, borderRadius: '4px', padding: '0.15rem 0.5rem' }}>✓ curated</span>
+            )}
+            {needsTagWarn && (
+              <span style={{ fontSize: '0.65rem', color: '#92400e', background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: '4px', padding: '0.15rem 0.5rem' }}>tags required</span>
+            )}
+            {isCapture && tags.length === 0 && (
+              <span style={{ fontSize: '0.65rem', color: '#000', background: 'rgba(0,0,0,0.12)', borderRadius: '4px', padding: '0.15rem 0.5rem' }}>capture</span>
+            )}
             {/* Single / Multi toggle */}
             <div style={{ display: 'flex', background: 'rgba(0,0,0,0.15)', borderRadius: '4px', padding: '0.1rem' }}>
-              <div
-                onClick={() => { setMultiMode(false); setRawInput(''); setSaved([]); }}
+              <div onClick={() => { setMultiMode(false); setRawInput(''); }}
                 style={{ padding: '0.15rem 0.5rem', borderRadius: '3px', fontSize: '0.65rem', cursor: 'pointer', background: !multiMode ? 'rgba(0,0,0,0.3)' : 'transparent', color: !multiMode ? '#000' : 'rgba(0,0,0,0.5)', fontWeight: !multiMode ? 700 : 400, transition: 'all 0.15s' }}
               >single</div>
-              <div
-                onClick={() => { setMultiMode(true); setRawInput(''); setSaved([]); }}
+              <div onClick={() => { setMultiMode(true); setRawInput(''); }}
                 style={{ padding: '0.15rem 0.5rem', borderRadius: '3px', fontSize: '0.65rem', cursor: 'pointer', background: multiMode ? 'rgba(0,0,0,0.3)' : 'transparent', color: multiMode ? '#000' : 'rgba(0,0,0,0.5)', fontWeight: multiMode ? 700 : 400, transition: 'all 0.15s' }}
               >multi</div>
             </div>
           </div>
-          <button
-            onClick={onClose}
+          <button onClick={onClose}
             style={{ background: 'none', border: 'none', color: 'rgba(0,0,0,0.5)', cursor: 'pointer', fontSize: '1rem', lineHeight: 1 }}
             onMouseEnter={e => (e.currentTarget.style.color = '#000')}
             onMouseLeave={e => (e.currentTarget.style.color = 'rgba(0,0,0,0.5)')}
@@ -284,136 +260,121 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
             <div style={{ color: '#aaa', fontSize: '0.8rem', textAlign: 'center', padding: '2rem' }}>Loading...</div>
           ) : (
             <>
-              {/* BUCKET */}
-              <div style={fieldGroup}>
-                <div style={labelStyle}>Bucket</div>
-                <BucketPicker value={bucket} onChange={setBucket} />
-              </div>
-
-              {/* CONTEXT + STATUS */}
-              <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1rem' }}>
-                <div style={{ flex: 1 }}>
-                  <div style={labelStyle}>Context</div>
-                  <select
-                    value={contextId} onChange={e => setContextId(e.target.value)}
-                    style={selectStyle}
-                    onFocus={e => (e.target.style.borderColor = ACCENT)}
-                    onBlur={e => (e.target.style.borderColor = '#ddd')}
-                  >
-                    <option value="">— none —</option>
-                    {contexts.map(c => <option key={c.context_id} value={c.context_id}>{c.name}</option>)}
-                  </select>
-                </div>
-                <div style={{ flex: 1 }}>
-                  <div style={labelStyle}>Status</div>
-                  <select
-                    value={statusId} onChange={e => setStatusId(e.target.value)}
-                    style={selectStyle}
-                    onFocus={e => (e.target.style.borderColor = ACCENT)}
-                    onBlur={e => (e.target.style.borderColor = '#ddd')}
-                  >
-                    <option value="">— none —</option>
-                    {statuses.map(s => <option key={s.task_status_id} value={s.task_status_id}>{s.label}</option>)}
-                  </select>
-                </div>
-              </div>
-
-              {/* TAGS */}
-              <TagPicker
-                selected={tags}
-                allTags={allTags}
-                tagGroups={tagGroups}
-                onChange={setTags}
-                accentColor={ACCENT}
-                objectType="task"
-                contextText={rawInput + (karlContext ? '\n' + karlContext : '')}
-                accessToken={accessToken}
-              />
-
-              {/* KARL CONTEXT — ephemeral, never saved */}
-              <div style={{ marginBottom: '1rem' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.35rem' }}>
-                  <div style={labelStyle}>Tell Karl more</div>
-                  <span style={{ fontSize: '0.62rem', color: '#aaa', fontStyle: 'italic' }}>helps tag suggestion — not saved</span>
-                </div>
-                <textarea
-                  value={karlContext}
-                  onChange={e => setKarlContext(e.target.value)}
-                  placeholder="Paste context, notes, or background — Karl reads this to suggest better tags..."
-                  rows={2}
-                  style={{ ...inputStyle, resize: 'vertical', background: '#fffdf5', borderColor: '#e5e0c8', color: '#666', fontSize: '0.78rem' }}
-                  onFocus={e => (e.target.style.borderColor = '#c8b96a')}
-                  onBlur={e => (e.target.style.borderColor = '#e5e0c8')}
-                />
-              </div>
-
-              {/* TARGET DATE */}
-              <div style={fieldGroup}>
-                <div style={labelStyle}>Target Date</div>
-                <input
-                  type="date"
-                  value={targetDate}
-                  onChange={e => setTargetDate(e.target.value)}
-                  style={{ ...inputStyle, colorScheme: 'light', cursor: 'pointer', width: '180px' }}
-                  onFocus={e => (e.target.style.borderColor = ACCENT)}
-                  onBlur={e => (e.target.style.borderColor = '#ddd')}
-                />
-              </div>
-
-              {/* TASK INPUT */}
+              {/* 1. TASK */}
               <div style={fieldGroup}>
                 <div style={labelStyle}>
                   {multiMode ? 'Tasks' : 'Task'} <span style={{ color: '#ef4444' }}>*</span>
                   {multiMode && <span style={{ color: '#aaa', textTransform: 'none', letterSpacing: 0, marginLeft: '0.4rem' }}>— one per line</span>}
                 </div>
                 {multiMode ? (
-                  <textarea
-                    autoFocus
-                    value={rawInput}
-                    onChange={e => setRawInput(e.target.value)}
+                  <textarea autoFocus value={rawInput} onChange={e => setRawInput(e.target.value)}
                     onKeyDown={e => { if (e.key === 'Enter' && e.metaKey) handleSubmit(); }}
                     placeholder={'Buy olive oil\nBoil water\nCook pasta al dente'}
-                    rows={4}
-                    style={{ ...inputStyle, resize: 'vertical' }}
+                    rows={4} style={{ ...inputStyle, resize: 'vertical' }}
                     onFocus={e => (e.target.style.borderColor = ACCENT)}
                     onBlur={e => (e.target.style.borderColor = '#ddd')}
                   />
                 ) : (
-                  <input
-                    autoFocus
-                    value={rawInput}
-                    onChange={e => setRawInput(e.target.value)}
+                  <input autoFocus value={rawInput} onChange={e => setRawInput(e.target.value)}
                     onKeyDown={e => { if (e.key === 'Enter') handleSubmit(); }}
-                    placeholder="What needs doing?"
-                    style={inputStyle}
+                    placeholder="What needs doing?" style={inputStyle}
                     onFocus={e => (e.target.style.borderColor = ACCENT)}
                     onBlur={e => (e.target.style.borderColor = '#ddd')}
                   />
                 )}
+                {multiMode && previews.length > 0 && (
+                  <div style={{ marginTop: '0.4rem', display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                    {previews.map((t, i) => (
+                      <div key={i} style={{ color: '#16a34a', fontSize: '0.75rem', padding: '0.2rem 0.5rem', background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, borderRadius: '4px' }}>{t}</div>
+                    ))}
+                  </div>
+                )}
                 {multiMode && <div style={{ color: '#aaa', fontSize: '0.63rem', marginTop: '0.25rem' }}>⌘↵ to add</div>}
               </div>
 
-              {/* PREVIEW */}
-              {previews.length > 0 && (
-                <div style={{ marginBottom: '0.75rem' }}>
-                  <div style={{ color: '#aaa', fontSize: '0.65rem', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.35rem' }}>
-                    {previews.length} task{previews.length > 1 ? 's' : ''} to add
+              {/* 2. BUCKET */}
+              <div style={fieldGroup}>
+                <div style={labelStyle}>Bucket</div>
+                <BucketPicker value={bucket} onChange={setBucket} />
+              </div>
+
+              {/* 3. CONTEXT + STATUS */}
+              <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1rem' }}>
+                <div style={{ flex: 1 }}>
+                  <div style={labelStyle}>Context</div>
+                  <select value={contextId} onChange={e => setContextId(e.target.value)} style={selectStyle}
+                    onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')}>
+                    <option value="">— none —</option>
+                    {contexts.map(c => <option key={c.context_id} value={c.context_id}>{c.name}</option>)}
+                  </select>
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={labelStyle}>Status</div>
+                  <select value={statusId} onChange={e => setStatusId(e.target.value)} style={selectStyle}
+                    onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')}>
+                    <option value="">— none —</option>
+                    {statuses.map(s => <option key={s.task_status_id} value={s.task_status_id}>{s.label}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              {/* 4. TARGET DATE */}
+              <div style={fieldGroup}>
+                <div style={labelStyle}>Target Date</div>
+                <input type="date" value={targetDate} onChange={e => setTargetDate(e.target.value)}
+                  style={{ ...inputStyle, colorScheme: 'light', cursor: 'pointer', width: '180px' }}
+                  onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')}
+                />
+              </div>
+
+              {/* 5. TELL KARL MORE — ephemeral */}
+              <div style={{ marginBottom: '1rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.35rem' }}>
+                  <div style={labelStyle}>Tell Karl More</div>
+                  <span style={{ fontSize: '0.62rem', color: '#aaa', fontStyle: 'italic' }}>helps tag suggestion — not saved</span>
+                </div>
+                <textarea value={karlContext} onChange={e => setKarlContext(e.target.value)}
+                  placeholder="Paste context, background, or notes — Karl reads this to suggest better tags..."
+                  rows={2} style={{ ...inputStyle, resize: 'vertical', background: '#fffdf5', borderColor: '#e5e0c8', color: '#666', fontSize: '0.78rem' }}
+                  onFocus={e => (e.target.style.borderColor = '#c8b96a')}
+                  onBlur={e => (e.target.style.borderColor = '#e5e0c8')}
+                />
+              </div>
+
+              {/* 6. TAGS — last */}
+              <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: '1rem' }}>
+                <TagPicker
+                  selected={tags}
+                  allTags={allTags}
+                  tagGroups={tagGroups}
+                  onChange={setTags}
+                  accentColor={ACCENT}
+                  objectType="task"
+                  contextText={contextText}
+                  accessToken={accessToken}
+                  label={isCapture ? 'Tags' : 'Tags *'}
+                />
+                {needsTagWarn && (
+                  <div style={{ fontSize: '0.68rem', color: '#b45309', fontFamily: 'monospace', marginTop: '-0.5rem', marginBottom: '0.5rem' }}>
+                    Tags required for {bucket} bucket
                   </div>
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-                    {previews.map((t, i) => (
-                      <div key={i} style={{ color: '#16a34a', fontSize: '0.75rem', padding: '0.2rem 0.5rem', background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, borderRadius: '4px' }}>
-                        {t}
-                      </div>
-                    ))}
-                  </div>
+                )}
+              </div>
+
+              {/* SUCCESS — curated */}
+              {savedCurated.length > 0 && (
+                <div style={{ padding: '0.6rem 0.75rem', background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, borderRadius: '6px', marginBottom: '0.5rem', marginTop: '0.75rem' }}>
+                  <div style={{ color: '#16a34a', fontSize: '0.72rem', fontWeight: 600, marginBottom: '0.25rem' }}>✓ {savedCurated.length} task{savedCurated.length > 1 ? 's' : ''} added</div>
+                  {savedCurated.map((t, i) => <div key={i} style={{ color: '#aaa', fontSize: '0.7rem' }}>{t}</div>)}
                 </div>
               )}
 
-              {/* SUCCESS */}
-              {saved.length > 0 && (
-                <div style={{ padding: '0.6rem 0.75rem', background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, borderRadius: '6px', marginBottom: '0.5rem' }}>
-                  <div style={{ color: '#16a34a', fontSize: '0.72rem', marginBottom: '0.25rem' }}>✓ {saved.length} task{saved.length > 1 ? 's' : ''} added</div>
-                  {saved.map((t, i) => <div key={i} style={{ color: '#aaa', fontSize: '0.7rem' }}>{t}</div>)}
+              {/* SUCCESS — sent to capture warning */}
+              {savedToCapture.length > 0 && (
+                <div style={{ padding: '0.6rem 0.75rem', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '6px', marginBottom: '0.5rem', marginTop: '0.75rem' }}>
+                  <div style={{ color: '#dc2626', fontSize: '0.72rem', fontWeight: 600, marginBottom: '0.15rem' }}>⚠ Sent to Capture — no tags</div>
+                  <div style={{ color: '#ef4444', fontSize: '0.68rem', marginBottom: '0.35rem' }}>Add tags and move out of capture to curate</div>
+                  {savedToCapture.map((t, i) => <div key={i} style={{ color: '#aaa', fontSize: '0.7rem' }}>{t}</div>)}
                 </div>
               )}
 
@@ -425,15 +386,13 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
         {/* FOOTER */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.75rem 1.25rem', borderTop: `1px solid ${ACCENT_BORDER}`, background: '#fafafa', flexShrink: 0 }}>
           <div style={{ color: '#aaa', fontSize: '0.65rem' }}>
-            {isCurated ? '✓ will be curated on save' : 'no tags = capture bucket'}
+            {isCurated ? '✓ will be curated on save' : isCapture ? 'capture — add tags to curate' : 'tags required to save'}
           </div>
           <div style={{ display: 'flex', gap: '0.5rem' }}>
             <button onClick={onClose}
               style={{ background: 'none', border: '1px solid #ddd', color: '#666', padding: '0.4rem 0.9rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer' }}
             >cancel</button>
-            <button
-              onClick={handleSubmit}
-              disabled={saving || previews.length === 0}
+            <button onClick={handleSubmit} disabled={saving || previews.length === 0}
               style={{ background: ACCENT, border: `1px solid ${ACCENT}`, color: '#000', padding: '0.4rem 0.9rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', fontWeight: 600, cursor: previews.length === 0 ? 'not-allowed' : 'pointer', opacity: saving || previews.length === 0 ? 0.5 : 1 }}
             >
               {saving ? 'adding...' : `add ${previews.length > 1 ? `${previews.length} tasks` : 'task'}`}
@@ -442,13 +401,10 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
         </div>
 
         {/* RESIZE HANDLE */}
-        <div
-          onMouseDown={onResizeStart}
+        <div onMouseDown={onResizeStart}
           style={{ position: 'absolute', bottom: 0, right: 0, width: '18px', height: '18px', cursor: 'se-resize', display: 'flex', alignItems: 'flex-end', justifyContent: 'flex-end', padding: '4px' }}
         >
-          <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
-            <path d="M1 7L7 1M4 7L7 4" stroke={ACCENT} strokeWidth="1.5" strokeLinecap="round"/>
-          </svg>
+          <svg width="8" height="8" viewBox="0 0 8 8" fill="none"><path d="M1 7L7 1M4 7L7 4" stroke={ACCENT} strokeWidth="1.5" strokeLinecap="round"/></svg>
         </div>
 
       </div>
