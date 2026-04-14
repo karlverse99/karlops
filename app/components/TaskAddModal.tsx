@@ -2,11 +2,13 @@
 
 // app/components/TaskAddModal.tsx
 // KarlOps L — Add tasks with full metadata
-// Single mode: defaults pre-filled, override any field, one or many titles (one per line)
-// If no bucket override → capture. Has tags + real bucket = curated on save.
+// Light theme matching other FC modals
+// One or many titles (one per line), defaults pre-filled
+// Has tags + real bucket = curated on save
 
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
+import TagPicker from '@/app/components/TagPicker';
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -49,92 +51,13 @@ const BUCKET_OPTIONS = [
   { key: 'delegate', label: 'Delegated', color: '#8b5cf6' },
 ];
 
-const DEFAULT_W = 560;
-const DEFAULT_H = 640;
-const MIN_W = 420;
-const MIN_H = 440;
-
-// ─── TagPicker ────────────────────────────────────────────────────────────────
-
-function TagPicker({ selected, allTags, tagGroups, onChange }: {
-  selected: string[];
-  allTags: Tag[];
-  tagGroups: TagGroup[];
-  onChange: (tags: string[]) => void;
-}) {
-  const [open, setOpen]     = useState(false);
-  const [search, setSearch] = useState('');
-  const dropdownRef         = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    if (open) document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [open]);
-
-  const toggle = (tagName: string) => {
-    onChange(selected.includes(tagName) ? selected.filter(t => t !== tagName) : [...selected, tagName]);
-  };
-
-  const filtered = search.trim()
-    ? allTags.filter(t => t.name.toLowerCase().includes(search.toLowerCase()))
-    : allTags;
-
-  const tagsByGroup: Record<string, Tag[]> = {};
-  for (const g of tagGroups) tagsByGroup[g.tag_group_id] = [];
-  for (const t of filtered) {
-    if (tagsByGroup[t.tag_group_id]) tagsByGroup[t.tag_group_id].push(t);
-    else tagsByGroup['__ungrouped__'] = [...(tagsByGroup['__ungrouped__'] ?? []), t];
-  }
-
-  return (
-    <div ref={dropdownRef} style={{ position: 'relative' }}>
-      <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap', marginBottom: '0.4rem', minHeight: '1.5rem' }}>
-        {selected.length === 0
-          ? <span style={{ color: '#333', fontSize: '0.72rem' }}>none — task will land in capture</span>
-          : selected.map(tag => (
-              <span key={tag} style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', background: '#1a2a1a', border: '1px solid #2a4a2a', borderRadius: '4px', padding: '0.15rem 0.5rem', fontSize: '0.72rem', color: '#4ade80' }}>
-                {tag}
-                <span onClick={() => toggle(tag)} style={{ cursor: 'pointer', fontWeight: 700 }}>×</span>
-              </span>
-            ))
-        }
-      </div>
-      <button onClick={() => setOpen(v => !v)}
-        style={{ background: '#111', border: '1px solid #222', color: '#4ade80', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.72rem', cursor: 'pointer' }}
-      >{open ? '▲ close' : '▼ add tags'}</button>
-      {open && (
-        <div style={{ position: 'absolute', top: '100%', left: 0, zIndex: 30, background: '#111', border: '1px solid #222', borderRadius: '6px', padding: '0.5rem', width: '280px', maxHeight: '220px', overflowY: 'auto', marginTop: '0.25rem', boxShadow: '0 8px 24px rgba(0,0,0,0.5)' }}>
-          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search tags..."
-            style={{ width: '100%', background: '#0d0d0d', border: '1px solid #333', color: '#e5e5e5', padding: '0.35rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', outline: 'none', boxSizing: 'border-box', marginBottom: '0.5rem' }}
-          />
-          {tagGroups.map(g => {
-            const groupTags = tagsByGroup[g.tag_group_id] ?? [];
-            if (groupTags.length === 0) return null;
-            return (
-              <div key={g.tag_group_id} style={{ marginBottom: '0.5rem' }}>
-                <div style={{ color: '#444', fontSize: '0.6rem', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '0.25rem', paddingLeft: '0.25rem' }}>{g.name}</div>
-                {groupTags.map(tag => (
-                  <div key={tag.tag_id} onClick={() => toggle(tag.name)}
-                    style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.25rem 0.5rem', borderRadius: '4px', cursor: 'pointer', color: selected.includes(tag.name) ? '#4ade80' : '#aaa', fontSize: '0.78rem' }}
-                    onMouseEnter={e => (e.currentTarget.style.background = '#1a1a1a')}
-                    onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-                  >
-                    <span style={{ fontSize: '0.65rem', width: '12px' }}>{selected.includes(tag.name) ? '☑' : '☐'}</span>
-                    {tag.name}
-                  </div>
-                ))}
-              </div>
-            );
-          })}
-          {filtered.length === 0 && <div style={{ color: '#444', fontSize: '0.75rem', padding: '0.5rem' }}>No tags found</div>}
-        </div>
-      )}
-    </div>
-  );
-}
+const ACCENT        = '#10b981';
+const ACCENT_BG     = '#f0fdf4';
+const ACCENT_BORDER = '#bbf7d0';
+const DEFAULT_W     = 560;
+const DEFAULT_H     = 660;
+const MIN_W         = 420;
+const MIN_H         = 440;
 
 // ─── BucketPicker ─────────────────────────────────────────────────────────────
 
@@ -142,11 +65,22 @@ function BucketPicker({ value, onChange }: { value: string; onChange: (v: string
   return (
     <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
       {BUCKET_OPTIONS.map(b => (
-        <div key={b.key} onClick={() => onChange(b.key)}
-          style={{ padding: '0.3rem 0.65rem', borderRadius: '4px', fontSize: '0.72rem', cursor: 'pointer', border: `1px solid ${value === b.key ? b.color : '#222'}`, background: value === b.key ? `${b.color}22` : '#111', color: value === b.key ? b.color : '#555', transition: 'all 0.15s' }}
-          onMouseEnter={e => { if (value !== b.key) e.currentTarget.style.borderColor = '#444'; }}
-          onMouseLeave={e => { if (value !== b.key) e.currentTarget.style.borderColor = '#222'; }}
-        >{b.label}</div>
+        <div
+          key={b.key}
+          onClick={() => onChange(b.key)}
+          style={{
+            padding: '0.3rem 0.65rem', borderRadius: '4px', fontSize: '0.72rem', cursor: 'pointer',
+            border: `1px solid ${value === b.key ? b.color : '#ddd'}`,
+            background: value === b.key ? `${b.color}15` : '#fafafa',
+            color: value === b.key ? b.color : '#666',
+            fontFamily: 'monospace',
+            transition: 'all 0.15s',
+          }}
+          onMouseEnter={e => { if (value !== b.key) e.currentTarget.style.borderColor = '#bbb'; }}
+          onMouseLeave={e => { if (value !== b.key) e.currentTarget.style.borderColor = '#ddd'; }}
+        >
+          {b.label}
+        </div>
       ))}
     </div>
   );
@@ -163,19 +97,18 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
   const [statuses, setStatuses]   = useState<TaskStatus[]>([]);
   const [loading, setLoading]     = useState(true);
 
-  // ─── Form state — pre-filled with defaults ───────────────────────────────
-  const [bucket, setBucket]           = useState('capture');
-  const [contextId, setContextId]     = useState('');
-  const [statusId, setStatusId]       = useState('');
-  const [tags, setTags]               = useState<string[]>([]);
-  const [targetDate, setTargetDate]   = useState('');
-  const [delegatedTo, setDelegatedTo] = useState('');
-  const [rawInput, setRawInput]       = useState('');
+  // ─── Form state ──────────────────────────────────────────────────────────
+  const [bucket, setBucket]       = useState('capture');
+  const [contextId, setContextId] = useState('');
+  const [statusId, setStatusId]   = useState('');
+  const [tags, setTags]           = useState<string[]>([]);
+  const [targetDate, setTargetDate] = useState('');
+  const [rawInput, setRawInput]   = useState('');
 
   // ─── Submit state ────────────────────────────────────────────────────────
-  const [saving, setSaving]   = useState(false);
-  const [err, setErr]         = useState('');
-  const [saved, setSaved]     = useState<string[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr]       = useState('');
+  const [saved, setSaved]   = useState<string[]>([]);
 
   // ─── Drag & resize ───────────────────────────────────────────────────────
   const initX = Math.max(20, Math.round(window.innerWidth  / 2 - DEFAULT_W / 2));
@@ -222,14 +155,14 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
     return () => { document.removeEventListener('mousemove', onMouseMove); document.removeEventListener('mouseup', onMouseUp); };
   }, []);
 
-  // ─── Load reference data + defaults ─────────────────────────────────────
+  // ─── Load reference data + defaults ──────────────────────────────────────
   useEffect(() => {
     async function load() {
       setLoading(true);
       try {
         const [tagRes, groupRes, ctxRes, statusRes, defaultRes] = await Promise.all([
-          supabase.from('tag').select('tag_id, name, tag_group_id').eq('user_id', userId),
-          supabase.from('tag_group').select('tag_group_id, name').eq('user_id', userId).order('display_order'),
+          supabase.from('tag').select('tag_id, name, tag_group_id').eq('user_id', userId).eq('is_archived', false).order('name'),
+          supabase.from('tag_group').select('tag_group_id, name').eq('user_id', userId).eq('is_archived', false).order('display_order'),
           supabase.from('context').select('context_id, name').eq('user_id', userId).eq('is_archived', false).eq('is_visible', true).order('name'),
           supabase.from('task_status').select('task_status_id, label').eq('user_id', userId).order('display_order'),
           supabase.from('ko_default_registry').select('field, value').eq('user_id', userId).eq('object_type', 'task'),
@@ -242,7 +175,6 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
 
         const dm: Record<string, string> = {};
         for (const d of defaultRes.data ?? []) dm[d.field] = d.value;
-
         setBucket(dm['bucket_key']       ?? 'capture');
         setContextId(dm['context_id']    ?? '');
         setStatusId(dm['task_status_id'] ?? '');
@@ -256,30 +188,28 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
     load();
   }, [userId]);
 
-  // ─── Parse titles ────────────────────────────────────────────────────────
+  // ─── Derived ─────────────────────────────────────────────────────────────
+
   const parseTitles = (raw: string): string[] =>
     raw.split('\n').map(t => t.replace(/^[-•*]\s*/, '').trim()).filter(t => t.length > 0);
 
-  const previews = parseTitles(rawInput);
-
-  // ─── Curation status ─────────────────────────────────────────────────────
+  const previews  = parseTitles(rawInput);
   const isCurated = bucket !== 'capture' && tags.length > 0;
 
   const curationHint = () => {
-    if (isCurated) return { text: '✓ curated', color: '#4ade80', bg: '#0d1a0d', border: '#1a3a1a' };
+    if (isCurated) return { text: '✓ curated', color: '#16a34a', bg: ACCENT_BG, border: ACCENT_BORDER };
     const missing = [];
     if (bucket === 'capture') missing.push('real bucket');
     if (tags.length === 0) missing.push('tag');
-    return { text: `capture — needs ${missing.join(' + ')} to curate`, color: '#f97316', bg: '#1a0e00', border: '#3a2000' };
+    return { text: `capture — needs ${missing.join(' + ')} to curate`, color: '#f97316', bg: '#fff8f0', border: '#fed7aa' };
   };
 
   const hint = curationHint();
 
   // ─── Submit ──────────────────────────────────────────────────────────────
+
   const handleSubmit = async () => {
     if (previews.length === 0) { setErr('Enter at least one task'); return; }
-    if (bucket === 'delegate' && !delegatedTo.trim()) { setErr('Delegated to is required'); return; }
-
     setSaving(true); setErr(''); setSaved([]);
 
     try {
@@ -291,8 +221,6 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
         task_status_id: statusId   || null,
         tags,
         target_date:    targetDate || null,
-        is_delegated:   bucket === 'delegate',
-        delegated_to:   bucket === 'delegate' ? delegatedTo : null,
       }));
 
       const { data, error } = await supabase.from('task').insert(records).select('title');
@@ -300,6 +228,7 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
 
       setSaved(data?.map(t => t.title) ?? []);
       setRawInput('');
+      setTags([]);
       onSaved();
 
     } catch (e: any) {
@@ -313,25 +242,31 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
 
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 100, pointerEvents: 'none' }}>
-      <div style={{ position: 'absolute', left: pos.x, top: pos.y, width: size.w, height: size.h, background: '#0d0d0d', border: '1px solid #2a2a2a', borderRadius: '8px', display: 'flex', flexDirection: 'column', fontFamily: 'monospace', boxShadow: '0 8px 32px rgba(0,0,0,0.7)', pointerEvents: 'all', overflow: 'hidden' }}>
+      <div style={{ position: 'absolute', left: pos.x, top: pos.y, width: size.w, height: size.h, background: '#ffffff', border: `2px solid ${ACCENT}`, borderRadius: '8px', display: 'flex', flexDirection: 'column', fontFamily: 'monospace', boxShadow: '0 20px 60px rgba(0,0,0,0.2)', pointerEvents: 'all', overflow: 'hidden' }}>
 
         {/* HEADER */}
-        <div onMouseDown={onDragStart}
-          style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.75rem 1rem', background: '#10b981', cursor: 'grab', flexShrink: 0, userSelect: 'none' }}
+        <div
+          onMouseDown={onDragStart}
+          style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.85rem 1.25rem', background: ACCENT, cursor: 'grab', flexShrink: 0, userSelect: 'none' }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <span style={{ color: '#000', fontSize: '0.82rem', fontWeight: 700 }}>Add Task</span>
+            <span style={{ color: '#000', fontSize: '0.85rem', fontWeight: 700 }}>Add Task</span>
             <span style={{ fontSize: '0.65rem', color: hint.color, background: hint.bg, border: `1px solid ${hint.border}`, borderRadius: '4px', padding: '0.15rem 0.5rem' }}>
               {hint.text}
             </span>
           </div>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'rgba(0,0,0,0.5)', cursor: 'pointer', fontSize: '1rem', lineHeight: 1 }}>✕</button>
+          <button
+            onClick={onClose}
+            style={{ background: 'none', border: 'none', color: 'rgba(0,0,0,0.5)', cursor: 'pointer', fontSize: '1rem', lineHeight: 1 }}
+            onMouseEnter={e => (e.currentTarget.style.color = '#000')}
+            onMouseLeave={e => (e.currentTarget.style.color = 'rgba(0,0,0,0.5)')}
+          >✕</button>
         </div>
 
         {/* BODY */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '1rem', scrollbarWidth: 'thin', scrollbarColor: '#222 transparent' }}>
+        <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem', scrollbarWidth: 'thin', scrollbarColor: '#ddd transparent' }}>
           {loading ? (
-            <div style={{ color: '#444', fontSize: '0.8rem', textAlign: 'center', padding: '2rem' }}>Loading...</div>
+            <div style={{ color: '#aaa', fontSize: '0.8rem', textAlign: 'center', padding: '2rem' }}>Loading...</div>
           ) : (
             <>
               {/* BUCKET */}
@@ -340,27 +275,28 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
                 <BucketPicker value={bucket} onChange={setBucket} />
               </div>
 
-              {/* DELEGATED TO */}
-              {bucket === 'delegate' && (
-                <div style={fieldGroup}>
-                  <div style={labelStyle}>Delegated To<span style={{ color: '#ef4444' }}>*</span></div>
-                  <input value={delegatedTo} onChange={e => setDelegatedTo(e.target.value)}
-                    placeholder="Who is this delegated to?" style={inputStyle} />
-                </div>
-              )}
-
               {/* CONTEXT + STATUS */}
               <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1rem' }}>
                 <div style={{ flex: 1 }}>
                   <div style={labelStyle}>Context</div>
-                  <select value={contextId} onChange={e => setContextId(e.target.value)} style={selectStyle}>
+                  <select
+                    value={contextId} onChange={e => setContextId(e.target.value)}
+                    style={selectStyle}
+                    onFocus={e => (e.target.style.borderColor = ACCENT)}
+                    onBlur={e => (e.target.style.borderColor = '#ddd')}
+                  >
                     <option value="">— none —</option>
                     {contexts.map(c => <option key={c.context_id} value={c.context_id}>{c.name}</option>)}
                   </select>
                 </div>
                 <div style={{ flex: 1 }}>
                   <div style={labelStyle}>Status</div>
-                  <select value={statusId} onChange={e => setStatusId(e.target.value)} style={selectStyle}>
+                  <select
+                    value={statusId} onChange={e => setStatusId(e.target.value)}
+                    style={selectStyle}
+                    onFocus={e => (e.target.style.borderColor = ACCENT)}
+                    onBlur={e => (e.target.style.borderColor = '#ddd')}
+                  >
                     <option value="">— none —</option>
                     {statuses.map(s => <option key={s.task_status_id} value={s.task_status_id}>{s.label}</option>)}
                   </select>
@@ -368,26 +304,35 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
               </div>
 
               {/* TAGS */}
-              <div style={fieldGroup}>
-                <div style={labelStyle}>
-                  Tags
-                  <span style={{ color: '#333', textTransform: 'none', letterSpacing: 0, marginLeft: '0.4rem' }}>— required to curate</span>
-                </div>
-                <TagPicker selected={tags} allTags={allTags} tagGroups={tagGroups} onChange={setTags} />
-              </div>
+              <TagPicker
+                selected={tags}
+                allTags={allTags}
+                tagGroups={tagGroups}
+                onChange={setTags}
+                accentColor={ACCENT}
+                objectType="task"
+                contextText={rawInput}
+                accessToken={accessToken}
+              />
 
               {/* TARGET DATE */}
               <div style={fieldGroup}>
                 <div style={labelStyle}>Target Date</div>
-                <input type="date" value={targetDate} onChange={e => setTargetDate(e.target.value)}
-                  style={{ ...inputStyle, colorScheme: 'dark', cursor: 'pointer', width: '180px' }} />
+                <input
+                  type="date"
+                  value={targetDate}
+                  onChange={e => setTargetDate(e.target.value)}
+                  style={{ ...inputStyle, colorScheme: 'light', cursor: 'pointer', width: '180px' }}
+                  onFocus={e => (e.target.style.borderColor = ACCENT)}
+                  onBlur={e => (e.target.style.borderColor = '#ddd')}
+                />
               </div>
 
               {/* TASK INPUT */}
               <div style={fieldGroup}>
                 <div style={labelStyle}>
-                  Task{previews.length !== 1 ? 's' : ''}<span style={{ color: '#ef4444' }}>*</span>
-                  <span style={{ color: '#333', textTransform: 'none', letterSpacing: 0, marginLeft: '0.4rem' }}>— one per line</span>
+                  Task{previews.length !== 1 ? 's' : ''} <span style={{ color: '#ef4444' }}>*</span>
+                  <span style={{ color: '#aaa', textTransform: 'none', letterSpacing: 0, marginLeft: '0.4rem' }}>— one per line</span>
                 </div>
                 <textarea
                   autoFocus
@@ -396,20 +341,24 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
                   onKeyDown={e => { if (e.key === 'Enter' && e.metaKey) handleSubmit(); }}
                   placeholder={'Buy olive oil\nBoil water\nCook pasta al dente'}
                   rows={4}
-                  style={{ ...inputStyle, resize: 'vertical', height: 'auto' }}
+                  style={{ ...inputStyle, resize: 'vertical' }}
+                  onFocus={e => (e.target.style.borderColor = ACCENT)}
+                  onBlur={e => (e.target.style.borderColor = '#ddd')}
                 />
-                <div style={{ color: '#333', fontSize: '0.63rem', marginTop: '0.25rem' }}>⌘↵ to add</div>
+                <div style={{ color: '#aaa', fontSize: '0.63rem', marginTop: '0.25rem' }}>⌘↵ to add</div>
               </div>
 
               {/* PREVIEW */}
               {previews.length > 0 && (
                 <div style={{ marginBottom: '0.75rem' }}>
-                  <div style={{ color: '#333', fontSize: '0.65rem', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.35rem' }}>
+                  <div style={{ color: '#aaa', fontSize: '0.65rem', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.35rem' }}>
                     {previews.length} task{previews.length > 1 ? 's' : ''} to add
                   </div>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
                     {previews.map((t, i) => (
-                      <div key={i} style={{ color: '#10b981', fontSize: '0.75rem', padding: '0.2rem 0.5rem', background: '#0d1a14', border: '1px solid #0d2a1a', borderRadius: '4px' }}>{t}</div>
+                      <div key={i} style={{ color: '#16a34a', fontSize: '0.75rem', padding: '0.2rem 0.5rem', background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, borderRadius: '4px' }}>
+                        {t}
+                      </div>
                     ))}
                   </div>
                 </div>
@@ -417,9 +366,9 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
 
               {/* SUCCESS */}
               {saved.length > 0 && (
-                <div style={{ padding: '0.6rem 0.75rem', background: '#0d1a0d', border: '1px solid #1a3a1a', borderRadius: '6px', marginBottom: '0.5rem' }}>
-                  <div style={{ color: '#4ade80', fontSize: '0.72rem', marginBottom: '0.25rem' }}>✓ {saved.length} task{saved.length > 1 ? 's' : ''} added</div>
-                  {saved.map((t, i) => <div key={i} style={{ color: '#555', fontSize: '0.7rem' }}>{t}</div>)}
+                <div style={{ padding: '0.6rem 0.75rem', background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, borderRadius: '6px', marginBottom: '0.5rem' }}>
+                  <div style={{ color: '#16a34a', fontSize: '0.72rem', marginBottom: '0.25rem' }}>✓ {saved.length} task{saved.length > 1 ? 's' : ''} added</div>
+                  {saved.map((t, i) => <div key={i} style={{ color: '#aaa', fontSize: '0.7rem' }}>{t}</div>)}
                 </div>
               )}
 
@@ -429,16 +378,18 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
         </div>
 
         {/* FOOTER */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.75rem 1rem', borderTop: '1px solid #1a1a1a', background: '#111', flexShrink: 0 }}>
-          <div style={{ color: '#333', fontSize: '0.65rem' }}>
-            {isCurated ? 'Will be curated on save' : 'No tags = capture bucket'}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.75rem 1.25rem', borderTop: `1px solid ${ACCENT_BORDER}`, background: '#fafafa', flexShrink: 0 }}>
+          <div style={{ color: '#aaa', fontSize: '0.65rem' }}>
+            {isCurated ? '✓ will be curated on save' : 'no tags = capture bucket'}
           </div>
           <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <button onClick={onClose} style={cancelBtn}>cancel</button>
+            <button onClick={onClose}
+              style={{ background: 'none', border: '1px solid #ddd', color: '#666', padding: '0.4rem 0.9rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer' }}
+            >cancel</button>
             <button
               onClick={handleSubmit}
               disabled={saving || previews.length === 0}
-              style={{ background: '#0d1a14', border: '1px solid #10b981', color: '#10b981', padding: '0.4rem 0.9rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: previews.length === 0 ? 'not-allowed' : 'pointer', opacity: saving || previews.length === 0 ? 0.5 : 1 }}
+              style={{ background: ACCENT, border: `1px solid ${ACCENT}`, color: '#000', padding: '0.4rem 0.9rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', fontWeight: 600, cursor: previews.length === 0 ? 'not-allowed' : 'pointer', opacity: saving || previews.length === 0 ? 0.5 : 1 }}
             >
               {saving ? 'adding...' : `add ${previews.length > 1 ? `${previews.length} tasks` : 'task'}`}
             </button>
@@ -446,13 +397,15 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
         </div>
 
         {/* RESIZE HANDLE */}
-        <div onMouseDown={onResizeStart}
-          style={{ position: 'absolute', bottom: 0, right: 0, width: '18px', height: '18px', cursor: 'nwse-resize', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+        <div
+          onMouseDown={onResizeStart}
+          style={{ position: 'absolute', bottom: 0, right: 0, width: '18px', height: '18px', cursor: 'se-resize', display: 'flex', alignItems: 'flex-end', justifyContent: 'flex-end', padding: '4px' }}
         >
-          <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-            <path d="M9 1L1 9M9 5L5 9M9 9H9" stroke="#333" strokeWidth="1.5" strokeLinecap="round"/>
+          <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
+            <path d="M1 7L7 1M4 7L7 4" stroke={ACCENT} strokeWidth="1.5" strokeLinecap="round"/>
           </svg>
         </div>
+
       </div>
     </div>
   );
@@ -463,24 +416,20 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
 const fieldGroup: React.CSSProperties = { marginBottom: '1rem' };
 
 const labelStyle: React.CSSProperties = {
-  color: '#555', fontSize: '0.63rem', textTransform: 'uppercase',
-  letterSpacing: '0.05em', marginBottom: '0.35rem',
+  color: '#000', fontSize: '0.65rem', textTransform: 'uppercase',
+  letterSpacing: '0.05em', marginBottom: '0.35rem', fontWeight: 600,
 };
 
 const inputStyle: React.CSSProperties = {
-  width: '100%', background: '#111', border: '1px solid #222',
-  color: '#e5e5e5', padding: '0.5rem 0.65rem', borderRadius: '4px',
-  fontFamily: 'monospace', fontSize: '0.82rem', outline: 'none', boxSizing: 'border-box',
+  width: '100%', background: '#fafafa', border: '1px solid #ddd',
+  color: '#222', padding: '0.5rem 0.65rem', borderRadius: '4px',
+  fontFamily: 'monospace', fontSize: '0.82rem', outline: 'none',
+  boxSizing: 'border-box', transition: 'border-color 0.15s',
 };
 
 const selectStyle: React.CSSProperties = {
-  width: '100%', background: '#111', border: '1px solid #222',
-  color: '#e5e5e5', padding: '0.5rem 0.65rem', borderRadius: '4px',
+  width: '100%', background: '#fafafa', border: '1px solid #ddd',
+  color: '#222', padding: '0.5rem 0.65rem', borderRadius: '4px',
   fontFamily: 'monospace', fontSize: '0.82rem', outline: 'none',
-};
-
-const cancelBtn: React.CSSProperties = {
-  background: 'none', border: '1px solid #333', color: '#666',
-  padding: '0.4rem 0.9rem', borderRadius: '4px', fontFamily: 'monospace',
-  fontSize: '0.75rem', cursor: 'pointer',
+  transition: 'border-color 0.15s',
 };
