@@ -2,21 +2,24 @@
 
 // app/components/TagPicker.tsx
 // KarlOps L — Shared tag picker with Karl inline suggestion
-// Used across all FC objects that have tags: task, completion, meeting, external_reference, document_template
+// Used across all FC objects that have tags
 //
 // Props:
 //   selected       — currently selected tag names
 //   allTags        — full tag list from DB
 //   tagGroups      — tag groups from DB
 //   onChange       — called with new tag array on any change
+//   onTagCreated   — called when a new tag is created in DB — parent should reload allTags
 //   accentColor    — modal accent color for focus/highlight states
-//   objectType     — FC object type for Karl context ('task' | 'meeting' | 'completion' | 'external_reference' | 'document_template')
+//   objectType     — FC object type ('task' | 'meeting' | 'completion' | 'external_reference' | 'document_template')
 //   contextText    — title + description text for Karl to suggest from
 //   accessToken    — for Karl suggest API call
+//   userId         — for creating new tags in DB
 //   maxTags        — max tags allowed (default 5)
 //   label          — field label (default 'Tags')
 
 import { useState, useRef } from 'react';
+import { supabase } from '@/lib/supabase';
 
 interface Tag {
   tag_id: string;
@@ -42,10 +45,12 @@ interface TagPickerProps {
   allTags: Tag[];
   tagGroups: TagGroup[];
   onChange: (tags: string[]) => void;
+  onTagCreated?: () => void;
   accentColor: string;
   objectType: string;
   contextText: string;
   accessToken: string;
+  userId: string;
   maxTags?: number;
   label?: string;
 }
@@ -55,26 +60,29 @@ export default function TagPicker({
   allTags,
   tagGroups,
   onChange,
+  onTagCreated,
   accentColor,
   objectType,
   contextText,
   accessToken,
+  userId,
   maxTags = 5,
   label = 'Tags',
 }: TagPickerProps) {
 
-  const [search, setSearch]               = useState('');
-  const [groupId, setGroupId]             = useState('');
-  const [showDrop, setShowDrop]           = useState(false);
-  const [karlSuggestions, setKarlSuggestions] = useState<KarlSuggestion[]>([]);
-  const [suggesting, setSuggesting]       = useState(false);
-  const [suggestError, setSuggestError]   = useState('');
-  const [hasAutoSuggested, setHasAutoSuggested] = useState(false);
-  const autoSuggestTimer                  = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [search, setSearch]                         = useState('');
+  const [groupId, setGroupId]                       = useState('');
+  const [showDrop, setShowDrop]                     = useState(false);
+  const [karlSuggestions, setKarlSuggestions]       = useState<KarlSuggestion[]>([]);
+  const [suggesting, setSuggesting]                 = useState(false);
+  const [creatingTag, setCreatingTag]               = useState<string | null>(null);
+  const [suggestError, setSuggestError]             = useState('');
+  const [hasAutoSuggested, setHasAutoSuggested]     = useState(false);
+  const autoSuggestTimer                            = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const atMax = selected.length >= maxTags;
 
-  // ─── Filtered tag list for dropdown ────────────────────────────────────────
+  // ─── Filtered tag list for dropdown ──────────────────────────────────────
 
   const filtered = allTags.filter(t =>
     (groupId ? t.tag_group_id === groupId : true) &&
@@ -82,7 +90,7 @@ export default function TagPicker({
     !selected.includes(t.name)
   );
 
-  // ─── Toggle a tag ───────────────────────────────────────────────────────────
+  // ─── Toggle existing tag ──────────────────────────────────────────────────
 
   const toggle = (name: string) => {
     if (selected.includes(name)) {
@@ -91,32 +99,60 @@ export default function TagPicker({
       if (atMax) return;
       onChange([...selected, name]);
     }
-    // Clear suggestion if user just accepted it
     setKarlSuggestions(prev => prev.filter(s => s.name !== name));
   };
 
-  // ─── Accept a Karl suggestion ───────────────────────────────────────────────
+  // ─── Accept a Karl suggestion ─────────────────────────────────────────────
 
   const acceptSuggestion = async (s: KarlSuggestion) => {
     if (atMax) return;
-    if (s.isNew) {
-      // New tag — need to create it first via supabase
-      // We can't call supabase directly here without userId — emit an event instead
-      // Parent modal handles new tag creation via onNewTag callback if provided
-      // For now: signal via a custom event the parent can listen to
-      // Simplest approach: add to selected optimistically, parent reconciles
+
+    if (!s.isNew) {
+      // Existing tag — just add it
       onChange([...selected, s.name]);
-    } else {
-      onChange([...selected, s.name]);
+      setKarlSuggestions(prev => prev.filter(x => x.name !== s.name));
+      return;
     }
-    setKarlSuggestions(prev => prev.filter(x => x.name !== s.name));
+
+    // New tag — create in DB first
+    setCreatingTag(s.name);
+    try {
+      // Resolve group_id — fall back to General group if not found
+      let targetGroupId = s.group_id ?? null;
+      if (!targetGroupId) {
+        const generalGroup = tagGroups.find(g => g.name === 'General');
+        targetGroupId = generalGroup?.tag_group_id ?? tagGroups[0]?.tag_group_id ?? null;
+      }
+
+      const { error } = await supabase.from('tag').insert({
+        user_id:      userId,
+        tag_group_id: targetGroupId,
+        name:         s.name,
+        description:  s.description ?? null,
+        is_archived:  false,
+      });
+
+      if (error) throw error;
+
+      // Add to selected
+      onChange([...selected, s.name]);
+
+      // Notify parent to reload allTags
+      onTagCreated?.();
+
+    } catch (e: any) {
+      setSuggestError(`Couldn't create tag "${s.name}" — ${e.message}`);
+    } finally {
+      setCreatingTag(null);
+      setKarlSuggestions(prev => prev.filter(x => x.name !== s.name));
+    }
   };
 
   const dismissSuggestion = (name: string) => {
     setKarlSuggestions(prev => prev.filter(s => s.name !== name));
   };
 
-  // ─── Karl suggest — auto (on contextText change, debounced) ────────────────
+  // ─── Auto-suggest on blur (existing tags only) ────────────────────────────
 
   const autoSuggest = () => {
     if (hasAutoSuggested) return;
@@ -125,16 +161,17 @@ export default function TagPicker({
     autoSuggestTimer.current = setTimeout(() => {
       runSuggest(false);
       setHasAutoSuggested(true);
-    }, 800);
+    }, 600);
   };
 
-  // ─── Karl suggest — manual ("Suggest" button) ──────────────────────────────
+  // ─── Manual suggest (can propose new tags) ────────────────────────────────
 
   const manualSuggest = () => {
+    setHasAutoSuggested(true); // prevent auto from firing after manual
     runSuggest(true);
   };
 
-  // ─── Core suggest call ─────────────────────────────────────────────────────
+  // ─── Core suggest call ────────────────────────────────────────────────────
 
   const runSuggest = async (isManual: boolean) => {
     if (suggesting) return;
@@ -150,9 +187,9 @@ export default function TagPicker({
           'Authorization': `Bearer ${accessToken}`,
         },
         body: JSON.stringify({
-          mode: 'inline',
-          object_type: objectType,
-          context_text: contextText,
+          mode:          'inline',
+          object_type:   objectType,
+          context_text:  contextText,
           selected_tags: selected,
         }),
       });
@@ -169,15 +206,15 @@ export default function TagPicker({
         }
       }
 
-      // New tag ideas — only show on manual suggest
+      // New tag ideas — manual only
       if (isManual) {
         for (const idea of (data.new_tag_ideas ?? [])) {
-          if (!selected.includes(idea.name)) {
+          if (!selected.includes(idea.name) && !allTags.find(t => t.name === idea.name)) {
             suggestions.push({
-              name: idea.name,
-              isNew: true,
-              group: idea.group,
-              group_id: idea.group_id,
+              name:        idea.name,
+              isNew:       true,
+              group:       idea.group,
+              group_id:    idea.group_id,
               description: idea.description,
             });
           }
@@ -186,18 +223,18 @@ export default function TagPicker({
 
       setKarlSuggestions(suggestions);
     } catch (e: any) {
-      setSuggestError('Karl couldn\'t suggest tags right now.');
+      setSuggestError("Karl couldn't suggest tags right now.");
     } finally {
       setSuggesting(false);
     }
   };
 
-  // ─── Accent helpers ─────────────────────────────────────────────────────────
+  // ─── Accent helpers ───────────────────────────────────────────────────────
 
-  const accentBg = `${accentColor}15`;
+  const accentBg     = `${accentColor}15`;
   const accentBorder = `${accentColor}40`;
 
-  // ─── Render ────────────────────────────────────────────────────────────────
+  // ─── Render ───────────────────────────────────────────────────────────────
 
   return (
     <div style={{ marginBottom: '0.85rem' }}>
@@ -216,9 +253,7 @@ export default function TagPicker({
       {selected.length > 0 && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem', marginBottom: '0.5rem' }}>
           {selected.map(name => (
-            <span
-              key={name}
-              onClick={() => toggle(name)}
+            <span key={name} onClick={() => toggle(name)}
               style={{ fontSize: '0.72rem', color: '#fff', background: accentColor, borderRadius: '3px', padding: '0.15rem 0.4rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.25rem', fontFamily: 'monospace' }}
             >
               {name} <span style={{ opacity: 0.8 }}>✕</span>
@@ -227,12 +262,10 @@ export default function TagPicker({
         </div>
       )}
 
-      {/* Picker row — group filter + search */}
+      {/* Picker row */}
       {!atMax && (
         <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <select
-            value={groupId}
-            onChange={e => setGroupId(e.target.value)}
+          <select value={groupId} onChange={e => setGroupId(e.target.value)}
             style={{ ...inputStyle, flex: '0 0 120px', fontSize: '0.72rem', padding: '0.35rem 0.5rem' }}
           >
             <option value="">All groups</option>
@@ -244,10 +277,7 @@ export default function TagPicker({
               value={search}
               onChange={e => { setSearch(e.target.value); setShowDrop(true); }}
               onFocus={() => setShowDrop(true)}
-              onBlur={() => {
-                setTimeout(() => setShowDrop(false), 150);
-                autoSuggest();
-              }}
+              onBlur={() => { setTimeout(() => setShowDrop(false), 150); autoSuggest(); }}
               placeholder="Search tags..."
               style={{ ...inputStyle, marginBottom: 0 }}
               onFocusCapture={e => (e.target.style.borderColor = accentColor)}
@@ -256,9 +286,7 @@ export default function TagPicker({
             {showDrop && filtered.length > 0 && (
               <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #ddd', borderRadius: '4px', zIndex: 20, maxHeight: '140px', overflowY: 'auto', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}>
                 {filtered.map(tag => (
-                  <div
-                    key={tag.tag_id}
-                    onMouseDown={() => { toggle(tag.name); setSearch(''); }}
+                  <div key={tag.tag_id} onMouseDown={() => { toggle(tag.name); setSearch(''); }}
                     style={{ padding: '0.4rem 0.65rem', fontSize: '0.78rem', color: '#333', cursor: 'pointer', borderBottom: '1px solid #f5f5f5', fontFamily: 'monospace' }}
                     onMouseEnter={e => (e.currentTarget.style.background = accentBg)}
                     onMouseLeave={e => (e.currentTarget.style.background = '#fff')}
@@ -271,34 +299,19 @@ export default function TagPicker({
           </div>
 
           {/* Suggest button */}
-          <button
-            onClick={manualSuggest}
-            disabled={suggesting || !contextText.trim()}
+          <button onClick={manualSuggest} disabled={suggesting || !contextText.trim()}
             title="Ask Karl to suggest tags"
-            style={{
-              flexShrink: 0,
-              background: suggesting ? '#f5f5f5' : accentBg,
-              border: `1px solid ${accentBorder}`,
-              color: accentColor,
-              padding: '0.35rem 0.6rem',
-              borderRadius: '4px',
-              fontFamily: 'monospace',
-              fontSize: '0.68rem',
-              cursor: suggesting || !contextText.trim() ? 'not-allowed' : 'pointer',
-              opacity: !contextText.trim() ? 0.4 : 1,
-              transition: 'all 0.15s',
-              whiteSpace: 'nowrap',
-            }}
+            style={{ flexShrink: 0, background: suggesting ? '#f5f5f5' : accentBg, border: `1px solid ${accentBorder}`, color: accentColor, padding: '0.35rem 0.6rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.68rem', cursor: suggesting || !contextText.trim() ? 'not-allowed' : 'pointer', opacity: !contextText.trim() ? 0.4 : 1, transition: 'all 0.15s', whiteSpace: 'nowrap' }}
           >
             {suggesting ? '···' : '✦ suggest'}
           </button>
         </div>
       )}
 
-      {/* At max message */}
+      {/* At max */}
       {atMax && (
         <div style={{ fontSize: '0.68rem', color: accentColor, fontFamily: 'monospace', marginTop: '0.25rem' }}>
-          Max {maxTags} tags reached — remove one to add another
+          Max {maxTags} tags — remove one to add another
         </div>
       )}
 
@@ -313,37 +326,35 @@ export default function TagPicker({
               <div key={s.name} style={{ display: 'flex', alignItems: 'center', gap: '0.2rem' }}>
                 <span
                   onClick={() => acceptSuggestion(s)}
-                  title={s.isNew ? `New tag — ${s.description ?? ''}` : 'Click to add'}
-                  style={{
-                    fontSize: '0.72rem',
-                    color: s.isNew ? '#fff' : accentColor,
-                    background: s.isNew ? accentColor : '#fff',
-                    border: `1px solid ${accentColor}`,
-                    borderRadius: '3px',
-                    padding: '0.15rem 0.4rem',
-                    cursor: atMax ? 'not-allowed' : 'pointer',
-                    fontFamily: 'monospace',
-                    opacity: atMax ? 0.5 : 1,
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.25rem',
-                  }}
+                  title={s.isNew ? `Create new tag in ${s.group ?? 'General'} — ${s.description ?? ''}` : 'Click to add'}
+                  style={{ fontSize: '0.72rem', color: s.isNew ? '#fff' : accentColor, background: s.isNew ? accentColor : '#fff', border: `1px solid ${accentColor}`, borderRadius: '3px', padding: '0.15rem 0.4rem', cursor: atMax || creatingTag === s.name ? 'not-allowed' : 'pointer', fontFamily: 'monospace', opacity: atMax ? 0.5 : 1, display: 'flex', alignItems: 'center', gap: '0.3rem' }}
                 >
-                  {s.isNew && <span style={{ fontSize: '0.6rem', opacity: 0.8 }}>+new</span>}
-                  {s.name}
+                  {creatingTag === s.name ? (
+                    <span style={{ fontSize: '0.65rem' }}>creating...</span>
+                  ) : (
+                    <>
+                      {s.isNew && (
+                        <span style={{ fontSize: '0.58rem', opacity: 0.85, background: 'rgba(255,255,255,0.2)', borderRadius: '2px', padding: '0.05rem 0.2rem' }}>
+                          +new {s.group ? `[${s.group}]` : ''}
+                        </span>
+                      )}
+                      {s.name}
+                    </>
+                  )}
                 </span>
-                <span
-                  onClick={() => dismissSuggestion(s.name)}
-                  style={{ fontSize: '0.65rem', color: '#aaa', cursor: 'pointer', lineHeight: 1 }}
-                  title="Dismiss"
-                >✕</span>
+                {creatingTag !== s.name && (
+                  <span onClick={() => dismissSuggestion(s.name)}
+                    style={{ fontSize: '0.65rem', color: '#aaa', cursor: 'pointer', lineHeight: 1 }}
+                    title="Dismiss"
+                  >✕</span>
+                )}
               </div>
             ))}
           </div>
         </div>
       )}
 
-      {/* Suggest error */}
+      {/* Error */}
       {suggestError && (
         <div style={{ fontSize: '0.68rem', color: '#ef4444', fontFamily: 'monospace', marginTop: '0.35rem' }}>
           {suggestError}
@@ -357,15 +368,8 @@ export default function TagPicker({
 // ─── STYLES ──────────────────────────────────────────────────────────────────
 
 const inputStyle: React.CSSProperties = {
-  width: '100%',
-  background: '#fafafa',
-  border: '1px solid #ddd',
-  color: '#222',
-  padding: '0.5rem 0.65rem',
-  borderRadius: '4px',
-  fontFamily: 'monospace',
-  fontSize: '0.82rem',
-  outline: 'none',
-  boxSizing: 'border-box',
-  transition: 'border-color 0.15s',
+  width: '100%', background: '#fafafa', border: '1px solid #ddd',
+  color: '#222', padding: '0.5rem 0.65rem', borderRadius: '4px',
+  fontFamily: 'monospace', fontSize: '0.82rem', outline: 'none',
+  boxSizing: 'border-box', transition: 'border-color 0.15s',
 };

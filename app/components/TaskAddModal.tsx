@@ -348,10 +348,15 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
                   allTags={allTags}
                   tagGroups={tagGroups}
                   onChange={setTags}
+                  onTagCreated={async () => {
+                    const { data } = await supabase.from('tag').select('tag_id, name, tag_group_id').eq('user_id', userId).eq('is_archived', false).order('name');
+                    if (data) setAllTags(data);
+                  }}
                   accentColor={ACCENT}
                   objectType="task"
                   contextText={contextText}
                   accessToken={accessToken}
+                  userId={userId}
                   label={isCapture ? 'Tags' : 'Tags *'}
                 />
                 {needsTagWarn && (
