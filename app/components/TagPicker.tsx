@@ -53,6 +53,7 @@ interface TagPickerProps {
   userId: string;
   maxTags?: number;
   label?: string;
+  onSuggestInvoked?: () => void;
 }
 
 export default function TagPicker({
@@ -68,6 +69,7 @@ export default function TagPicker({
   userId,
   maxTags = 5,
   label = 'Tags',
+  onSuggestInvoked,
 }: TagPickerProps) {
 
   const [search, setSearch]                         = useState('');
@@ -78,6 +80,7 @@ export default function TagPicker({
   const [creatingTag, setCreatingTag]               = useState<string | null>(null);
   const [suggestError, setSuggestError]             = useState('');
   const [hasAutoSuggested, setHasAutoSuggested]     = useState(false);
+  const [showSuggestions, setShowSuggestions]       = useState(false);
   const autoSuggestTimer                            = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const atMax = selected.length >= maxTags;
@@ -155,19 +158,22 @@ export default function TagPicker({
   // ─── Auto-suggest on blur (existing tags only) ────────────────────────────
 
   const autoSuggest = () => {
+    // Runs silently in background — results only shown when user hits suggest
     if (hasAutoSuggested) return;
     if (!contextText.trim() || contextText.trim().length < 10) return;
     if (autoSuggestTimer.current) clearTimeout(autoSuggestTimer.current);
     autoSuggestTimer.current = setTimeout(() => {
-      runSuggest(false);
       setHasAutoSuggested(true);
+      // Don't call runSuggest here — wait for manual trigger
     }, 600);
   };
 
   // ─── Manual suggest (can propose new tags) ────────────────────────────────
 
   const manualSuggest = () => {
-    setHasAutoSuggested(true); // prevent auto from firing after manual
+    setHasAutoSuggested(true);
+    setShowSuggestions(true);
+    onSuggestInvoked?.();
     runSuggest(true);
   };
 
@@ -316,10 +322,21 @@ export default function TagPicker({
       )}
 
       {/* Karl suggestions strip */}
-      {karlSuggestions.length > 0 && (
+      {showSuggestions && karlSuggestions.length > 0 && (
         <div style={{ marginTop: '0.6rem', padding: '0.5rem 0.65rem', background: accentBg, border: `1px solid ${accentBorder}`, borderRadius: '4px' }}>
-          <div style={{ fontSize: '0.62rem', color: '#888', fontFamily: 'monospace', marginBottom: '0.4rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-            Karl suggests:
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.4rem' }}>
+            <div style={{ fontSize: '0.62rem', color: '#888', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Karl suggests:</div>
+            {karlSuggestions.filter(s => !s.isNew).length > 1 && (
+              <button
+                onClick={() => {
+                  const toAdd = karlSuggestions.filter(s => !s.isNew && !selected.includes(s.name)).map(s => s.name);
+                  const newSelected = [...selected, ...toAdd].slice(0, maxTags);
+                  onChange(newSelected);
+                  setKarlSuggestions(prev => prev.filter(s => s.isNew));
+                }}
+                style={{ fontSize: '0.62rem', color: accentColor, background: 'none', border: `1px solid ${accentBorder}`, borderRadius: '3px', padding: '0.1rem 0.4rem', cursor: 'pointer', fontFamily: 'monospace' }}
+              >accept all</button>
+            )}
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
             {karlSuggestions.map(s => (

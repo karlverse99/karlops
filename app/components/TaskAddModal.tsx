@@ -78,7 +78,8 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
   const [contextId, setContextId]    = useState('');
   const [statusId, setStatusId]      = useState('');
   const [targetDate, setTargetDate]  = useState('');
-  const [karlContext, setKarlContext] = useState('');
+  const [karlContext, setKarlContext]   = useState('');
+  const [suggestInvoked, setSuggestInvoked] = useState(false);
   const [notes, setNotes]              = useState('');
   const [tags, setTags]              = useState<string[]>([]);
 
@@ -346,8 +347,8 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
                 />
               </div>
 
-              {/* 5. TELL KARL MORE — ephemeral */}
-              <div style={{ marginBottom: '1rem' }}>
+              {/* 5. TELL KARL MORE — ephemeral, only after suggest pressed */}
+              {suggestInvoked && <div style={{ marginBottom: '1rem' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.35rem' }}>
                   <div style={labelStyle}>Tell Karl More</div>
                   <span style={{ fontSize: '0.62rem', color: '#aaa', fontStyle: 'italic' }}>helps tag suggestion — not saved</span>
@@ -358,7 +359,7 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
                   onFocus={e => (e.target.style.borderColor = '#c8b96a')}
                   onBlur={e => (e.target.style.borderColor = '#e5e0c8')}
                 />
-              </div>
+              </div>}
 
               {/* 6. TAGS — last */}
               <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: '1rem' }}>
@@ -377,12 +378,9 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
                   accessToken={accessToken}
                   userId={userId}
                   label={isCapture ? 'Tags' : 'Tags *'}
+                  onSuggestInvoked={() => setSuggestInvoked(true)}
                 />
-                {needsTagWarn && (
-                  <div style={{ fontSize: '0.68rem', color: '#b45309', fontFamily: 'monospace', marginTop: '-0.5rem', marginBottom: '0.5rem' }}>
-                    Tags required for {bucket} bucket
-                  </div>
-                )}
+
               </div>
 
               {/* SUCCESS — curated */}
