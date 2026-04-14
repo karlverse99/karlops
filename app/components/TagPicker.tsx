@@ -309,7 +309,7 @@ export default function TagPicker({
             title="Ask Karl to suggest tags"
             style={{ flexShrink: 0, background: suggesting ? accentBg : accentBg, border: `2px solid ${suggesting ? accentColor : accentBorder}`, color: accentColor, padding: '0.35rem 0.6rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.68rem', cursor: suggesting || !contextText.trim() ? 'not-allowed' : 'pointer', opacity: !contextText.trim() ? 0.4 : 1, transition: 'all 0.2s', whiteSpace: 'nowrap', fontWeight: suggesting ? 700 : 400 }}
           >
-            {suggesting ? '⟳ thinking...' : '✦ suggest'}
+            {suggesting ? '⟳ thinking...' : showSuggestions ? '↺ retry' : '✦ suggest'}
           </button>
         </div>
       )}
@@ -326,17 +326,22 @@ export default function TagPicker({
         <div style={{ marginTop: '0.6rem', padding: '0.5rem 0.65rem', background: accentBg, border: `1px solid ${accentBorder}`, borderRadius: '4px' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.4rem' }}>
             <div style={{ fontSize: '0.62rem', color: '#888', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Karl suggests:</div>
-            {karlSuggestions.filter(s => !s.isNew).length > 1 && (
-              <button
-                onClick={() => {
-                  const toAdd = karlSuggestions.filter(s => !s.isNew && !selected.includes(s.name)).map(s => s.name);
-                  const newSelected = [...selected, ...toAdd].slice(0, maxTags);
-                  onChange(newSelected);
-                  setKarlSuggestions(prev => prev.filter(s => s.isNew));
-                }}
-                style={{ fontSize: '0.62rem', color: accentColor, background: 'none', border: `1px solid ${accentBorder}`, borderRadius: '3px', padding: '0.1rem 0.4rem', cursor: 'pointer', fontFamily: 'monospace' }}
-              >accept all</button>
-            )}
+            <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+              <button onClick={() => runSuggest(true)} disabled={suggesting}
+                style={{ fontSize: '0.62rem', color: '#888', background: 'none', border: 'none', cursor: suggesting ? 'not-allowed' : 'pointer', fontFamily: 'monospace', padding: '0.1rem 0.2rem' }}
+              >{suggesting ? '⟳' : '↺ retry'}</button>
+              {karlSuggestions.filter(s => !s.isNew).length > 1 && (
+                <button
+                  onClick={() => {
+                    const toAdd = karlSuggestions.filter(s => !s.isNew && !selected.includes(s.name)).map(s => s.name);
+                    const newSelected = [...selected, ...toAdd].slice(0, maxTags);
+                    onChange(newSelected);
+                    setKarlSuggestions(prev => prev.filter(s => s.isNew));
+                  }}
+                  style={{ fontSize: '0.62rem', color: accentColor, background: 'none', border: `1px solid ${accentBorder}`, borderRadius: '3px', padding: '0.1rem 0.4rem', cursor: 'pointer', fontFamily: 'monospace' }}
+                >accept all</button>
+              )}
+            </div>
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
             {karlSuggestions.map(s => (
