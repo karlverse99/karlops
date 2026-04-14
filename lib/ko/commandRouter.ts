@@ -102,7 +102,7 @@ Rules:
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 200,
-        system: systemPrompt,
+        system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
         messages: [{ role: 'user', content: `Content to tag: ${context_text}` }],
       }),
     });
@@ -236,21 +236,40 @@ export async function routeCommand(
         : 'Question/command/unclear: { "intent": "question", "response": "Karl\'s response" }',
     ].join('\n');
 
-    // ── Call Anthropic ─────────────────────────────────────────────────────
+    // ── Call Anthropic with prompt caching ────────────────────────────────
+    // System prompt is cached — saves ~90% on repeated input tokens
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-api-key': process.env.ANTHROPIC_API_KEY!,
         'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'prompt-caching-2024-07-31',
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: isDeep ? 1500 : 800,
-        system: systemPrompt,
+        system: [
+          {
+            type: 'text',
+            text: systemPrompt,
+            cache_control: { type: 'ephemeral' },
+          }
+        ],
         messages: anthropicMessages,
       }),
     });
+
+    // Log token usage for cost visibility
+    const usage = (await res.clone().json().catch(() => null))?.usage;
+    if (usage) {
+      console.log('[commandRouter] tokens:', {
+        input:        usage.input_tokens,
+        output:       usage.output_tokens,
+        cache_write:  usage.cache_creation_input_tokens ?? 0,
+        cache_read:   usage.cache_read_input_tokens ?? 0,
+      });
+    }
 
     const data = await res.json();
     const text = data.content?.[0]?.text ?? '';
