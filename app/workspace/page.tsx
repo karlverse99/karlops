@@ -57,6 +57,22 @@ const BUCKET_ID: Record<string, string> = {
 const CONFIRM_WORDS = ['yes', 'yeah', 'yep', 'yup', 'do it', 'confirm', 'ok', 'sure', 'go', 'capture it', 'add it', 'capture them', 'add them', 'all of them'];
 const DENY_WORDS    = ['no', 'nope', 'cancel', 'stop', 'nevermind', 'never mind', 'nah'];
 
+function isConfirmMatch(text: string): boolean {
+  const lower = text.toLowerCase().trim();
+  return CONFIRM_WORDS.some(w => {
+    const escaped = w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(^|\\s)${escaped}(\\s|$|[!.])`).test(lower);
+  });
+}
+
+function isDenyMatch(text: string): boolean {
+  const lower = text.toLowerCase().trim();
+  return DENY_WORDS.some(w => {
+    const escaped = w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(^|\\s)${escaped}(\\s|$|[!.])`).test(lower);
+  });
+}
+
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 
 function groupTasksByBucket(tasks: Task[]): Record<string, Task[]> {
@@ -497,9 +513,8 @@ export default function WorkspacePage() {
 
     try {
       if (pending) {
-        const lower     = text.toLowerCase();
-        const isConfirm = CONFIRM_WORDS.some(w => lower.includes(w));
-        const isDeny    = DENY_WORDS.some(w => lower.includes(w));
+          const isConfirm = isConfirmMatch(text);
+          const isDeny    = isDenyMatch(text);
 
         if (isConfirm) {
           const res = await fetch('/api/ko/command', {
