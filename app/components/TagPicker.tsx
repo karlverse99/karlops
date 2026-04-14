@@ -1,10 +1,24 @@
 'use client';
 
 // app/components/TagPicker.tsx
-// KarlOps L — Shared tag picker with Karl inline suggestion
-// v0.6.1 — inline create tag flow from search dropdown (no-match → + create "x")
+// KarlOps L — Simplified tag picker
+// v0.6.2 — no group filter, search + Karl suggest + inline new tag
+//
+// Props:
+//   selected       — currently selected tag names
+//   allTags        — full tag list from DB
+//   tagGroups      — tag groups (used only for new tag group assignment, not shown)
+//   onChange       — called with new tag array on any change
+//   onTagCreated   — called when a new tag is created — parent should reload allTags
+//   accentColor    — modal accent color
+//   objectType     — FC object type for Karl context
+//   contextText    — title + notes fed to Karl for suggestions
+//   accessToken    — for Karl suggest API call
+//   userId         — for creating new tags in DB
+//   maxTags        — max tags allowed (default 5)
+//   label          — field label (default 'Tags')
 
-import { useState, useRef } from 'react';
+import { useState } from 'react';
 import { supabase } from '@/lib/supabase';
 
 interface Tag {
@@ -18,10 +32,9 @@ interface TagGroup {
   name: string;
 }
 
-interface KarlSuggestion {
+interface Suggestion {
   name: string;
   isNew: boolean;
-  group?: string;
   group_id?: string | null;
   description?: string;
 }
@@ -39,8 +52,6 @@ interface TagPickerProps {
   userId: string;
   maxTags?: number;
   label?: string;
-  onSuggestInvoked?: () => void;
-  onOpenTagManager?: () => void;
 }
 
 export default function TagPicker({
@@ -56,166 +67,62 @@ export default function TagPicker({
   userId,
   maxTags = 5,
   label = 'Tags',
-  onSuggestInvoked,
-  onOpenTagManager,
 }: TagPickerProps) {
 
-  const [search, setSearch]                         = useState('');
-  const [groupId, setGroupId]                       = useState('');
-  const [showDrop, setShowDrop]                     = useState(false);
-  const [karlSuggestions, setKarlSuggestions]       = useState<KarlSuggestion[]>([]);
-  const [suggesting, setSuggesting]                 = useState(false);
-  const [suggestError, setSuggestError]             = useState('');
-  const [hasAutoSuggested, setHasAutoSuggested]     = useState(false);
-  const [showSuggestions, setShowSuggestions]       = useState(false);
-  const autoSuggestTimer                            = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [search, setSearch]             = useState('');
+  const [showDrop, setShowDrop]         = useState(false);
 
-  // ─── Inline create state ─────────────────────────────────────────────────
-  const [showCreate, setShowCreate]       = useState(false);
-  const [createName, setCreateName]       = useState('');
-  const [createGroupId, setCreateGroupId] = useState('');
-  const [createDesc, setCreateDesc]       = useState('');
-  const [creating, setCreating]           = useState(false);
-  const [createError, setCreateError]     = useState('');
+  // Suggest state
+  const [suggestions, setSuggestions]   = useState<Suggestion[]>([]);
+  const [suggesting, setSuggesting]     = useState(false);
+  const [suggestError, setSuggestError] = useState('');
+  const [suggestOpen, setSuggestOpen]   = useState(false);
+
+  // New tag inline form
+  const [showNew, setShowNew]           = useState(false);
+  const [newName, setNewName]           = useState('');
+  const [newDesc, setNewDesc]           = useState('');
+  const [creating, setCreating]         = useState(false);
+  const [createError, setCreateError]   = useState('');
 
   const atMax = selected.length >= maxTags;
 
-  // ─── General group (default) ──────────────────────────────────────────────
-  const generalGroup = tagGroups.find(g => g.name === 'General');
-  const defaultGroupId = generalGroup?.tag_group_id ?? tagGroups[0]?.tag_group_id ?? '';
+  const accentBg     = `${accentColor}12`;
+  const accentBorder = `${accentColor}40`;
 
-  // Sort tag groups: General first, rest alphabetically
-  const sortedGroups = [
-    ...tagGroups.filter(g => g.name === 'General'),
-    ...tagGroups.filter(g => g.name !== 'General').sort((a, b) => a.name.localeCompare(b.name)),
-  ];
+  // General group for new tags (silent — not shown to user)
+  const generalGroupId =
+    tagGroups.find(g => g.name === 'General')?.tag_group_id ??
+    tagGroups[0]?.tag_group_id ??
+    null;
 
-  // ─── Filtered tag list for dropdown ──────────────────────────────────────
+  // ─── Filtered dropdown ────────────────────────────────────────────────────
+
   const filtered = allTags.filter(t =>
-    (groupId ? t.tag_group_id === groupId : true) &&
-    (search ? t.name.toLowerCase().includes(search.toLowerCase()) : true) &&
-    !selected.includes(t.name)
+    !selected.includes(t.name) &&
+    (search ? t.name.toLowerCase().includes(search.toLowerCase()) : true)
   );
 
-  // Show "+ create" option when search has text and no exact match
-  const showCreateOption = search.trim().length > 0 && !allTags.find(t => t.name.toLowerCase() === search.trim().toLowerCase());
+  // ─── Add / remove ─────────────────────────────────────────────────────────
 
-  // ─── Toggle existing tag ──────────────────────────────────────────────────
-  const toggle = (name: string) => {
-    if (selected.includes(name)) {
-      onChange(selected.filter(t => t !== name));
-    } else {
-      if (atMax) return;
-      onChange([...selected, name]);
-    }
-    setKarlSuggestions(prev => prev.filter(s => s.name !== name));
-  };
-
-  // ─── Open inline create form ──────────────────────────────────────────────
-  const openCreate = (name: string) => {
-    setShowDrop(false);
-    setCreateName(name);
-    setCreateGroupId(defaultGroupId);
-    setCreateDesc('');
-    setCreateError('');
-    setShowCreate(true);
+  const add = (name: string) => {
+    if (atMax || selected.includes(name)) return;
+    onChange([...selected, name]);
+    setSuggestions(prev => prev.filter(s => s.name !== name));
     setSearch('');
+    setShowDrop(false);
   };
 
-  // ─── Submit inline create ─────────────────────────────────────────────────
-  const handleCreate = async () => {
-    if (!createName.trim()) return;
-    setCreating(true);
-    setCreateError('');
-    try {
-      const { error } = await supabase.from('tag').insert({
-        user_id:      userId,
-        tag_group_id: createGroupId || defaultGroupId,
-        name:         createName.trim(),
-        description:  createDesc.trim() || null,
-        is_archived:  false,
-      });
-      if (error) throw error;
+  const remove = (name: string) => onChange(selected.filter(t => t !== name));
 
-      // Add to selected
-      if (!atMax) onChange([...selected, createName.trim()]);
+  // ─── Karl suggest ─────────────────────────────────────────────────────────
 
-      // Notify parent to reload allTags
-      onTagCreated?.();
-
-      // Reset form
-      setShowCreate(false);
-      setCreateName('');
-      setCreateDesc('');
-      setCreateGroupId('');
-    } catch (e: any) {
-      setCreateError(e.message ?? 'Could not create tag');
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  // ─── Accept a Karl suggestion ─────────────────────────────────────────────
-  const acceptSuggestion = async (s: KarlSuggestion) => {
-    if (atMax) return;
-
-    if (!s.isNew) {
-      onChange([...selected, s.name]);
-      setKarlSuggestions(prev => prev.filter(x => x.name !== s.name));
-      return;
-    }
-
-    // New tag — create in DB first
-    try {
-      let targetGroupId = s.group_id ?? null;
-      if (!targetGroupId) {
-        targetGroupId = generalGroup?.tag_group_id ?? tagGroups[0]?.tag_group_id ?? null;
-      }
-      const { error } = await supabase.from('tag').insert({
-        user_id:      userId,
-        tag_group_id: targetGroupId,
-        name:         s.name,
-        description:  s.description ?? null,
-        is_archived:  false,
-      });
-      if (error) throw error;
-      onChange([...selected, s.name]);
-      onTagCreated?.();
-    } catch (e: any) {
-      setSuggestError(`Couldn't create tag "${s.name}" — ${e.message}`);
-    } finally {
-      setKarlSuggestions(prev => prev.filter(x => x.name !== s.name));
-    }
-  };
-
-  const dismissSuggestion = (name: string) => {
-    setKarlSuggestions(prev => prev.filter(s => s.name !== name));
-  };
-
-  // ─── Auto-suggest on blur ─────────────────────────────────────────────────
-  const autoSuggest = () => {
-    if (hasAutoSuggested) return;
-    if (!contextText.trim() || contextText.trim().length < 10) return;
-    if (autoSuggestTimer.current) clearTimeout(autoSuggestTimer.current);
-    autoSuggestTimer.current = setTimeout(() => {
-      setHasAutoSuggested(true);
-    }, 600);
-  };
-
-  // ─── Manual suggest ───────────────────────────────────────────────────────
-  const manualSuggest = () => {
-    setHasAutoSuggested(true);
-    setShowSuggestions(true);
-    onSuggestInvoked?.();
-    runSuggest(true);
-  };
-
-  // ─── Core suggest call ────────────────────────────────────────────────────
-  const runSuggest = async (isManual: boolean) => {
+  const runSuggest = async () => {
     if (suggesting) return;
     setSuggesting(true);
     setSuggestError('');
-    setKarlSuggestions([]);
+    setSuggestions([]);
+    setSuggestOpen(true);
 
     try {
       const res = await fetch('/api/ko/suggest-tags', {
@@ -235,50 +142,91 @@ export default function TagPicker({
       const data = await res.json();
       if (!data.success) throw new Error(data.error ?? 'Suggestion failed');
 
-      const suggestions: KarlSuggestion[] = [];
+      const results: Suggestion[] = [];
 
       for (const name of (data.suggested ?? [])) {
         if (!selected.includes(name) && allTags.find(t => t.name === name)) {
-          suggestions.push({ name, isNew: false });
+          results.push({ name, isNew: false });
+        }
+      }
+      for (const idea of (data.new_tag_ideas ?? [])) {
+        if (!selected.includes(idea.name) && !allTags.find(t => t.name === idea.name)) {
+          results.push({ name: idea.name, isNew: true, group_id: idea.group_id, description: idea.description });
         }
       }
 
-      if (isManual) {
-        for (const idea of (data.new_tag_ideas ?? [])) {
-          if (!selected.includes(idea.name) && !allTags.find(t => t.name === idea.name)) {
-            suggestions.push({
-              name:        idea.name,
-              isNew:       true,
-              group:       idea.group,
-              group_id:    idea.group_id,
-              description: idea.description,
-            });
-          }
-        }
-      }
-
-      setKarlSuggestions(suggestions);
-    } catch (e: any) {
+      setSuggestions(results);
+      if (results.length === 0) setSuggestError('No suggestions — try adding more task detail.');
+    } catch {
       setSuggestError("Karl couldn't suggest tags right now.");
     } finally {
       setSuggesting(false);
     }
   };
 
-  // ─── Accent helpers ───────────────────────────────────────────────────────
-  const accentBg     = `${accentColor}15`;
-  const accentBorder = `${accentColor}40`;
+  const acceptSuggestion = async (s: Suggestion) => {
+    if (atMax) return;
+    if (!s.isNew) { add(s.name); return; }
+
+    // New tag — create in General group silently
+    setCreating(true);
+    try {
+      const { error } = await supabase.from('tag').insert({
+        user_id:      userId,
+        tag_group_id: s.group_id ?? generalGroupId,
+        name:         s.name,
+        description:  s.description ?? null,
+        is_archived:  false,
+      });
+      if (error) throw error;
+      onChange([...selected, s.name]);
+      onTagCreated?.();
+    } catch (e: any) {
+      setSuggestError(`Couldn't create "${s.name}"`);
+    } finally {
+      setCreating(false);
+      setSuggestions(prev => prev.filter(x => x.name !== s.name));
+    }
+  };
+
+  // ─── Create new tag ───────────────────────────────────────────────────────
+
+  const handleCreate = async () => {
+    if (!newName.trim() || creating) return;
+    setCreating(true);
+    setCreateError('');
+    try {
+      const { error } = await supabase.from('tag').insert({
+        user_id:      userId,
+        tag_group_id: generalGroupId,
+        name:         newName.trim(),
+        description:  newDesc.trim() || null,
+        is_archived:  false,
+      });
+      if (error) throw error;
+      if (!atMax) onChange([...selected, newName.trim()]);
+      onTagCreated?.();
+      setShowNew(false);
+      setNewName('');
+      setNewDesc('');
+    } catch (e: any) {
+      setCreateError(e.message ?? 'Could not create tag');
+    } finally {
+      setCreating(false);
+    }
+  };
 
   // ─── Render ───────────────────────────────────────────────────────────────
+
   return (
     <div style={{ marginBottom: '0.85rem' }}>
 
       {/* Label + count */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.35rem' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.4rem' }}>
         <div style={{ color: '#000', fontSize: '0.65rem', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>
           {label}
         </div>
-        <div style={{ fontSize: '0.62rem', color: atMax ? accentColor : '#aaa', fontFamily: 'monospace' }}>
+        <div style={{ fontSize: '0.62rem', color: atMax ? accentColor : '#bbb', fontFamily: 'monospace' }}>
           {selected.length}/{maxTags}
         </div>
       </div>
@@ -287,212 +235,165 @@ export default function TagPicker({
       {selected.length > 0 && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem', marginBottom: '0.5rem' }}>
           {selected.map(name => (
-            <span key={name} onClick={() => toggle(name)}
-              style={{ fontSize: '0.72rem', color: '#fff', background: accentColor, borderRadius: '3px', padding: '0.15rem 0.4rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.25rem', fontFamily: 'monospace' }}
-            >
-              {name} <span style={{ opacity: 0.8 }}>✕</span>
+            <span key={name} style={{ fontSize: '0.72rem', color: '#fff', background: accentColor, borderRadius: '3px', padding: '0.15rem 0.45rem', display: 'flex', alignItems: 'center', gap: '0.3rem', fontFamily: 'monospace' }}>
+              {name}
+              <span onClick={() => remove(name)} style={{ opacity: 0.7, cursor: 'pointer', fontSize: '0.65rem' }}>✕</span>
             </span>
           ))}
         </div>
       )}
 
-      {/* Picker row */}
+      {/* Search + buttons */}
       {!atMax && (
-        <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <select value={groupId} onChange={e => setGroupId(e.target.value)}
-            style={{ ...inputStyle, flex: '0 0 120px', fontSize: '0.72rem', padding: '0.35rem 0.5rem' }}
-          >
-            <option value="">All groups</option>
-            {tagGroups.map(g => <option key={g.tag_group_id} value={g.tag_group_id}>{g.name}</option>)}
-          </select>
+        <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'stretch' }}>
 
+          {/* Search */}
           <div style={{ position: 'relative', flex: 1 }}>
             <input
               value={search}
-              onChange={e => { setSearch(e.target.value); setShowDrop(true); setShowCreate(false); }}
+              onChange={e => { setSearch(e.target.value); setShowDrop(true); }}
               onFocus={() => setShowDrop(true)}
-              onBlur={() => { setTimeout(() => setShowDrop(false), 150); autoSuggest(); }}
-              placeholder="Search or create tags..."
+              onBlur={() => setTimeout(() => setShowDrop(false), 150)}
+              placeholder="Search tags..."
               style={{ ...inputStyle, marginBottom: 0 }}
               onFocusCapture={e => (e.target.style.borderColor = accentColor)}
               onBlurCapture={e => (e.target.style.borderColor = '#ddd')}
             />
-            {showDrop && (filtered.length > 0 || showCreateOption) && (
-              <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #ddd', borderRadius: '4px', zIndex: 9999, maxHeight: '160px', overflowY: 'auto', boxShadow: '0 4px 16px rgba(0,0,0,0.15)' }}>
-                {filtered.map(tag => (
-                  <div key={tag.tag_id} onMouseDown={() => { toggle(tag.name); setSearch(''); }}
+            {showDrop && search.length > 0 && (
+              <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #ddd', borderRadius: '4px', zIndex: 9999, maxHeight: '180px', overflowY: 'auto', boxShadow: '0 4px 16px rgba(0,0,0,0.12)' }}>
+                {filtered.length > 0 ? filtered.map(tag => (
+                  <div key={tag.tag_id}
+                    onMouseDown={() => add(tag.name)}
                     style={{ padding: '0.4rem 0.65rem', fontSize: '0.78rem', color: '#333', cursor: 'pointer', borderBottom: '1px solid #f5f5f5', fontFamily: 'monospace' }}
                     onMouseEnter={e => (e.currentTarget.style.background = accentBg)}
                     onMouseLeave={e => (e.currentTarget.style.background = '#fff')}
                   >
                     {tag.name}
                   </div>
-                ))}
-                {/* Create option — shown when no exact match */}
-                {showCreateOption && (
-                  <div
-                    onMouseDown={() => openCreate(search.trim())}
-                    style={{ padding: '0.4rem 0.65rem', fontSize: '0.78rem', color: accentColor, cursor: 'pointer', fontFamily: 'monospace', borderTop: filtered.length > 0 ? '1px solid #f0f0f0' : 'none', display: 'flex', alignItems: 'center', gap: '0.4rem', background: accentBg }}
-                    onMouseEnter={e => (e.currentTarget.style.opacity = '0.8')}
-                    onMouseLeave={e => (e.currentTarget.style.opacity = '1')}
-                  >
-                    <span style={{ fontWeight: 700 }}>+</span>
-                    <span>create <span style={{ fontWeight: 600 }}>"{search.trim()}"</span></span>
+                )) : (
+                  <div style={{ padding: '0.5rem 0.65rem', fontSize: '0.75rem', color: '#aaa', fontFamily: 'monospace', fontStyle: 'italic' }}>
+                    no match
                   </div>
                 )}
               </div>
             )}
           </div>
 
-          {/* Tag manager button */}
-          {onOpenTagManager && (
-            <button onClick={onOpenTagManager}
-              title="Manage tags"
-              style={{ flexShrink: 0, background: '#fafafa', border: '1px solid #ddd', color: '#888', padding: '0.35rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.68rem', cursor: 'pointer', transition: 'all 0.15s' }}
-              onMouseEnter={e => { e.currentTarget.style.borderColor = '#bbb'; e.currentTarget.style.color = '#555'; }}
-              onMouseLeave={e => { e.currentTarget.style.borderColor = '#ddd'; e.currentTarget.style.color = '#888'; }}
-            >⚙</button>
-          )}
-
-          {/* Suggest button */}
-          <button onClick={manualSuggest} disabled={suggesting || !contextText.trim()}
+          {/* Karl suggest */}
+          <button
+            onClick={runSuggest}
+            disabled={suggesting || !contextText.trim()}
             title="Ask Karl to suggest tags"
-            style={{ flexShrink: 0, background: accentBg, border: `2px solid ${suggesting ? accentColor : accentBorder}`, color: accentColor, padding: '0.35rem 0.6rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.68rem', cursor: suggesting || !contextText.trim() ? 'not-allowed' : 'pointer', opacity: !contextText.trim() ? 0.4 : 1, transition: 'all 0.2s', whiteSpace: 'nowrap', fontWeight: suggesting ? 700 : 400 }}
+            style={{ flexShrink: 0, background: accentBg, border: `1.5px solid ${accentBorder}`, color: accentColor, padding: '0 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.68rem', cursor: suggesting || !contextText.trim() ? 'not-allowed' : 'pointer', opacity: !contextText.trim() ? 0.4 : 1, whiteSpace: 'nowrap' }}
           >
-            {suggesting ? '⟳ thinking...' : showSuggestions ? '↺ retry' : '✦ suggest'}
+            {suggesting ? '⟳' : '✦ suggest'}
           </button>
+
+          {/* New tag toggle */}
+          <button
+            onClick={() => { setShowNew(v => !v); setNewName(''); setNewDesc(''); setCreateError(''); }}
+            title="Create a new tag"
+            style={{ flexShrink: 0, background: showNew ? '#f0f0f0' : '#fafafa', border: '1px solid #ddd', color: '#555', padding: '0 0.6rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.68rem', cursor: 'pointer', whiteSpace: 'nowrap' }}
+            onMouseEnter={e => { e.currentTarget.style.borderColor = '#bbb'; }}
+            onMouseLeave={e => { e.currentTarget.style.borderColor = '#ddd'; }}
+          >
+            + new
+          </button>
+
         </div>
       )}
 
-      {/* At max */}
+      {/* At max message */}
       {atMax && (
         <div style={{ fontSize: '0.68rem', color: accentColor, fontFamily: 'monospace', marginTop: '0.25rem' }}>
           Max {maxTags} tags — remove one to add another
         </div>
       )}
 
-      {/* ── Inline create form ── */}
-      {showCreate && (
-        <div style={{ marginTop: '0.6rem', padding: '0.75rem', background: '#fafafa', border: `1px solid ${accentBorder}`, borderRadius: '4px' }}>
-          <div style={{ fontSize: '0.62rem', color: '#888', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>
-            New tag
-          </div>
-
-          {/* Name */}
-          <div style={{ marginBottom: '0.4rem' }}>
-            <input
-              value={createName}
-              onChange={e => setCreateName(e.target.value)}
-              placeholder="Tag name"
-              style={{ ...inputStyle, fontSize: '0.78rem' }}
-              onFocus={e => (e.target.style.borderColor = accentColor)}
-              onBlur={e => (e.target.style.borderColor = '#ddd')}
-              onKeyDown={e => { if (e.key === 'Enter') handleCreate(); if (e.key === 'Escape') setShowCreate(false); }}
-              autoFocus
-            />
-          </div>
-
-          {/* Group */}
-          <div style={{ marginBottom: '0.4rem' }}>
-            <select
-              value={createGroupId || defaultGroupId}
-              onChange={e => setCreateGroupId(e.target.value)}
-              style={{ ...inputStyle, fontSize: '0.78rem' }}
-              onFocus={e => (e.target.style.borderColor = accentColor)}
-              onBlur={e => (e.target.style.borderColor = '#ddd')}
-            >
-              {sortedGroups.map(g => (
-                <option key={g.tag_group_id} value={g.tag_group_id}>{g.name}</option>
-              ))}
-            </select>
-          </div>
-
-          {/* Description */}
-          <div style={{ marginBottom: '0.5rem' }}>
-            <input
-              value={createDesc}
-              onChange={e => setCreateDesc(e.target.value)}
-              placeholder="Description (optional)"
-              style={{ ...inputStyle, fontSize: '0.78rem' }}
-              onFocus={e => (e.target.style.borderColor = accentColor)}
-              onBlur={e => (e.target.style.borderColor = '#ddd')}
-              onKeyDown={e => { if (e.key === 'Escape') setShowCreate(false); }}
-            />
-          </div>
-
-          {createError && (
-            <div style={{ fontSize: '0.68rem', color: '#ef4444', fontFamily: 'monospace', marginBottom: '0.4rem' }}>
-              {createError}
-            </div>
-          )}
-
-          <div style={{ display: 'flex', gap: '0.4rem', justifyContent: 'flex-end' }}>
-            <button
-              onClick={() => setShowCreate(false)}
-              style={{ background: 'none', border: '1px solid #ddd', color: '#888', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.72rem', cursor: 'pointer' }}
-            >cancel</button>
-            <button
-              onClick={handleCreate}
-              disabled={creating || !createName.trim()}
-              style={{ background: accentColor, border: `1px solid ${accentColor}`, color: '#000', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.72rem', fontWeight: 600, cursor: creating || !createName.trim() ? 'not-allowed' : 'pointer', opacity: creating || !createName.trim() ? 0.5 : 1 }}
-            >
-              {creating ? 'creating...' : '+ create & add'}
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* Karl suggestions strip */}
-      {showSuggestions && karlSuggestions.length > 0 && (
-        <div style={{ marginTop: '0.6rem', padding: '0.5rem 0.65rem', background: accentBg, border: `1px solid ${accentBorder}`, borderRadius: '4px' }}>
+      {suggestOpen && (suggestions.length > 0 || suggestError) && (
+        <div style={{ marginTop: '0.55rem', padding: '0.55rem 0.65rem', background: accentBg, border: `1px solid ${accentBorder}`, borderRadius: '4px' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.4rem' }}>
-            <div style={{ fontSize: '0.62rem', color: '#888', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Karl suggests:</div>
-            <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
-              <button onClick={() => runSuggest(true)} disabled={suggesting}
-                style={{ fontSize: '0.62rem', color: '#888', background: 'none', border: 'none', cursor: suggesting ? 'not-allowed' : 'pointer', fontFamily: 'monospace', padding: '0.1rem 0.2rem' }}
-              >{suggesting ? '⟳' : '↺ retry'}</button>
-              {karlSuggestions.filter(s => !s.isNew).length > 1 && (
+            <div style={{ fontSize: '0.6rem', color: '#999', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Karl suggests</div>
+            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              {suggestions.filter(s => !s.isNew).length > 1 && (
                 <button
                   onClick={() => {
-                    const toAdd = karlSuggestions.filter(s => !s.isNew && !selected.includes(s.name)).map(s => s.name);
-                    const newSelected = [...selected, ...toAdd].slice(0, maxTags);
-                    onChange(newSelected);
-                    setKarlSuggestions(prev => prev.filter(s => s.isNew));
+                    const toAdd = suggestions.filter(s => !s.isNew && !selected.includes(s.name)).map(s => s.name);
+                    onChange([...selected, ...toAdd].slice(0, maxTags));
+                    setSuggestions(prev => prev.filter(s => s.isNew));
                   }}
                   style={{ fontSize: '0.62rem', color: accentColor, background: 'none', border: `1px solid ${accentBorder}`, borderRadius: '3px', padding: '0.1rem 0.4rem', cursor: 'pointer', fontFamily: 'monospace' }}
                 >accept all</button>
               )}
+              <button onClick={runSuggest} disabled={suggesting}
+                style={{ fontSize: '0.62rem', color: '#aaa', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'monospace' }}
+              >{suggesting ? '⟳' : '↺ retry'}</button>
+              <span onClick={() => setSuggestOpen(false)} style={{ fontSize: '0.65rem', color: '#ccc', cursor: 'pointer' }}>✕</span>
             </div>
           </div>
+
+          {suggestError && (
+            <div style={{ fontSize: '0.68rem', color: '#ef4444', fontFamily: 'monospace' }}>{suggestError}</div>
+          )}
+
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
-            {karlSuggestions.map(s => (
+            {suggestions.map(s => (
               <div key={s.name} style={{ display: 'flex', alignItems: 'center', gap: '0.2rem' }}>
                 <span
                   onClick={() => acceptSuggestion(s)}
-                  title={s.isNew ? `Create new tag in ${s.group ?? 'General'} — ${s.description ?? ''}` : 'Click to add'}
-                  style={{ fontSize: '0.72rem', color: s.isNew ? '#fff' : accentColor, background: s.isNew ? accentColor : '#fff', border: `1px solid ${accentColor}`, borderRadius: '3px', padding: '0.15rem 0.4rem', cursor: atMax ? 'not-allowed' : 'pointer', fontFamily: 'monospace', opacity: atMax ? 0.5 : 1, display: 'flex', alignItems: 'center', gap: '0.3rem' }}
+                  title={s.isNew ? 'New tag — click to create and add' : 'Click to add'}
+                  style={{ fontSize: '0.72rem', color: s.isNew ? '#fff' : accentColor, background: s.isNew ? accentColor : '#fff', border: `1px solid ${accentColor}`, borderRadius: '3px', padding: '0.15rem 0.4rem', cursor: atMax ? 'not-allowed' : 'pointer', fontFamily: 'monospace', opacity: atMax ? 0.5 : 1, display: 'flex', alignItems: 'center', gap: '0.25rem' }}
                 >
-                  {s.isNew && (
-                    <span style={{ fontSize: '0.58rem', opacity: 0.85, background: 'rgba(255,255,255,0.2)', borderRadius: '2px', padding: '0.05rem 0.2rem' }}>
-                      +new {s.group ? `[${s.group}]` : ''}
-                    </span>
-                  )}
+                  {s.isNew && <span style={{ fontSize: '0.58rem', opacity: 0.8 }}>+new</span>}
                   {s.name}
                 </span>
-                <span onClick={() => dismissSuggestion(s.name)}
-                  style={{ fontSize: '0.65rem', color: '#aaa', cursor: 'pointer', lineHeight: 1 }}
-                  title="Dismiss"
-                >✕</span>
+                <span onClick={() => setSuggestions(prev => prev.filter(x => x.name !== s.name))}
+                  style={{ fontSize: '0.6rem', color: '#ccc', cursor: 'pointer' }}>✕</span>
               </div>
             ))}
           </div>
         </div>
       )}
 
-      {/* Error */}
-      {suggestError && (
-        <div style={{ fontSize: '0.68rem', color: '#ef4444', fontFamily: 'monospace', marginTop: '0.35rem' }}>
-          {suggestError}
+      {/* Inline new tag form */}
+      {showNew && (
+        <div style={{ marginTop: '0.55rem', padding: '0.65rem 0.75rem', background: '#fafafa', border: '1px solid #e5e5e5', borderRadius: '4px' }}>
+          <div style={{ fontSize: '0.6rem', color: '#aaa', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>
+            New tag
+          </div>
+          <input
+            autoFocus
+            value={newName}
+            onChange={e => setNewName(e.target.value)}
+            placeholder="Tag name"
+            onKeyDown={e => { if (e.key === 'Enter') handleCreate(); if (e.key === 'Escape') setShowNew(false); }}
+            style={{ ...inputStyle, marginBottom: '0.4rem', fontSize: '0.78rem' }}
+            onFocusCapture={e => (e.target.style.borderColor = accentColor)}
+            onBlurCapture={e => (e.target.style.borderColor = '#ddd')}
+          />
+          <input
+            value={newDesc}
+            onChange={e => setNewDesc(e.target.value)}
+            placeholder="Description (optional)"
+            onKeyDown={e => { if (e.key === 'Escape') setShowNew(false); }}
+            style={{ ...inputStyle, marginBottom: '0.5rem', fontSize: '0.78rem' }}
+            onFocusCapture={e => (e.target.style.borderColor = accentColor)}
+            onBlurCapture={e => (e.target.style.borderColor = '#ddd')}
+          />
+          {createError && (
+            <div style={{ fontSize: '0.68rem', color: '#ef4444', fontFamily: 'monospace', marginBottom: '0.4rem' }}>{createError}</div>
+          )}
+          <div style={{ display: 'flex', gap: '0.4rem', justifyContent: 'flex-end' }}>
+            <button onClick={() => setShowNew(false)}
+              style={{ background: 'none', border: '1px solid #ddd', color: '#888', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.72rem', cursor: 'pointer' }}
+            >cancel</button>
+            <button onClick={handleCreate} disabled={creating || !newName.trim()}
+              style={{ background: accentColor, border: `1px solid ${accentColor}`, color: '#000', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.72rem', fontWeight: 600, cursor: creating || !newName.trim() ? 'not-allowed' : 'pointer', opacity: creating || !newName.trim() ? 0.5 : 1 }}
+            >
+              {creating ? 'creating...' : '+ create & add'}
+            </button>
+          </div>
         </div>
       )}
 
@@ -503,8 +404,8 @@ export default function TagPicker({
 // ─── STYLES ──────────────────────────────────────────────────────────────────
 
 const inputStyle: React.CSSProperties = {
-  width: '100%', background: '#fafafa', border: '1px solid #ddd',
-  color: '#222', padding: '0.5rem 0.65rem', borderRadius: '4px',
+  width: '100%', background: '#fff', border: '1px solid #ddd',
+  color: '#222', padding: '0.45rem 0.65rem', borderRadius: '4px',
   fontFamily: 'monospace', fontSize: '0.82rem', outline: 'none',
   boxSizing: 'border-box', transition: 'border-color 0.15s',
 };
