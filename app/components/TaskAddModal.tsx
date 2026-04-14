@@ -104,6 +104,7 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
   const [tags, setTags]           = useState<string[]>([]);
   const [targetDate, setTargetDate] = useState('');
   const [rawInput, setRawInput]   = useState('');
+  const [multiMode, setMultiMode] = useState(false);
 
   // ─── Submit state ────────────────────────────────────────────────────────
   const [saving, setSaving] = useState(false);
@@ -191,7 +192,9 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
   // ─── Derived ─────────────────────────────────────────────────────────────
 
   const parseTitles = (raw: string): string[] =>
-    raw.split('\n').map(t => t.replace(/^[-•*]\s*/, '').trim()).filter(t => t.length > 0);
+    multiMode
+      ? raw.split('\n').map(t => t.replace(/^[-•*]\s*/, '').trim()).filter(t => t.length > 0)
+      : raw.trim() ? [raw.trim()] : [];
 
   const previews  = parseTitles(rawInput);
   const isCurated = bucket !== 'capture' && tags.length > 0;
@@ -254,6 +257,17 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
             <span style={{ fontSize: '0.65rem', color: hint.color, background: hint.bg, border: `1px solid ${hint.border}`, borderRadius: '4px', padding: '0.15rem 0.5rem' }}>
               {hint.text}
             </span>
+            {/* Single / Multi toggle */}
+            <div style={{ display: 'flex', background: 'rgba(0,0,0,0.15)', borderRadius: '4px', padding: '0.1rem' }}>
+              <div
+                onClick={() => { setMultiMode(false); setRawInput(''); setSaved([]); }}
+                style={{ padding: '0.15rem 0.5rem', borderRadius: '3px', fontSize: '0.65rem', cursor: 'pointer', background: !multiMode ? 'rgba(0,0,0,0.3)' : 'transparent', color: !multiMode ? '#000' : 'rgba(0,0,0,0.5)', fontWeight: !multiMode ? 700 : 400, transition: 'all 0.15s' }}
+              >single</div>
+              <div
+                onClick={() => { setMultiMode(true); setRawInput(''); setSaved([]); }}
+                style={{ padding: '0.15rem 0.5rem', borderRadius: '3px', fontSize: '0.65rem', cursor: 'pointer', background: multiMode ? 'rgba(0,0,0,0.3)' : 'transparent', color: multiMode ? '#000' : 'rgba(0,0,0,0.5)', fontWeight: multiMode ? 700 : 400, transition: 'all 0.15s' }}
+              >multi</div>
+            </div>
           </div>
           <button
             onClick={onClose}
@@ -331,21 +345,34 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
               {/* TASK INPUT */}
               <div style={fieldGroup}>
                 <div style={labelStyle}>
-                  Task{previews.length !== 1 ? 's' : ''} <span style={{ color: '#ef4444' }}>*</span>
-                  <span style={{ color: '#aaa', textTransform: 'none', letterSpacing: 0, marginLeft: '0.4rem' }}>— one per line</span>
+                  {multiMode ? 'Tasks' : 'Task'} <span style={{ color: '#ef4444' }}>*</span>
+                  {multiMode && <span style={{ color: '#aaa', textTransform: 'none', letterSpacing: 0, marginLeft: '0.4rem' }}>— one per line</span>}
                 </div>
-                <textarea
-                  autoFocus
-                  value={rawInput}
-                  onChange={e => setRawInput(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter' && e.metaKey) handleSubmit(); }}
-                  placeholder={'Buy olive oil\nBoil water\nCook pasta al dente'}
-                  rows={4}
-                  style={{ ...inputStyle, resize: 'vertical' }}
-                  onFocus={e => (e.target.style.borderColor = ACCENT)}
-                  onBlur={e => (e.target.style.borderColor = '#ddd')}
-                />
-                <div style={{ color: '#aaa', fontSize: '0.63rem', marginTop: '0.25rem' }}>⌘↵ to add</div>
+                {multiMode ? (
+                  <textarea
+                    autoFocus
+                    value={rawInput}
+                    onChange={e => setRawInput(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter' && e.metaKey) handleSubmit(); }}
+                    placeholder={'Buy olive oil\nBoil water\nCook pasta al dente'}
+                    rows={4}
+                    style={{ ...inputStyle, resize: 'vertical' }}
+                    onFocus={e => (e.target.style.borderColor = ACCENT)}
+                    onBlur={e => (e.target.style.borderColor = '#ddd')}
+                  />
+                ) : (
+                  <input
+                    autoFocus
+                    value={rawInput}
+                    onChange={e => setRawInput(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') handleSubmit(); }}
+                    placeholder="What needs doing?"
+                    style={inputStyle}
+                    onFocus={e => (e.target.style.borderColor = ACCENT)}
+                    onBlur={e => (e.target.style.borderColor = '#ddd')}
+                  />
+                )}
+                {multiMode && <div style={{ color: '#aaa', fontSize: '0.63rem', marginTop: '0.25rem' }}>⌘↵ to add</div>}
               </div>
 
               {/* PREVIEW */}
