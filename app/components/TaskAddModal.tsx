@@ -79,6 +79,7 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
   const [statusId, setStatusId]      = useState('');
   const [targetDate, setTargetDate]  = useState('');
   const [karlContext, setKarlContext] = useState('');
+  const [notes, setNotes]              = useState('');
   const [tags, setTags]              = useState<string[]>([]);
 
   // ─── Submit/feedback state ────────────────────────────────────────────────
@@ -192,6 +193,7 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
         task_status_id: statusId   || null,
         tags:           tags,
         target_date:    targetDate || null,
+        notes:          notes.trim() || null,
       }));
 
       const { data, error } = await supabase.from('task').insert(records).select('title');
@@ -207,6 +209,7 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
       setRawInput('');
       setTags([]);
       setKarlContext('');
+      setNotes('');
       onSaved();
 
     } catch (e: any) {
@@ -291,6 +294,22 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
                 )}
                 {multiMode && <div style={{ color: '#aaa', fontSize: '0.63rem', marginTop: '0.25rem' }}>⌘↵ to add</div>}
               </div>
+
+              {/* 1b. NOTES */}
+              {!multiMode && (
+                <div style={{ marginBottom: '1rem', marginTop: '-0.5rem' }}>
+                  <div style={labelStyle}>Notes</div>
+                  <textarea
+                    value={notes}
+                    onChange={e => setNotes(e.target.value)}
+                    placeholder="Instructions, context, extra detail..."
+                    rows={2}
+                    style={{ ...inputStyle, resize: 'vertical', minHeight: '52px' }}
+                    onFocus={e => (e.target.style.borderColor = ACCENT)}
+                    onBlur={e => (e.target.style.borderColor = '#ddd')}
+                  />
+                </div>
+              )}
 
               {/* 2. BUCKET */}
               <div style={fieldGroup}>
