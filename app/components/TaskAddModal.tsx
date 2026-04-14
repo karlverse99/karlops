@@ -2,15 +2,11 @@
 
 // app/components/TaskAddModal.tsx
 // KarlOps L — Add tasks with full metadata
-// Flow: Task → Bucket → Context/Status → Target Date → Tell Karl More → Tags
-// Tags required for non-capture buckets
-// Auto-suggest fires on task title blur
-// Capture warning shown if saved without tags
+// v0.6.2 — simplified TagPicker integration, removed TagManagerModal + suggestInvoked
 
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import TagPicker from '@/app/components/TagPicker';
-import TagManagerModal from '@/app/components/TagManagerModal';
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -41,9 +37,9 @@ const ACCENT        = '#10b981';
 const ACCENT_BG     = '#f0fdf4';
 const ACCENT_BORDER = '#bbf7d0';
 const DEFAULT_W     = 560;
-const DEFAULT_H     = 700;
+const DEFAULT_H     = 660;
 const MIN_W         = 420;
-const MIN_H         = 500;
+const MIN_H         = 480;
 
 // ─── BucketPicker ─────────────────────────────────────────────────────────────
 
@@ -73,17 +69,14 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
   const [loading, setLoading]     = useState(true);
 
   // ─── Form state ──────────────────────────────────────────────────────────
-  const [rawInput, setRawInput]      = useState('');
-  const [multiMode, setMultiMode]    = useState(false);
-  const [bucket, setBucket]          = useState('capture');
-  const [contextId, setContextId]    = useState('');
-  const [statusId, setStatusId]      = useState('');
-  const [targetDate, setTargetDate]  = useState('');
-  const [karlContext, setKarlContext]   = useState('');
-  const [suggestInvoked, setSuggestInvoked] = useState(false);
-  const [notes, setNotes]              = useState('');
-  const [tags, setTags]              = useState<string[]>([]);
-  const [showTagManager, setShowTagManager] = useState(false);
+  const [rawInput, setRawInput]    = useState('');
+  const [multiMode, setMultiMode]  = useState(false);
+  const [bucket, setBucket]        = useState('capture');
+  const [contextId, setContextId]  = useState('');
+  const [statusId, setStatusId]    = useState('');
+  const [targetDate, setTargetDate] = useState('');
+  const [notes, setNotes]          = useState('');
+  const [tags, setTags]            = useState<string[]>([]);
 
   // ─── Submit/feedback state ────────────────────────────────────────────────
   const [saving, setSaving]                 = useState(false);
@@ -170,11 +163,11 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
       ? raw.split('\n').map(t => t.replace(/^[-•*]\s*/, '').trim()).filter(t => t.length > 0)
       : raw.trim() ? [raw.trim()] : [];
 
-  const previews     = parseTitles(rawInput);
-  const isCapture    = bucket === 'capture';
-  const isCurated    = !isCapture && tags.length > 0;
+  const previews    = parseTitles(rawInput);
+  const isCapture   = bucket === 'capture';
+  const isCurated   = !isCapture && tags.length > 0;
   const needsTagWarn = !isCapture && tags.length === 0;
-  const contextText  = rawInput.trim() + (karlContext.trim() ? '\n' + karlContext.trim() : '');
+  const contextText = rawInput.trim() + (notes.trim() ? '\n' + notes.trim() : '');
 
   // ─── Submit ──────────────────────────────────────────────────────────────
 
@@ -194,7 +187,7 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
         bucket_key:     bucket,
         context_id:     contextId  || null,
         task_status_id: statusId   || null,
-        tags:           tags,
+        tags,
         target_date:    targetDate || null,
         notes:          notes.trim() || null,
       }));
@@ -211,7 +204,6 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
 
       setRawInput('');
       setTags([]);
-      setKarlContext('');
       setNotes('');
       onSaved();
 
@@ -225,20 +217,6 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
   // ─── Render ──────────────────────────────────────────────────────────────
 
   return (
-    <>
-    {showTagManager && (
-      <TagManagerModal
-        userId={userId}
-        accessToken={accessToken}
-        onClose={() => setShowTagManager(false)}
-        onChanged={async () => {
-          const { data } = await supabase.from('tag').select('tag_id, name, tag_group_id').eq('user_id', userId).eq('is_archived', false).order('name');
-          if (data) setAllTags(data);
-          const { data: groups } = await supabase.from('tag_group').select('tag_group_id, name').eq('user_id', userId).eq('is_archived', false).order('display_order');
-          if (groups) setTagGroups(groups);
-        }}
-      />
-    )}
     <div style={{ position: 'fixed', inset: 0, zIndex: 100, pointerEvents: 'none' }}>
       <div style={{ position: 'absolute', left: pos.x, top: pos.y, width: size.w, height: size.h, background: '#ffffff', border: `2px solid ${ACCENT}`, borderRadius: '8px', display: 'flex', flexDirection: 'column', fontFamily: 'monospace', boxShadow: '0 20px 60px rgba(0,0,0,0.2)', pointerEvents: 'all', overflow: 'hidden' }}>
 
@@ -380,27 +358,8 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
                   accessToken={accessToken}
                   userId={userId}
                   label={isCapture ? 'Tags' : 'Tags *'}
-                  onSuggestInvoked={() => setSuggestInvoked(true)}
-                  onOpenTagManager={() => setShowTagManager(true)}
                 />
-
               </div>
-
-              {/* 6. TELL KARL MORE — appears after suggest pressed */}
-              {suggestInvoked && (
-                <div style={{ marginTop: '0.5rem', marginBottom: '1rem' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.35rem' }}>
-                    <div style={labelStyle}>Tell Karl More</div>
-                    <span style={{ fontSize: '0.62rem', color: '#aaa', fontStyle: 'italic' }}>helps tag suggestion — not saved</span>
-                  </div>
-                  <textarea value={karlContext} onChange={e => setKarlContext(e.target.value)}
-                    placeholder="Paste context, background, or notes — Karl reads this to suggest better tags..."
-                    rows={2} style={{ ...inputStyle, resize: 'vertical', background: '#fffdf5', borderColor: '#e5e0c8', color: '#666', fontSize: '0.78rem' }}
-                    onFocus={e => (e.target.style.borderColor = '#c8b96a')}
-                    onBlur={e => (e.target.style.borderColor = '#e5e0c8')}
-                  />
-                </div>
-              )}
 
               {/* SUCCESS — curated */}
               {savedCurated.length > 0 && (
@@ -450,7 +409,6 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
 
       </div>
     </div>
-  </>
   );
 }
 
