@@ -13,8 +13,6 @@ export interface CaptureTaskPayload {
   description?: string;
   notes?: string;
   target_date?: string;
-  is_delegated?: boolean;
-  delegated_to?: string;
 }
 
 export interface CaptureTaskResult {
@@ -41,9 +39,7 @@ export async function captureTask(
     if (defaultsError) throw defaultsError;
 
     const defaultMap: Record<string, string> = {};
-    for (const d of defaults ?? []) {
-      defaultMap[d.field] = d.value;
-    }
+    for (const d of defaults ?? []) defaultMap[d.field] = d.value;
 
     // ── Build insert record — payload wins over defaults ───────────────────
     const record = {
@@ -56,8 +52,6 @@ export async function captureTask(
       description:    payload.description    ?? null,
       notes:          payload.notes          ?? null,
       target_date:    payload.target_date    ?? null,
-      is_delegated:   payload.is_delegated   ?? false,
-      delegated_to:   payload.delegated_to   ?? null,
     };
 
     // ── Insert ─────────────────────────────────────────────────────────────
@@ -69,17 +63,10 @@ export async function captureTask(
 
     if (insertError) throw insertError;
 
-    return {
-      success: true,
-      task_id: task.task_id,
-      task,
-    };
+    return { success: true, task_id: task.task_id, task };
 
   } catch (err: any) {
     console.error('[captureTask]', err);
-    return {
-      success: false,
-      error: err.message ?? 'Failed to capture task',
-    };
+    return { success: false, error: err.message ?? 'Failed to capture task' };
   }
 }
