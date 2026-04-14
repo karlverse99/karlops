@@ -10,6 +10,7 @@ import ExtractsModal from '@/app/components/ExtractsModal';
 import TaskListModal from '@/app/components/TaskListModal';
 import TemplatesModal from '@/app/components/TemplatesModal';
 import ContactsModal from '@/app/components/ContactsModal';
+import TagManagerModal from '@/app/components/TagManagerModal';
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -278,6 +279,7 @@ export default function WorkspacePage() {
   const [showTaskList, setShowTaskList]       = useState(false);
   const [showTemplates, setShowTemplates]     = useState(false);
   const [showContacts, setShowContacts]       = useState(false);
+  const [showTagManager, setShowTagManager]   = useState(false);
   const [completionCount, setCompletionCount] = useState(0);
   const [meetingCount, setMeetingCount]       = useState(0);
   const [extractCount, setExtractCount]       = useState(0);
@@ -538,6 +540,11 @@ export default function WorkspacePage() {
         setPending(null);
       }
 
+      // Check for tag manager command
+      if (data.intent === 'command' && data.payload?.command_type === 'open_tag_manager') {
+        setShowTagManager(true);
+      }
+
       addMessage('assistant', data.response ?? "I'm not sure what to do with that.");
 
     } catch (err: any) {
@@ -699,6 +706,14 @@ export default function WorkspacePage() {
           accessToken={accessToken}
           onClose={() => setShowContacts(false)}
           onCountChange={setContactCount}
+        />
+      )}
+      {showTagManager && koUser && (
+        <TagManagerModal
+          userId={koUser.id}
+          accessToken={accessToken}
+          onClose={() => setShowTagManager(false)}
+          onChanged={() => {}}
         />
       )}
       {selectedTask && koUser && (

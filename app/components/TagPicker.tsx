@@ -54,6 +54,7 @@ interface TagPickerProps {
   maxTags?: number;
   label?: string;
   onSuggestInvoked?: () => void;
+  onOpenTagManager?: () => void;
 }
 
 export default function TagPicker({
@@ -70,6 +71,7 @@ export default function TagPicker({
   maxTags = 5,
   label = 'Tags',
   onSuggestInvoked,
+  onOpenTagManager,
 }: TagPickerProps) {
 
   const [search, setSearch]                         = useState('');
@@ -303,6 +305,16 @@ export default function TagPicker({
               </div>
             )}
           </div>
+
+          {/* Tag manager button */}
+          {onOpenTagManager && (
+            <button onClick={onOpenTagManager}
+              title="Manage tags"
+              style={{ flexShrink: 0, background: '#fafafa', border: '1px solid #ddd', color: '#888', padding: '0.35rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.68rem', cursor: 'pointer', transition: 'all 0.15s' }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = '#bbb'; e.currentTarget.style.color = '#555'; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = '#ddd'; e.currentTarget.style.color = '#888'; }}
+            >⚙</button>
+          )}
 
           {/* Suggest button */}
           <button onClick={manualSuggest} disabled={suggesting || !contextText.trim()}

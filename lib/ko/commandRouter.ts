@@ -181,6 +181,7 @@ export async function routeCommand(
       '- capture_completion: User is logging something they completed.',
       '- question: User is asking for information or analysis.',
       '- command: Explicit system command (move, delegate, delete, update, etc.)',
+      '  Tag manager commands: "manage tags", "open tags", "tag manager", "add a tag", "create a tag", "show tags" → command with command_type: open_tag_manager',
       '- unclear: Ambiguous — ask for clarification.',
       '',
       '## Primary Vocabulary (always recognised)',
@@ -362,6 +363,15 @@ export async function routeCommand(
           outcome: parsed.outcome ?? '',
         },
         response: karlResponse,
+      };
+    }
+
+    // ── command — check for tag manager ──────────────────────────────────
+    if (intent === 'command' && parsed.command_type === 'open_tag_manager') {
+      return {
+        intent: 'command',
+        payload: { command_type: 'open_tag_manager' },
+        response: parsed.response ?? 'Opening tag manager — add your tags there.',
       };
     }
 

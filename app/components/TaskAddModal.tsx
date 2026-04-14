@@ -10,6 +10,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import TagPicker from '@/app/components/TagPicker';
+import TagManagerModal from '@/app/components/TagManagerModal';
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -82,6 +83,7 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
   const [suggestInvoked, setSuggestInvoked] = useState(false);
   const [notes, setNotes]              = useState('');
   const [tags, setTags]              = useState<string[]>([]);
+  const [showTagManager, setShowTagManager] = useState(false);
 
   // ─── Submit/feedback state ────────────────────────────────────────────────
   const [saving, setSaving]                 = useState(false);
@@ -223,6 +225,20 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
   // ─── Render ──────────────────────────────────────────────────────────────
 
   return (
+    <>
+    {showTagManager && (
+      <TagManagerModal
+        userId={userId}
+        accessToken={accessToken}
+        onClose={() => setShowTagManager(false)}
+        onChanged={async () => {
+          const { data } = await supabase.from('tag').select('tag_id, name, tag_group_id').eq('user_id', userId).eq('is_archived', false).order('name');
+          if (data) setAllTags(data);
+          const { data: groups } = await supabase.from('tag_group').select('tag_group_id, name').eq('user_id', userId).eq('is_archived', false).order('display_order');
+          if (groups) setTagGroups(groups);
+        }}
+      />
+    )}
     <div style={{ position: 'fixed', inset: 0, zIndex: 100, pointerEvents: 'none' }}>
       <div style={{ position: 'absolute', left: pos.x, top: pos.y, width: size.w, height: size.h, background: '#ffffff', border: `2px solid ${ACCENT}`, borderRadius: '8px', display: 'flex', flexDirection: 'column', fontFamily: 'monospace', boxShadow: '0 20px 60px rgba(0,0,0,0.2)', pointerEvents: 'all', overflow: 'hidden' }}>
 
@@ -365,6 +381,7 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
                   userId={userId}
                   label={isCapture ? 'Tags' : 'Tags *'}
                   onSuggestInvoked={() => setSuggestInvoked(true)}
+                  onOpenTagManager={() => setShowTagManager(true)}
                 />
 
               </div>
@@ -433,6 +450,7 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
 
       </div>
     </div>
+  </>
   );
 }
 
