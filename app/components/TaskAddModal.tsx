@@ -347,21 +347,7 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
                 />
               </div>
 
-              {/* 5. TELL KARL MORE — ephemeral, only after suggest pressed */}
-              {suggestInvoked && <div style={{ marginBottom: '1rem' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.35rem' }}>
-                  <div style={labelStyle}>Tell Karl More</div>
-                  <span style={{ fontSize: '0.62rem', color: '#aaa', fontStyle: 'italic' }}>helps tag suggestion — not saved</span>
-                </div>
-                <textarea value={karlContext} onChange={e => setKarlContext(e.target.value)}
-                  placeholder="Paste context, background, or notes — Karl reads this to suggest better tags..."
-                  rows={2} style={{ ...inputStyle, resize: 'vertical', background: '#fffdf5', borderColor: '#e5e0c8', color: '#666', fontSize: '0.78rem' }}
-                  onFocus={e => (e.target.style.borderColor = '#c8b96a')}
-                  onBlur={e => (e.target.style.borderColor = '#e5e0c8')}
-                />
-              </div>}
-
-              {/* 6. TAGS — last */}
+              {/* 5. TAGS */}
               <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: '1rem' }}>
                 <TagPicker
                   selected={tags}
@@ -382,6 +368,22 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
                 />
 
               </div>
+
+              {/* 6. TELL KARL MORE — appears after suggest pressed */}
+              {suggestInvoked && (
+                <div style={{ marginTop: '0.5rem', marginBottom: '1rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.35rem' }}>
+                    <div style={labelStyle}>Tell Karl More</div>
+                    <span style={{ fontSize: '0.62rem', color: '#aaa', fontStyle: 'italic' }}>helps tag suggestion — not saved</span>
+                  </div>
+                  <textarea value={karlContext} onChange={e => setKarlContext(e.target.value)}
+                    placeholder="Paste context, background, or notes — Karl reads this to suggest better tags..."
+                    rows={2} style={{ ...inputStyle, resize: 'vertical', background: '#fffdf5', borderColor: '#e5e0c8', color: '#666', fontSize: '0.78rem' }}
+                    onFocus={e => (e.target.style.borderColor = '#c8b96a')}
+                    onBlur={e => (e.target.style.borderColor = '#e5e0c8')}
+                  />
+                </div>
+              )}
 
               {/* SUCCESS — curated */}
               {savedCurated.length > 0 && (

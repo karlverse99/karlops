@@ -290,7 +290,7 @@ export default function TagPicker({
               onBlurCapture={e => (e.target.style.borderColor = '#ddd')}
             />
             {showDrop && filtered.length > 0 && (
-              <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #ddd', borderRadius: '4px', zIndex: 20, maxHeight: '140px', overflowY: 'auto', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}>
+              <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #ddd', borderRadius: '4px', zIndex: 9999, maxHeight: '160px', overflowY: 'auto', boxShadow: '0 4px 16px rgba(0,0,0,0.15)' }}>
                 {filtered.map(tag => (
                   <div key={tag.tag_id} onMouseDown={() => { toggle(tag.name); setSearch(''); }}
                     style={{ padding: '0.4rem 0.65rem', fontSize: '0.78rem', color: '#333', cursor: 'pointer', borderBottom: '1px solid #f5f5f5', fontFamily: 'monospace' }}
@@ -307,9 +307,9 @@ export default function TagPicker({
           {/* Suggest button */}
           <button onClick={manualSuggest} disabled={suggesting || !contextText.trim()}
             title="Ask Karl to suggest tags"
-            style={{ flexShrink: 0, background: suggesting ? '#f5f5f5' : accentBg, border: `1px solid ${accentBorder}`, color: accentColor, padding: '0.35rem 0.6rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.68rem', cursor: suggesting || !contextText.trim() ? 'not-allowed' : 'pointer', opacity: !contextText.trim() ? 0.4 : 1, transition: 'all 0.15s', whiteSpace: 'nowrap' }}
+            style={{ flexShrink: 0, background: suggesting ? accentBg : accentBg, border: `2px solid ${suggesting ? accentColor : accentBorder}`, color: accentColor, padding: '0.35rem 0.6rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.68rem', cursor: suggesting || !contextText.trim() ? 'not-allowed' : 'pointer', opacity: !contextText.trim() ? 0.4 : 1, transition: 'all 0.2s', whiteSpace: 'nowrap', fontWeight: suggesting ? 700 : 400 }}
           >
-            {suggesting ? '···' : '✦ suggest'}
+            {suggesting ? '⟳ thinking...' : '✦ suggest'}
           </button>
         </div>
       )}
