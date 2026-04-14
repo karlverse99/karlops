@@ -50,11 +50,12 @@ export async function POST(req: NextRequest) {
         'Content-Type': 'application/json',
         'x-api-key': process.env.ANTHROPIC_API_KEY!,
         'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'prompt-caching-2024-07-31',
       },
       body: JSON.stringify({
         model:      'claude-sonnet-4-20250514',
         max_tokens: 4096,
-        system:     systemPrompt,
+        system:     [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
         messages: [
           {
             role: 'user',
@@ -65,6 +66,8 @@ export async function POST(req: NextRequest) {
     });
 
     const data   = await res.json();
+    const usage  = data.usage;
+    if (usage) console.log('[extract/refine] tokens:', { input: usage.input_tokens, output: usage.output_tokens, cache_write: usage.cache_creation_input_tokens ?? 0, cache_read: usage.cache_read_input_tokens ?? 0 });
     const output = data.content?.[0]?.text ?? '';
 
     return NextResponse.json({ output });

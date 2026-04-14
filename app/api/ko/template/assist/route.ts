@@ -89,16 +89,19 @@ data_sources: ${JSON.stringify(current_data_sources)}`;
         'Content-Type': 'application/json',
         'x-api-key': process.env.ANTHROPIC_API_KEY!,
         'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'prompt-caching-2024-07-31',
       },
       body: JSON.stringify({
         model:      'claude-sonnet-4-20250514',
         max_tokens: 1000,
-        system:     systemPrompt,
+        system:     [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
         messages,
       }),
     });
 
     const data = await res.json();
+    const usage2 = data.usage;
+    if (usage2) console.log('[template/assist] tokens:', { input: usage2.input_tokens, output: usage2.output_tokens, cache_write: usage2.cache_creation_input_tokens ?? 0, cache_read: usage2.cache_read_input_tokens ?? 0 });
     const raw = data.content?.[0]?.text ?? '';
 
     // Parse JSON response
