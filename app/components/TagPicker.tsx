@@ -2,21 +2,7 @@
 
 // app/components/TagPicker.tsx
 // KarlOps L — Simplified tag picker
-// v0.6.2 — no group filter, search + Karl suggest + inline new tag
-//
-// Props:
-//   selected       — currently selected tag names
-//   allTags        — full tag list from DB
-//   tagGroups      — tag groups (used only for new tag group assignment, not shown)
-//   onChange       — called with new tag array on any change
-//   onTagCreated   — called when a new tag is created — parent should reload allTags
-//   accentColor    — modal accent color
-//   objectType     — FC object type for Karl context
-//   contextText    — title + notes fed to Karl for suggestions
-//   accessToken    — for Karl suggest API call
-//   userId         — for creating new tags in DB
-//   maxTags        — max tags allowed (default 5)
-//   label          — field label (default 'Tags')
+// v0.6.3 — accept shows at 1+, accepts all remaining suggestions (new + existing)
 
 import { useState } from 'react';
 import { supabase } from '@/lib/supabase';
@@ -72,13 +58,11 @@ export default function TagPicker({
   const [search, setSearch]             = useState('');
   const [showDrop, setShowDrop]         = useState(false);
 
-  // Suggest state
   const [suggestions, setSuggestions]   = useState<Suggestion[]>([]);
   const [suggesting, setSuggesting]     = useState(false);
   const [suggestError, setSuggestError] = useState('');
   const [suggestOpen, setSuggestOpen]   = useState(false);
 
-  // New tag inline form
   const [showNew, setShowNew]           = useState(false);
   const [newName, setNewName]           = useState('');
   const [newDesc, setNewDesc]           = useState('');
@@ -86,11 +70,9 @@ export default function TagPicker({
   const [createError, setCreateError]   = useState('');
 
   const atMax = selected.length >= maxTags;
-
   const accentBg     = `${accentColor}12`;
   const accentBorder = `${accentColor}40`;
 
-  // General group for new tags (silent — not shown to user)
   const generalGroupId =
     tagGroups.find(g => g.name === 'General')?.tag_group_id ??
     tagGroups[0]?.tag_group_id ??
@@ -143,7 +125,6 @@ export default function TagPicker({
       if (!data.success) throw new Error(data.error ?? 'Suggestion failed');
 
       const results: Suggestion[] = [];
-
       for (const name of (data.suggested ?? [])) {
         if (!selected.includes(name) && allTags.find(t => t.name === name)) {
           results.push({ name, isNew: false });
@@ -164,11 +145,14 @@ export default function TagPicker({
     }
   };
 
+  // ─── Accept individual suggestion ─────────────────────────────────────────
+
   const acceptSuggestion = async (s: Suggestion) => {
     if (atMax) return;
-    if (!s.isNew) { add(s.name); return; }
-
-    // New tag — create in General group silently
+    if (!s.isNew) {
+      add(s.name);
+      return;
+    }
     setCreating(true);
     try {
       const { error } = await supabase.from('tag').insert({
@@ -189,7 +173,23 @@ export default function TagPicker({
     }
   };
 
+  // ─── Accept all remaining — existing tags only (new tags need explicit click) ──
+
+  const acceptRemaining = () => {
+    const toAdd = suggestions
+      .filter(s => !s.isNew && !selected.includes(s.name))
+      .map(s => s.name);
+    if (toAdd.length > 0) {
+      onChange([...selected, ...toAdd].slice(0, maxTags));
+    }
+    setSuggestions(prev => prev.filter(s => s.isNew));
+  };
+
+  const dismissSuggestion = (name: string) =>
+    setSuggestions(prev => prev.filter(s => s.name !== name));
+
   // ─── Create new tag ───────────────────────────────────────────────────────
+  // Does NOT close suggest strip
 
   const handleCreate = async () => {
     if (!newName.trim() || creating) return;
@@ -247,7 +247,6 @@ export default function TagPicker({
       {!atMax && (
         <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'stretch' }}>
 
-          {/* Search */}
           <div style={{ position: 'relative', flex: 1 }}>
             <input
               value={search}
@@ -279,31 +278,27 @@ export default function TagPicker({
             )}
           </div>
 
-          {/* Karl suggest */}
           <button
             onClick={runSuggest}
             disabled={suggesting || !contextText.trim()}
             title="Ask Karl to suggest tags"
             style={{ flexShrink: 0, background: accentBg, border: `1.5px solid ${accentBorder}`, color: accentColor, padding: '0 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.68rem', cursor: suggesting || !contextText.trim() ? 'not-allowed' : 'pointer', opacity: !contextText.trim() ? 0.4 : 1, whiteSpace: 'nowrap' }}
           >
-            {suggesting ? '⟳' : '✦ suggest'}
+            {suggesting ? '⟳' : suggestOpen ? '↺ retry' : '✦ suggest'}
           </button>
 
-          {/* New tag toggle */}
           <button
             onClick={() => { setShowNew(v => !v); setNewName(''); setNewDesc(''); setCreateError(''); }}
             title="Create a new tag"
             style={{ flexShrink: 0, background: showNew ? '#f0f0f0' : '#fafafa', border: '1px solid #ddd', color: '#555', padding: '0 0.6rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.68rem', cursor: 'pointer', whiteSpace: 'nowrap' }}
             onMouseEnter={e => { e.currentTarget.style.borderColor = '#bbb'; }}
             onMouseLeave={e => { e.currentTarget.style.borderColor = '#ddd'; }}
-          >
-            + new
-          </button>
+          >+ new</button>
 
         </div>
       )}
 
-      {/* At max message */}
+      {/* At max */}
       {atMax && (
         <div style={{ fontSize: '0.68rem', color: accentColor, fontFamily: 'monospace', marginTop: '0.25rem' }}>
           Max {maxTags} tags — remove one to add another
@@ -316,15 +311,12 @@ export default function TagPicker({
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.4rem' }}>
             <div style={{ fontSize: '0.6rem', color: '#999', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Karl suggests</div>
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-              {suggestions.filter(s => !s.isNew).length > 1 && (
+              {/* accept — visible whenever 1+ suggestions remain */}
+              {suggestions.length > 0 && (
                 <button
-                  onClick={() => {
-                    const toAdd = suggestions.filter(s => !s.isNew && !selected.includes(s.name)).map(s => s.name);
-                    onChange([...selected, ...toAdd].slice(0, maxTags));
-                    setSuggestions(prev => prev.filter(s => s.isNew));
-                  }}
+                  onClick={acceptRemaining}
                   style={{ fontSize: '0.62rem', color: accentColor, background: 'none', border: `1px solid ${accentBorder}`, borderRadius: '3px', padding: '0.1rem 0.4rem', cursor: 'pointer', fontFamily: 'monospace' }}
-                >accept all</button>
+                >accept</button>
               )}
               <button onClick={runSuggest} disabled={suggesting}
                 style={{ fontSize: '0.62rem', color: '#aaa', background: 'none', border: 'none', cursor: 'pointer', fontFamily: 'monospace' }}
@@ -348,7 +340,7 @@ export default function TagPicker({
                   {s.isNew && <span style={{ fontSize: '0.58rem', opacity: 0.8 }}>+new</span>}
                   {s.name}
                 </span>
-                <span onClick={() => setSuggestions(prev => prev.filter(x => x.name !== s.name))}
+                <span onClick={() => dismissSuggestion(s.name)}
                   style={{ fontSize: '0.6rem', color: '#ccc', cursor: 'pointer' }}>✕</span>
               </div>
             ))}
@@ -356,7 +348,7 @@ export default function TagPicker({
         </div>
       )}
 
-      {/* Inline new tag form */}
+      {/* Inline new tag form — coexists with suggest strip */}
       {showNew && (
         <div style={{ marginTop: '0.55rem', padding: '0.65rem 0.75rem', background: '#fafafa', border: '1px solid #e5e5e5', borderRadius: '4px' }}>
           <div style={{ fontSize: '0.6rem', color: '#aaa', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>
