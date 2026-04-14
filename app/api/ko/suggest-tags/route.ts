@@ -173,8 +173,9 @@ User situation: ${situation || 'Not provided.'}
 
 Rules:
 - Suggest 1-3 existing tags maximum — quality over quantity
-- Only suggest existing tags you are confident fit the content
-- New tag ideas: maximum 2, only if genuinely useful and not covered by existing tags
+- Only suggest existing tags that genuinely fit — do not force a stretch
+- New tag ideas: up to 2. If existing tags do not closely match the content, propose new ones confidently. A good new tag is better than a mediocre existing one.
+- For new tags: suggest the most logical group and a one-sentence description
 - Never suggest tags already in the selected list
 - Prefer specific tags over generic ones
 - Do NOT suggest People/Roles/Organizations tags unless a person or org is explicitly mentioned in the content

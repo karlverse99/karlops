@@ -105,6 +105,7 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
   const [targetDate, setTargetDate] = useState('');
   const [rawInput, setRawInput]   = useState('');
   const [multiMode, setMultiMode] = useState(false);
+  const [karlContext, setKarlContext] = useState('');
 
   // ─── Submit state ────────────────────────────────────────────────────────
   const [saving, setSaving] = useState(false);
@@ -325,9 +326,26 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
                 onChange={setTags}
                 accentColor={ACCENT}
                 objectType="task"
-                contextText={rawInput}
+                contextText={rawInput + (karlContext ? '\n' + karlContext : '')}
                 accessToken={accessToken}
               />
+
+              {/* KARL CONTEXT — ephemeral, never saved */}
+              <div style={{ marginBottom: '1rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.35rem' }}>
+                  <div style={labelStyle}>Tell Karl more</div>
+                  <span style={{ fontSize: '0.62rem', color: '#aaa', fontStyle: 'italic' }}>helps tag suggestion — not saved</span>
+                </div>
+                <textarea
+                  value={karlContext}
+                  onChange={e => setKarlContext(e.target.value)}
+                  placeholder="Paste context, notes, or background — Karl reads this to suggest better tags..."
+                  rows={2}
+                  style={{ ...inputStyle, resize: 'vertical', background: '#fffdf5', borderColor: '#e5e0c8', color: '#666', fontSize: '0.78rem' }}
+                  onFocus={e => (e.target.style.borderColor = '#c8b96a')}
+                  onBlur={e => (e.target.style.borderColor = '#e5e0c8')}
+                />
+              </div>
 
               {/* TARGET DATE */}
               <div style={fieldGroup}>
