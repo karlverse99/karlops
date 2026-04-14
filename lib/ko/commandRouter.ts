@@ -297,7 +297,7 @@ export async function routeCommand(
       );
 
       // Merge — Karl's explicit tags first, suggestions fill remaining slots (max 5)
-      const allTags = [...new Set([...karlTags, ...suggestedTags])].slice(0, 5);
+      const allTags = Array.from(new Set([...karlTags, ...suggestedTags])).slice(0, 5);
 
       // Build tag mention for Karl's response if suggestions were added
       const tagMention = allTags.length > 0
@@ -332,7 +332,7 @@ export async function routeCommand(
       // Apply suggestions to any task that has no tags
       const enrichedTasks = tasks.map((task: any) => {
         const taskTags = task.tags ?? [];
-        const merged = [...new Set([...taskTags, ...suggestedTags])].slice(0, 5);
+        const merged = Array.from(new Set([...taskTags, ...suggestedTags])).slice(0, 5);
         return { ...task, tags: merged };
       });
 
