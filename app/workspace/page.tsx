@@ -635,6 +635,13 @@ export default function WorkspacePage() {
   // ─── Render ────────────────────────────────────────────────────────────────
 
   return (
+    <>
+    <style>{`
+      @keyframes karlPulse {
+        0%, 80%, 100% { transform: scale(0.6); opacity: 0.3; }
+        40% { transform: scale(1); opacity: 1; }
+      }
+    `}</style>
     <div style={{ minHeight: '100vh', height: '100vh', display: 'flex', flexDirection: 'column', background: '#0a0a0a', fontFamily: 'monospace', overflow: 'hidden' }}>
 
       {/* MODALS */}
@@ -845,7 +852,14 @@ export default function WorkspacePage() {
             {chat.map((msg, i) => <ChatBubble key={i} msg={msg} />)}
             {thinking && (
               <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: '0.75rem' }}>
-                <div style={{ padding: '0.6rem 0.9rem', borderRadius: '12px 12px 12px 2px', background: '#1a1a1a', border: '1px solid #252525', color: '#aaa', fontSize: '0.82rem' }}>···</div>
+                <div style={{ padding: '0.6rem 0.9rem', borderRadius: '12px 12px 12px 2px', background: '#1a1a1a', border: '1px solid #252525', color: '#aaa', fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span style={{ display: 'inline-flex', gap: '0.2rem', alignItems: 'center' }}>
+                    <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#4ade80', display: 'inline-block', animation: 'karlPulse 1.2s ease-in-out infinite' }} />
+                    <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#4ade80', display: 'inline-block', animation: 'karlPulse 1.2s ease-in-out 0.2s infinite' }} />
+                    <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#4ade80', display: 'inline-block', animation: 'karlPulse 1.2s ease-in-out 0.4s infinite' }} />
+                  </span>
+                  <span style={{ fontSize: '0.72rem', color: '#555' }}>Karl is thinking...</span>
+                </div>
               </div>
             )}
             {pending && (
@@ -887,6 +901,7 @@ export default function WorkspacePage() {
         </div>
       </div>
     </div>
+  </>
   );
 }
 

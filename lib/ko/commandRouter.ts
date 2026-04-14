@@ -211,6 +211,7 @@ export async function routeCommand(
       '- If no situation brief, gently prompt the user to write one.',
       '- CRITICAL: When you have enough information to capture, ALWAYS return capture_task or capture_tasks — NEVER return question or unclear.',
       '- CRITICAL: In your response field, always use FUTURE tense for captures — "Here\'s what I\'ll add..." NOT "Captured..." or "Added...".',
+      '- CRITICAL: If the user pastes a long block of text or description (especially after being asked for it), treat it as capture_task. Extract the most concise title from the content, use the full text as context, and propose a clean task title. Never return unclear for long text dumps.',
       '',
       isDeep ? [
         '## Observation Instruction',
