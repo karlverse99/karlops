@@ -9,6 +9,7 @@ import MeetingsModal from '@/app/components/MeetingsModal';
 import ExtractsModal from '@/app/components/ExtractsModal';
 import TaskListModal from '@/app/components/TaskListModal';
 import TemplatesModal from '@/app/components/TemplatesModal';
+import ContactsModal from '@/app/components/ContactsModal';
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -146,7 +147,6 @@ function BucketSection({ bucket, tasks, statusMap, onTaskClick, onDragStart, onD
       style={{ marginBottom: '1.25rem' }}
       onDragOver={e => { if (isDroppable) { e.preventDefault(); setIsDragOver(true); } }}
       onDragLeave={e => {
-        // Only clear if leaving the bucket section entirely
         if (!e.currentTarget.contains(e.relatedTarget as Node)) {
           setIsDragOver(false);
           setDragOverIndex(null);
@@ -176,11 +176,7 @@ function BucketSection({ bucket, tasks, statusMap, onTaskClick, onDragStart, onD
             : tasks.map((task, idx) => (
                 <div
                   key={task.id}
-                  onDragOver={e => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setDragOverIndex(idx);
-                  }}
+                  onDragOver={e => { e.preventDefault(); e.stopPropagation(); setDragOverIndex(idx); }}
                   onDrop={e => {
                     e.preventDefault();
                     e.stopPropagation();
@@ -281,10 +277,12 @@ export default function WorkspacePage() {
   const [showExtracts, setShowExtracts]       = useState(false);
   const [showTaskList, setShowTaskList]       = useState(false);
   const [showTemplates, setShowTemplates]     = useState(false);
+  const [showContacts, setShowContacts]       = useState(false);
   const [completionCount, setCompletionCount] = useState(0);
   const [meetingCount, setMeetingCount]       = useState(0);
   const [extractCount, setExtractCount]       = useState(0);
   const [templateCount, setTemplateCount]     = useState(0);
+  const [contactCount, setContactCount]       = useState(0);
   const [selectedTask, setSelectedTask]       = useState<Task | null>(null);
   const draggedTask                            = useRef<Task | null>(null);
 
@@ -328,6 +326,7 @@ export default function WorkspacePage() {
         await loadMeetingCount(session.user.id);
         await loadExtractCount(session.user.id);
         await loadTemplateCount(session.user.id);
+        await loadContactCount(session.user.id);
         setSessionReady(true);
 
         setChat([{
@@ -378,7 +377,6 @@ export default function WorkspacePage() {
     }
   };
 
-  // ── loadContexts: is_archived=false AND is_visible=true ───────────────────
   const loadContexts = async (userId: string) => {
     const { data } = await supabase
       .from('context')
@@ -444,6 +442,15 @@ export default function WorkspacePage() {
       .or(`user_id.eq.${userId},is_system.eq.true`)
       .eq('is_active', true);
     if (count !== null) setTemplateCount(count);
+  };
+
+  const loadContactCount = async (userId: string) => {
+    const { count } = await supabase
+      .from('contact')
+      .select('contact_id', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .eq('is_archived', false);
+    if (count !== null) setContactCount(count);
   };
 
   useEffect(() => {
@@ -573,31 +580,27 @@ export default function WorkspacePage() {
     }
   };
 
-  // ─── Reorder within bucket ────────────────────────────────────────────────────
+  // ─── Reorder within bucket ────────────────────────────────────────────────
 
   const handleReorder = async (dropTargetId: string, dropIndex: number, bucketTasks: Task[]) => {
     const draggedId = draggedTask.current?.id;
     draggedTask.current = null;
     if (!draggedId || !koUser) return;
-    if (draggedId === dropTargetId) return; // dropped on self
+    if (draggedId === dropTargetId) return;
 
-    // Find dragged task's current index
     const draggedIndex = bucketTasks.findIndex(t => t.id === draggedId);
-    if (draggedIndex === -1) return; // dragged from different bucket — let cross-bucket handle it
+    if (draggedIndex === -1) return;
 
-    // Build new order
     const reordered = [...bucketTasks];
     const [moved] = reordered.splice(draggedIndex, 1);
     const insertAt = draggedIndex < dropIndex ? dropIndex - 1 : dropIndex;
     reordered.splice(insertAt, 0, moved);
 
-    // Optimistic update
     setTasks(prev => {
       const otherTasks = prev.filter(t => t.bucket_key !== moved.bucket_key);
       return [...otherTasks, ...reordered];
     });
 
-    // Write sort_order for all affected tasks
     await Promise.all(
       reordered.map((t, i) =>
         supabase.from('task')
@@ -608,7 +611,7 @@ export default function WorkspacePage() {
     );
   };
 
-  // ─── Error state ───────────────────────────────────────────────────────────────
+  // ─── Error state ───────────────────────────────────────────────────────────
 
   if (sessionError) {
     return (
@@ -683,6 +686,14 @@ export default function WorkspacePage() {
           onCountChange={setTemplateCount}
         />
       )}
+      {showContacts && koUser && (
+        <ContactsModal
+          userId={koUser.id}
+          accessToken={accessToken}
+          onClose={() => setShowContacts(false)}
+          onCountChange={setContactCount}
+        />
+      )}
       {selectedTask && koUser && (
         <TaskDetailModal
           taskId={selectedTask.id}
@@ -746,11 +757,18 @@ export default function WorkspacePage() {
               onMouseLeave={e => (e.currentTarget.style.background = '#0a1f1d')}
             ><span style={{ color: '#14b8a6' }}>+template</span><span style={{ color: '#ffffff' }}>({templateCount})</span></button>
 
+            {/* +contacts(n) */}
+            <button onClick={() => setShowContacts(true)}
+              style={{ background: '#1a0a0a', border: '1px solid #4a1010', color: '#991b1b', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
+              onMouseEnter={e => (e.currentTarget.style.background = '#2a1010')}
+              onMouseLeave={e => (e.currentTarget.style.background = '#1a0a0a')}
+            ><span style={{ color: '#991b1b' }}>+contacts</span><span style={{ color: '#ffffff' }}>({contactCount})</span></button>
+
           </div>
 
           <span style={{ color: '#333', fontSize: '0.7rem' }}>|</span>
 
-          {/* open(n) — clickable → TaskListModal */}
+          {/* open(n) */}
           <span
             onClick={() => setShowTaskList(true)}
             style={{ color: '#ffffff', fontSize: '0.7rem', cursor: 'pointer' }}
