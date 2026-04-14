@@ -47,8 +47,6 @@ function isAnalysisRequest(input: string): boolean {
 }
 
 // ── Tag suggestion for chat captures ─────────────────────────────────────────
-// Suggests tags from existing tag set for a given text blob.
-// Returns array of tag name strings (existing tags only — no new tag creation in chat).
 
 async function suggestTagsForCapture(
   user_id: string,
@@ -64,9 +62,9 @@ async function suggestTagsForCapture(
       db.from('user_situation').select('brief').eq('user_id', user_id).eq('is_active', true).maybeSingle(),
     ]);
 
-    const tagGroups   = tagGroupRes.data ?? [];
+    const tagGroups    = tagGroupRes.data ?? [];
     const existingTags = tagRes.data ?? [];
-    const situation   = situationRes.data?.brief?.trim() ?? '';
+    const situation    = situationRes.data?.brief?.trim() ?? '';
 
     if (existingTags.length === 0) return [];
 
@@ -111,7 +109,6 @@ Rules:
     const text = data.content?.[0]?.text ?? '';
     const parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
 
-    // Filter to confirmed existing tags only
     const existingNames = new Set(existingTags.map(t => t.name));
     return (parsed.suggested ?? []).filter((name: string) =>
       existingNames.has(name) && !already_tagged.includes(name)
@@ -121,6 +118,31 @@ Rules:
     console.error('[suggestTagsForCapture]', err);
     return [];
   }
+}
+
+// ── Extract tags the user explicitly rejected in the conversation ─────────────
+// Looks for phrases like "don't like X", "not X", "remove X", "drop X", "no X"
+
+function extractRejectedTags(messages: { role: string; content: string }[]): string[] {
+  const rejected = new Set<string>();
+  const rejectPatterns = [
+    /don'?t (?:like|want|use|include)\s+#?([A-Za-z0-9/_\-]+)/gi,
+    /(?:remove|drop|not|skip|no)\s+#([A-Za-z0-9/_\-]+)/gi,
+    /(?:remove|drop|skip)\s+([A-Za-z0-9/_\-]+)\s+tag/gi,
+  ];
+
+  for (const msg of messages) {
+    if (msg.role !== 'user') continue;
+    for (const pattern of rejectPatterns) {
+      let match;
+      pattern.lastIndex = 0;
+      while ((match = pattern.exec(msg.content)) !== null) {
+        rejected.add(match[1]);
+      }
+    }
+  }
+
+  return Array.from(rejected);
 }
 
 export async function routeCommand(
@@ -159,6 +181,12 @@ export async function routeCommand(
       anthropicMessages.shift();
     }
 
+    // ── Extract rejected tags from recent conversation ─────────────────────
+    const rejectedTags = extractRejectedTags(bundle.recentMessages);
+    const rejectedTagsNote = rejectedTags.length > 0
+      ? `\n## Rejected Tags — NEVER suggest these\nThe user has explicitly rejected these tags in this conversation. Do NOT include them in any payload or response, ever: ${rejectedTags.join(', ')}`
+      : '';
+
     // ── System prompt ──────────────────────────────────────────────────────
     const systemPrompt = [
       'You are Karl, an operational assistant inside KarlOps — a personal pressure system for getting things done.',
@@ -193,9 +221,16 @@ export async function routeCommand(
       '- "tag it X" or "tagged X" or "tag X" → tags array (resolve X against Available Tags, use exact name)',
       '- "by DATE" or "due DATE" or "target DATE" → target_date (ISO format YYYY-MM-DD)',
       '',
+      '## Tag Rules',
+      '- Only use tags from the Available Tags list in context.',
+      '- If the user names a tag that does not exist, say so clearly and omit it from the payload.',
+      '- If the user asks "is X a tag?" or "do we have a tag for X?" — answer directly from the Available Tags list. This is a question, not a capture.',
+      '- NEVER suggest a tag the user has rejected in this conversation (see Rejected Tags below).',
+      '- Once a tag is rejected, it is off the table for the entire conversation — do not bring it back.',
+      rejectedTagsNote,
+      '',
       '## Enrichment Rules',
       '- Always attempt to extract bucket, context_id, tags, and target_date from the input.',
-      '- Only use tags from the Available Tags list. If the user names a tag that does not exist, note it in your response and omit it from the payload.',
       '- Only use context_id UUIDs from the Available Contexts list. Match by name (case-insensitive). Return the UUID, not the name.',
       '- If bucket is not specified, use "capture".',
       '- If multiple tasks are described, extract ALL of them — apply the same metadata to each.',
@@ -237,7 +272,6 @@ export async function routeCommand(
     ].join('\n');
 
     // ── Call Anthropic with prompt caching ────────────────────────────────
-    // System prompt is cached — saves ~90% on repeated input tokens
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -260,7 +294,6 @@ export async function routeCommand(
       }),
     });
 
-    // Log token usage for cost visibility
     const usage = (await res.clone().json().catch(() => null))?.usage;
     if (usage) {
       console.log('[commandRouter] tokens:', {
@@ -308,24 +341,25 @@ export async function routeCommand(
 
     // ── capture_task — enrich with tag suggestions ─────────────────────────
     if (intent === 'capture_task') {
-      const karlTags: string[] = parsed.tags ?? [];
+      const karlTags: string[] = (parsed.tags ?? []).filter(
+        (t: string) => !rejectedTags.includes(t)
+      );
 
-      // Suggest additional tags Karl didn't already extract from user's vocabulary
       const suggestedTags = await suggestTagsForCapture(
         user_id,
         parsed.title,
         karlTags
       );
 
-      // Merge — Karl's explicit tags first, suggestions fill remaining slots (max 5)
-      const allTags = Array.from(new Set([...karlTags, ...suggestedTags])).slice(0, 5);
+      // Filter suggested tags against rejected list too
+      const filteredSuggested = suggestedTags.filter(t => !rejectedTags.includes(t));
 
-      // Build tag mention for Karl's response if suggestions were added
+      const allTags = Array.from(new Set([...karlTags, ...filteredSuggested])).slice(0, 5);
+
       const tagMention = allTags.length > 0
         ? ` Tagged: ${allTags.map(t => `#${t}`).join(' ')}.`
         : ' No tags — will land in capture.';
 
-      // Append tag info to Karl's response
       const enrichedResponse = karlResponse.replace(/\.$/, '') + tagMention;
       await appendSessionMessage(user_id, 'karl', enrichedResponse);
 
@@ -346,19 +380,18 @@ export async function routeCommand(
     if (intent === 'capture_tasks') {
       const tasks = parsed.tasks ?? parsed.titles?.map((t: string) => ({ title: t })) ?? [];
 
-      // Suggest tags for the batch — use combined titles as context
       const combinedTitles = tasks.map((t: any) => t.title).join(', ');
-      const suggestedTags = await suggestTagsForCapture(user_id, combinedTitles, []);
+      const suggestedTags  = await suggestTagsForCapture(user_id, combinedTitles, []);
+      const filteredSuggested = suggestedTags.filter(t => !rejectedTags.includes(t));
 
-      // Apply suggestions to any task that has no tags
       const enrichedTasks = tasks.map((task: any) => {
-        const taskTags = task.tags ?? [];
-        const merged = Array.from(new Set([...taskTags, ...suggestedTags])).slice(0, 5);
+        const taskTags = (task.tags ?? []).filter((t: string) => !rejectedTags.includes(t));
+        const merged   = Array.from(new Set([...taskTags, ...filteredSuggested])).slice(0, 5);
         return { ...task, tags: merged };
       });
 
-      const tagMention = suggestedTags.length > 0
-        ? ` Suggested tags: ${suggestedTags.map(t => `#${t}`).join(' ')}.`
+      const tagMention = filteredSuggested.length > 0
+        ? ` Suggested tags: ${filteredSuggested.map(t => `#${t}`).join(' ')}.`
         : '';
 
       const enrichedResponse = karlResponse.replace(/\.$/, '') + tagMention;
@@ -366,7 +399,7 @@ export async function routeCommand(
       return {
         intent: 'capture_tasks',
         payload: {
-          tasks: enrichedTasks,
+          tasks:   enrichedTasks,
           summary: parsed.summary ?? `${enrichedTasks.length} tasks`,
         },
         response: enrichedResponse,
@@ -385,7 +418,7 @@ export async function routeCommand(
       };
     }
 
-    // ── command — check for tag manager ──────────────────────────────────
+    // ── command — check for tag manager ───────────────────────────────────
     if (intent === 'command' && parsed.command_type === 'open_tag_manager') {
       return {
         intent: 'command',
