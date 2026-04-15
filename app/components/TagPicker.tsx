@@ -1,10 +1,10 @@
 'use client';
 
 // app/components/TagPicker.tsx
-// KarlOps L — Simplified tag picker
-// v0.6.3 — accept shows at 1+, accepts all remaining suggestions (new + existing)
+// KarlOps L — Three-layer tag picker
+// v0.7.0 — search | Karl suggest | browse panel (fixed-position, group filter + create)
 
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 
 interface Tag {
@@ -55,21 +55,33 @@ export default function TagPicker({
   label = 'Tags',
 }: TagPickerProps) {
 
-  const [search, setSearch]             = useState('');
-  const [showDrop, setShowDrop]         = useState(false);
+  // ─── Search ───────────────────────────────────────────────────────────────
+  const [search, setSearch]     = useState('');
+  const [showDrop, setShowDrop] = useState(false);
 
+  // ─── Karl suggest ─────────────────────────────────────────────────────────
   const [suggestions, setSuggestions]   = useState<Suggestion[]>([]);
   const [suggesting, setSuggesting]     = useState(false);
   const [suggestError, setSuggestError] = useState('');
   const [suggestOpen, setSuggestOpen]   = useState(false);
-
-  const [showNew, setShowNew]           = useState(false);
-  const [newName, setNewName]           = useState('');
-  const [newDesc, setNewDesc]           = useState('');
   const [creating, setCreating]         = useState(false);
-  const [createError, setCreateError]   = useState('');
 
-  const atMax = selected.length >= maxTags;
+  // ─── Browse panel ─────────────────────────────────────────────────────────
+  const [browseOpen, setBrowseOpen]         = useState(false);
+  const [browseGroup, setBrowseGroup]       = useState<string>('all');
+  const [browseSearch, setBrowseSearch]     = useState('');
+  const [newName, setNewName]               = useState('');
+  const [newDesc, setNewDesc]               = useState('');
+  const [newGroupId, setNewGroupId]         = useState('');
+  const [createError, setCreateError]       = useState('');
+  const [creating2, setCreating2]           = useState(false);
+  const [showCreateForm, setShowCreateForm] = useState(false);
+
+  const browseAnchorRef = useRef<HTMLDivElement>(null);
+  const browseRef       = useRef<HTMLDivElement>(null);
+  const [browsePos, setBrowsePos] = useState<{ top: number; left: number; width: number } | null>(null);
+
+  const atMax        = selected.length >= maxTags;
   const accentBg     = `${accentColor}12`;
   const accentBorder = `${accentColor}40`;
 
@@ -78,12 +90,58 @@ export default function TagPicker({
     tagGroups[0]?.tag_group_id ??
     null;
 
-  // ─── Filtered dropdown ────────────────────────────────────────────────────
+  // ─── Position browse panel ────────────────────────────────────────────────
+
+  const openBrowse = () => {
+    if (browseAnchorRef.current) {
+      const rect = browseAnchorRef.current.getBoundingClientRect();
+      setBrowsePos({
+        top:   rect.bottom + 6,
+        left:  rect.left,
+        width: Math.max(rect.width, 360),
+      });
+    }
+    setBrowseGroup('all');
+    setBrowseSearch('');
+    setNewName('');
+    setNewDesc('');
+    setNewGroupId(generalGroupId ?? '');
+    setCreateError('');
+    setShowCreateForm(false);
+    setBrowseOpen(true);
+  };
+
+  // Close browse on outside click
+  useEffect(() => {
+    if (!browseOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (
+        browseRef.current && !browseRef.current.contains(e.target as Node) &&
+        browseAnchorRef.current && !browseAnchorRef.current.contains(e.target as Node)
+      ) {
+        setBrowseOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [browseOpen]);
+
+  // ─── Filtered search dropdown ─────────────────────────────────────────────
 
   const filtered = allTags.filter(t =>
     !selected.includes(t.name) &&
     (search ? t.name.toLowerCase().includes(search.toLowerCase()) : true)
   );
+
+  // ─── Filtered browse tags ─────────────────────────────────────────────────
+
+  const browseTags = allTags.filter(t => {
+    const groupMatch = browseGroup === 'all' || t.tag_group_id === browseGroup;
+    const searchMatch = browseSearch
+      ? t.name.toLowerCase().includes(browseSearch.toLowerCase())
+      : true;
+    return groupMatch && searchMatch;
+  });
 
   // ─── Add / remove ─────────────────────────────────────────────────────────
 
@@ -96,6 +154,14 @@ export default function TagPicker({
   };
 
   const remove = (name: string) => onChange(selected.filter(t => t !== name));
+
+  const toggleBrowse = (name: string) => {
+    if (selected.includes(name)) {
+      remove(name);
+    } else {
+      add(name);
+    }
+  };
 
   // ─── Karl suggest ─────────────────────────────────────────────────────────
 
@@ -149,10 +215,7 @@ export default function TagPicker({
 
   const acceptSuggestion = async (s: Suggestion) => {
     if (atMax) return;
-    if (!s.isNew) {
-      add(s.name);
-      return;
-    }
+    if (!s.isNew) { add(s.name); return; }
     setCreating(true);
     try {
       const { error } = await supabase.from('tag').insert({
@@ -165,7 +228,7 @@ export default function TagPicker({
       if (error) throw error;
       onChange([...selected, s.name]);
       onTagCreated?.();
-    } catch (e: any) {
+    } catch {
       setSuggestError(`Couldn't create "${s.name}"`);
     } finally {
       setCreating(false);
@@ -173,32 +236,27 @@ export default function TagPicker({
     }
   };
 
-  // ─── Accept all remaining — existing tags only (new tags need explicit click) ──
-
   const acceptRemaining = () => {
     const toAdd = suggestions
       .filter(s => !s.isNew && !selected.includes(s.name))
       .map(s => s.name);
-    if (toAdd.length > 0) {
-      onChange([...selected, ...toAdd].slice(0, maxTags));
-    }
+    if (toAdd.length > 0) onChange([...selected, ...toAdd].slice(0, maxTags));
     setSuggestions(prev => prev.filter(s => s.isNew));
   };
 
   const dismissSuggestion = (name: string) =>
     setSuggestions(prev => prev.filter(s => s.name !== name));
 
-  // ─── Create new tag ───────────────────────────────────────────────────────
-  // Does NOT close suggest strip
+  // ─── Create new tag (from browse panel) ──────────────────────────────────
 
   const handleCreate = async () => {
-    if (!newName.trim() || creating) return;
-    setCreating(true);
+    if (!newName.trim() || creating2) return;
+    setCreating2(true);
     setCreateError('');
     try {
       const { error } = await supabase.from('tag').insert({
         user_id:      userId,
-        tag_group_id: generalGroupId,
+        tag_group_id: newGroupId || generalGroupId,
         name:         newName.trim(),
         description:  newDesc.trim() || null,
         is_archived:  false,
@@ -206,13 +264,13 @@ export default function TagPicker({
       if (error) throw error;
       if (!atMax) onChange([...selected, newName.trim()]);
       onTagCreated?.();
-      setShowNew(false);
       setNewName('');
       setNewDesc('');
+      setShowCreateForm(false);
     } catch (e: any) {
       setCreateError(e.message ?? 'Could not create tag');
     } finally {
-      setCreating(false);
+      setCreating2(false);
     }
   };
 
@@ -243,10 +301,11 @@ export default function TagPicker({
         </div>
       )}
 
-      {/* Search + buttons */}
+      {/* Search + action buttons */}
       {!atMax && (
-        <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'stretch' }}>
+        <div ref={browseAnchorRef} style={{ display: 'flex', gap: '0.4rem', alignItems: 'stretch' }}>
 
+          {/* Search input */}
           <div style={{ position: 'relative', flex: 1 }}>
             <input
               value={search}
@@ -278,6 +337,7 @@ export default function TagPicker({
             )}
           </div>
 
+          {/* Karl suggest */}
           <button
             onClick={runSuggest}
             disabled={suggesting || !contextText.trim()}
@@ -287,13 +347,12 @@ export default function TagPicker({
             {suggesting ? '⟳' : suggestOpen ? '↺ retry' : '✦ suggest'}
           </button>
 
+          {/* Browse */}
           <button
-            onClick={() => { setShowNew(v => !v); setNewName(''); setNewDesc(''); setCreateError(''); }}
-            title="Create a new tag"
-            style={{ flexShrink: 0, background: showNew ? '#f0f0f0' : '#fafafa', border: '1px solid #ddd', color: '#555', padding: '0 0.6rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.68rem', cursor: 'pointer', whiteSpace: 'nowrap' }}
-            onMouseEnter={e => { e.currentTarget.style.borderColor = '#bbb'; }}
-            onMouseLeave={e => { e.currentTarget.style.borderColor = '#ddd'; }}
-          >+ new</button>
+            onClick={() => browseOpen ? setBrowseOpen(false) : openBrowse()}
+            title="Browse all tags by group"
+            style={{ flexShrink: 0, background: browseOpen ? '#f0f0f0' : '#fafafa', border: `1px solid ${browseOpen ? '#bbb' : '#ddd'}`, color: '#555', padding: '0 0.6rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.68rem', cursor: 'pointer', whiteSpace: 'nowrap' }}
+          >⊞ browse</button>
 
         </div>
       )}
@@ -311,7 +370,6 @@ export default function TagPicker({
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.4rem' }}>
             <div style={{ fontSize: '0.6rem', color: '#999', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Karl suggests</div>
             <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-              {/* accept — visible whenever 1+ suggestions remain */}
               {suggestions.length > 0 && (
                 <button
                   onClick={acceptRemaining}
@@ -340,52 +398,180 @@ export default function TagPicker({
                   {s.isNew && <span style={{ fontSize: '0.58rem', opacity: 0.8 }}>+new</span>}
                   {s.name}
                 </span>
-                <span onClick={() => dismissSuggestion(s.name)}
-                  style={{ fontSize: '0.6rem', color: '#ccc', cursor: 'pointer' }}>✕</span>
+                <span onClick={() => dismissSuggestion(s.name)} style={{ fontSize: '0.6rem', color: '#ccc', cursor: 'pointer' }}>✕</span>
               </div>
             ))}
           </div>
         </div>
       )}
 
-      {/* Inline new tag form — coexists with suggest strip */}
-      {showNew && (
-        <div style={{ marginTop: '0.55rem', padding: '0.65rem 0.75rem', background: '#fafafa', border: '1px solid #e5e5e5', borderRadius: '4px' }}>
-          <div style={{ fontSize: '0.6rem', color: '#aaa', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>
-            New tag
+      {/* ── Browse panel — fixed position, escapes modal clipping ── */}
+      {browseOpen && browsePos && (
+        <div
+          ref={browseRef}
+          style={{
+            position: 'fixed',
+            top:      browsePos.top,
+            left:     browsePos.left,
+            width:    browsePos.width,
+            zIndex:   99999,
+            background: '#fff',
+            border: '1px solid #ddd',
+            borderRadius: '6px',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.18)',
+            display: 'flex',
+            flexDirection: 'column',
+            maxHeight: '340px',
+            overflow: 'hidden',
+          }}
+        >
+          {/* Panel header */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.5rem 0.75rem', borderBottom: '1px solid #f0f0f0', background: '#fafafa' }}>
+            <span style={{ fontSize: '0.6rem', color: '#999', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Browse tags</span>
+            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              <input
+                value={browseSearch}
+                onChange={e => setBrowseSearch(e.target.value)}
+                placeholder="filter..."
+                style={{ ...inputStyle, width: '110px', marginBottom: 0, fontSize: '0.72rem', padding: '0.2rem 0.4rem' }}
+                onFocusCapture={e => (e.target.style.borderColor = accentColor)}
+                onBlurCapture={e => (e.target.style.borderColor = '#ddd')}
+              />
+              <span onClick={() => setBrowseOpen(false)} style={{ fontSize: '0.75rem', color: '#ccc', cursor: 'pointer', lineHeight: 1 }}>✕</span>
+            </div>
           </div>
-          <input
-            autoFocus
-            value={newName}
-            onChange={e => setNewName(e.target.value)}
-            placeholder="Tag name"
-            onKeyDown={e => { if (e.key === 'Enter') handleCreate(); if (e.key === 'Escape') setShowNew(false); }}
-            style={{ ...inputStyle, marginBottom: '0.4rem', fontSize: '0.78rem' }}
-            onFocusCapture={e => (e.target.style.borderColor = accentColor)}
-            onBlurCapture={e => (e.target.style.borderColor = '#ddd')}
-          />
-          <input
-            value={newDesc}
-            onChange={e => setNewDesc(e.target.value)}
-            placeholder="Description (optional)"
-            onKeyDown={e => { if (e.key === 'Escape') setShowNew(false); }}
-            style={{ ...inputStyle, marginBottom: '0.5rem', fontSize: '0.78rem' }}
-            onFocusCapture={e => (e.target.style.borderColor = accentColor)}
-            onBlurCapture={e => (e.target.style.borderColor = '#ddd')}
-          />
-          {createError && (
-            <div style={{ fontSize: '0.68rem', color: '#ef4444', fontFamily: 'monospace', marginBottom: '0.4rem' }}>{createError}</div>
-          )}
-          <div style={{ display: 'flex', gap: '0.4rem', justifyContent: 'flex-end' }}>
-            <button onClick={() => setShowNew(false)}
-              style={{ background: 'none', border: '1px solid #ddd', color: '#888', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.72rem', cursor: 'pointer' }}
-            >cancel</button>
-            <button onClick={handleCreate} disabled={creating || !newName.trim()}
-              style={{ background: accentColor, border: `1px solid ${accentColor}`, color: '#000', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.72rem', fontWeight: 600, cursor: creating || !newName.trim() ? 'not-allowed' : 'pointer', opacity: creating || !newName.trim() ? 0.5 : 1 }}
+
+          {/* Body: group list + tag list */}
+          <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+
+            {/* Group column */}
+            <div style={{ width: '110px', flexShrink: 0, borderRight: '1px solid #f0f0f0', overflowY: 'auto', padding: '0.3rem 0' }}>
+              {[{ tag_group_id: 'all', name: 'All' }, ...tagGroups].map(g => (
+                <div
+                  key={g.tag_group_id}
+                  onClick={() => setBrowseGroup(g.tag_group_id)}
+                  style={{
+                    padding: '0.3rem 0.65rem',
+                    fontSize: '0.72rem',
+                    fontFamily: 'monospace',
+                    cursor: 'pointer',
+                    color: browseGroup === g.tag_group_id ? accentColor : '#555',
+                    background: browseGroup === g.tag_group_id ? accentBg : 'transparent',
+                    borderLeft: browseGroup === g.tag_group_id ? `2px solid ${accentColor}` : '2px solid transparent',
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
+                  {g.name}
+                </div>
+              ))}
+            </div>
+
+            {/* Tag list column */}
+            <div style={{ flex: 1, overflowY: 'auto', padding: '0.3rem 0' }}>
+              {browseTags.length === 0 ? (
+                <div style={{ padding: '0.6rem 0.75rem', fontSize: '0.72rem', color: '#bbb', fontFamily: 'monospace', fontStyle: 'italic' }}>
+                  no tags in this group
+                </div>
+              ) : (
+                browseTags.map(tag => {
+                  const isSelected = selected.includes(tag.name);
+                  return (
+                    <div
+                      key={tag.tag_id}
+                      onClick={() => toggleBrowse(tag.name)}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: '0.5rem',
+                        padding: '0.3rem 0.75rem',
+                        fontSize: '0.75rem',
+                        fontFamily: 'monospace',
+                        cursor: !isSelected && atMax ? 'not-allowed' : 'pointer',
+                        color: isSelected ? accentColor : '#333',
+                        background: isSelected ? accentBg : 'transparent',
+                        opacity: !isSelected && atMax ? 0.4 : 1,
+                      }}
+                      onMouseEnter={e => { if (!isSelected && !atMax) e.currentTarget.style.background = '#f9f9f9'; }}
+                      onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = 'transparent'; }}
+                    >
+                      {/* Checkbox */}
+                      <div style={{
+                        width: '13px', height: '13px', flexShrink: 0,
+                        border: `1.5px solid ${isSelected ? accentColor : '#ccc'}`,
+                        borderRadius: '3px',
+                        background: isSelected ? accentColor : '#fff',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      }}>
+                        {isSelected && <span style={{ fontSize: '0.55rem', color: '#fff', lineHeight: 1 }}>✓</span>}
+                      </div>
+                      {tag.name}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+          </div>
+
+          {/* Create new tag — collapsible footer */}
+          <div style={{ borderTop: '1px solid #f0f0f0', background: '#fafafa' }}>
+            <div
+              onClick={() => setShowCreateForm(v => !v)}
+              style={{ padding: '0.4rem 0.75rem', fontSize: '0.68rem', color: '#888', fontFamily: 'monospace', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
             >
-              {creating ? 'creating...' : '+ create & add'}
-            </button>
+              <span style={{ fontSize: '0.75rem', color: accentColor }}>+</span>
+              create new tag
+              <span style={{ marginLeft: 'auto', fontSize: '0.6rem', color: '#ccc' }}>{showCreateForm ? '▲' : '▼'}</span>
+            </div>
+
+            {showCreateForm && (
+              <div style={{ padding: '0 0.75rem 0.65rem' }}>
+                <div style={{ display: 'flex', gap: '0.4rem', marginBottom: '0.35rem' }}>
+                  <select
+                    value={newGroupId}
+                    onChange={e => setNewGroupId(e.target.value)}
+                    style={{ ...inputStyle, marginBottom: 0, fontSize: '0.72rem', flex: '0 0 130px' }}
+                  >
+                    {tagGroups.map(g => (
+                      <option key={g.tag_group_id} value={g.tag_group_id}>{g.name}</option>
+                    ))}
+                  </select>
+                  <input
+                    autoFocus
+                    value={newName}
+                    onChange={e => setNewName(e.target.value)}
+                    placeholder="Tag name"
+                    onKeyDown={e => { if (e.key === 'Enter') handleCreate(); if (e.key === 'Escape') setShowCreateForm(false); }}
+                    style={{ ...inputStyle, marginBottom: 0, fontSize: '0.72rem', flex: 1 }}
+                    onFocusCapture={e => (e.target.style.borderColor = accentColor)}
+                    onBlurCapture={e => (e.target.style.borderColor = '#ddd')}
+                  />
+                </div>
+                <div style={{ display: 'flex', gap: '0.4rem' }}>
+                  <input
+                    value={newDesc}
+                    onChange={e => setNewDesc(e.target.value)}
+                    placeholder="Description (optional)"
+                    onKeyDown={e => { if (e.key === 'Escape') setShowCreateForm(false); }}
+                    style={{ ...inputStyle, marginBottom: 0, fontSize: '0.72rem', flex: 1 }}
+                    onFocusCapture={e => (e.target.style.borderColor = accentColor)}
+                    onBlurCapture={e => (e.target.style.borderColor = '#ddd')}
+                  />
+                  <button
+                    onClick={handleCreate}
+                    disabled={creating2 || !newName.trim()}
+                    style={{ flexShrink: 0, background: accentColor, border: `1px solid ${accentColor}`, color: '#fff', padding: '0 0.75rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.72rem', fontWeight: 600, cursor: creating2 || !newName.trim() ? 'not-allowed' : 'pointer', opacity: creating2 || !newName.trim() ? 0.5 : 1, whiteSpace: 'nowrap' }}
+                  >
+                    {creating2 ? '...' : '+ add'}
+                  </button>
+                </div>
+                {createError && (
+                  <div style={{ fontSize: '0.65rem', color: '#ef4444', fontFamily: 'monospace', marginTop: '0.3rem' }}>{createError}</div>
+                )}
+              </div>
+            )}
           </div>
+
         </div>
       )}
 
