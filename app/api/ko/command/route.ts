@@ -283,10 +283,11 @@ export async function POST(req: NextRequest) {
             .eq('task_id', record_id)
             .eq('user_id', user.id);
 
-          await captureCompletion(user.id, {
-            title:   task.title,
-            outcome: '',
-          });
+      const outcomeOp = operations.find((op: any) => op.field === 'outcome');
+await captureCompletion(user.id, {
+  title:   task.title,
+  outcome: outcomeOp?.value ?? '',
+});
 
           writeKarlObservation(
             user.id,
