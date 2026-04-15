@@ -450,31 +450,33 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
     const tmplNm = selected.document_template_id ? templates.find(t => t.document_template_id === selected.document_template_id)?.name : null;
     return (
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        {/* View header — accent tinted, clear hierarchy */}
-        <div style={{ padding: '0.85rem 1.25rem', borderBottom: `2px solid ${ACCENT_BORDER}`, background: ACCENT_BG, flexShrink: 0, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '1rem' }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: '1rem', fontWeight: 700, color: '#111', marginBottom: '0.35rem', wordBreak: 'break-word', fontFamily: 'monospace' }}>{selected.title}</div>
+        <div style={{ flex: 1, overflowY: 'auto', padding: '1.5rem 1.75rem', scrollbarWidth: 'thin', scrollbarColor: `${ACCENT_BORDER} transparent` }}>
+          {/* Title + metadata */}
+          <div style={{ marginBottom: '1.25rem' }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '1rem', marginBottom: '0.5rem' }}>
+              <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#111', wordBreak: 'break-word', fontFamily: 'monospace', lineHeight: 1.3 }}>{selected.title}</div>
+              {selected.document_template_id && (
+                <button onClick={() => handleNewVersion(selected)}
+                  style={{ flexShrink: 0, background: ACCENT, border: 'none', color: '#fff', padding: '0.3rem 0.75rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer', fontWeight: 600 }}>
+                  ▶ new version
+                </button>
+              )}
+            </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-              {tmplNm && <span style={{ fontSize: '0.63rem', color: ACCENT, background: '#fff', border: `1px solid ${ACCENT_BORDER}`, borderRadius: 3, padding: '0.08rem 0.4rem', fontWeight: 600 }}>from: {tmplNm}</span>}
-              {selected.context && <span style={{ fontSize: '0.63rem', color: '#666', background: '#fff', border: '1px solid #e5e5e5', borderRadius: 3, padding: '0.08rem 0.4rem' }}>{selected.context.name}</span>}
-              {selected.tags?.map(t => <span key={t} style={{ fontSize: '0.63rem', color: ACCENT, opacity: 0.7 }}>#{t}</span>)}
+              {tmplNm && <span style={{ fontSize: '0.63rem', color: ACCENT, background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, borderRadius: 3, padding: '0.1rem 0.45rem', fontWeight: 600 }}>from: {tmplNm}</span>}
+              {selected.context && <span style={{ fontSize: '0.63rem', color: '#666', background: '#f5f5f5', border: '1px solid #e5e5e5', borderRadius: 3, padding: '0.1rem 0.45rem' }}>{selected.context.name}</span>}
+              {selected.tags?.map(t => <span key={t} style={{ fontSize: '0.63rem', color: ACCENT, background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, borderRadius: 3, padding: '0.1rem 0.45rem' }}>#{t}</span>)}
               <span style={{ fontSize: '0.6rem', color: '#aaa' }}>{fmtDate(selected.created_at)}</span>
             </div>
           </div>
-          <div style={{ display: 'flex', gap: '0.5rem', flexShrink: 0 }}>
-            {selected.document_template_id && (
-              <button onClick={() => handleNewVersion(selected)}
-                style={{ background: ACCENT, border: 'none', color: '#fff', padding: '0.3rem 0.75rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer', fontWeight: 600 }}>
-                ▶ new version
-              </button>
-            )}
-          </div>
-        </div>
-        <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem', scrollbarWidth: 'thin', scrollbarColor: `${ACCENT_BORDER} transparent` }}>
+
+          <div style={{ borderTop: `1px solid ${ACCENT_BORDER}`, marginBottom: '1.25rem' }} />
+
+          {/* Content */}
           {selected.notes
             ? <pre style={{ color: '#333', fontSize: '0.8rem', lineHeight: 1.7, whiteSpace: 'pre-wrap', fontFamily: 'monospace', margin: 0 }}>{selected.notes}</pre>
             : (
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '0.75rem', color: '#ccc' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', paddingTop: '3rem', gap: '0.75rem', color: '#ccc' }}>
                 <div style={{ fontSize: '0.8rem', fontStyle: 'italic' }}>No content recorded for this extract.</div>
                 <button onClick={openCreate}
                   style={{ background: 'none', border: `1px solid ${ACCENT_BORDER}`, color: ACCENT, padding: '0.3rem 0.75rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer' }}>
@@ -792,7 +794,6 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
           {rightMode === 'view'   && renderView()}
           {rightMode === 'create' && renderCreate()}
         </div>
-        
 
         <div onMouseDown={e => { resizing.current = true; resizeStart.current = { mx: e.clientX, my: e.clientY, w: size.w, h: size.h }; }}
           style={{ position: 'absolute', bottom: 0, right: 0, width: 18, height: 18, cursor: 'se-resize', display: 'flex', alignItems: 'flex-end', justifyContent: 'flex-end', padding: 4 }}>
