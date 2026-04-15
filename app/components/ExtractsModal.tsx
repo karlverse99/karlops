@@ -130,6 +130,7 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
   const [contexts, setContexts]   = useState<Context[]>([]);
   const [allTags, setAllTags]         = useState<Tag[]>([]);
   const [tagGroups, setTagGroups]     = useState<TagGroup[]>([]);
+  const [saveCount, setSaveCount]     = useState(0);
   const [loading, setLoading]     = useState(true);
 
   // ── UI ─────────────────────────────────────────────────────────────────────
@@ -340,7 +341,7 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
         tags:                 saveTags.length > 0 ? saveTags : [],
       });
       if (error) throw error;
-      await loadAll(); setRightMode('empty');
+      await loadAll(); setRightMode('empty'); setSaveCount(c => c + 1);
     } catch (err: any) { setSaveErr(err.message); }
     finally { setSaving(false); }
   };
@@ -359,7 +360,7 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
         tags:       manualTags.length > 0 ? manualTags : [],
       });
       if (error) throw error;
-      await loadAll(); setRightMode('empty');
+      await loadAll(); setRightMode('empty'); setSaveCount(c => c + 1);
     } catch (err: any) { setSaveErr(err.message); }
     finally { setSaving(false); }
   };
@@ -635,6 +636,7 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
             </select>
           </div>
           <TagPicker
+            key={`save-tags-${saveCount}`}
             selected={saveTags}
             allTags={allTags}
             tagGroups={tagGroups}
@@ -688,6 +690,7 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
 
           <div>
             <TagPicker
+              key={`manual-tags-${saveCount}`}
               selected={manualTags}
               allTags={allTags}
               tagGroups={tagGroups}
