@@ -15,9 +15,16 @@ export type IntentType =
   | 'capture_task'
   | 'capture_tasks'
   | 'capture_completion'
+  | 'update_object'
   | 'question'
   | 'command'
   | 'unclear';
+
+export interface UpdateOperation {
+  field: string;               // DB field name e.g. 'bucket_key', 'title', 'tags'
+  value: string | string[];    // new value. For tags: the tag name string
+  tag_op?: 'add' | 'remove';  // required when field === 'tags'
+}
 
 export interface RouterResult {
   intent: IntentType;
@@ -32,7 +39,28 @@ interface FieldMeta {
   label: string;
   field_type: string;
   insert_behavior: string;
+  update_behavior: string;
 }
+
+// Table name for each FC object type Karl can reference
+export const OBJECT_TABLE: Record<string, string> = {
+  task:               'task',
+  completion:         'completion',
+  meeting:            'meeting',
+  external_reference: 'external_reference',
+  document_template:  'document_template',
+  contact:            'contact',
+};
+
+// PK column name per table
+export const OBJECT_PK: Record<string, string> = {
+  task:               'task_id',
+  completion:         'completion_id',
+  meeting:            'meeting_id',
+  external_reference: 'external_reference_id',
+  document_template:  'document_template_id',
+  contact:            'contact_id',
+};
 
 const ANALYSIS_TRIGGERS = [
   'analyze', 'analysis', 'review', 'summarize', 'summary',
@@ -96,6 +124,7 @@ Rules:
         'Content-Type': 'application/json',
         'x-api-key': process.env.ANTHROPIC_API_KEY!,
         'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'prompt-caching-2024-07-31',
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
@@ -106,6 +135,13 @@ Rules:
     });
 
     const data = await res.json();
+    const usage = data.usage;
+    if (usage) console.log('[suggestTagsForCapture] tokens:', {
+      input: usage.input_tokens, output: usage.output_tokens,
+      cache_write: usage.cache_creation_input_tokens ?? 0,
+      cache_read: usage.cache_read_input_tokens ?? 0,
+    });
+
     const text = data.content?.[0]?.text ?? '';
     const parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
 
@@ -121,7 +157,6 @@ Rules:
 }
 
 // ── Extract tags the user explicitly rejected in the conversation ─────────────
-// Looks for phrases like "don't like X", "not X", "remove X", "drop X", "no X"
 
 function extractRejectedTags(messages: { role: string; content: string }[]): string[] {
   const rejected = new Set<string>();
@@ -145,6 +180,34 @@ function extractRejectedTags(messages: { role: string; content: string }[]): str
   return Array.from(rejected);
 }
 
+// ── Build editable field summary for Karl's system prompt ─────────────────────
+
+function buildEditableFieldSummary(meta: FieldMeta[]): string {
+  const byType: Record<string, string[]> = {};
+  for (const f of meta) {
+    if (f.update_behavior !== 'editable') continue;
+    if (!byType[f.object_type]) byType[f.object_type] = [];
+    byType[f.object_type].push(`${f.field} (${f.label})`);
+  }
+  return Object.entries(byType)
+    .map(([type, fields]) => `- ${type}: ${fields.join(', ')}`)
+    .join('\n') || 'no editable fields found';
+}
+
+function buildObjectSummaries(meta: FieldMeta[]): string {
+  const byType: Record<string, FieldMeta[]> = {};
+  for (const f of meta) {
+    if (!byType[f.object_type]) byType[f.object_type] = [];
+    byType[f.object_type].push(f);
+  }
+  return Object.entries(byType).map(([type, fields]) => {
+    const required = fields.filter(f => f.insert_behavior === 'required').map(f => f.label).join(', ');
+    return `- ${type}: required fields are ${required}`;
+  }).join('\n');
+}
+
+// ── Main router ───────────────────────────────────────────────────────────────
+
 export async function routeCommand(
   user_id: string,
   input: string
@@ -155,11 +218,12 @@ export async function routeCommand(
     // ── Load field metadata ────────────────────────────────────────────────
     const { data: allMeta } = await db
       .from('ko_field_metadata')
-      .select('object_type, field, label, field_type, insert_behavior')
+      .select('object_type, field, label, field_type, insert_behavior, update_behavior')
       .eq('user_id', user_id)
-      .in('object_type', ['task', 'meeting', 'completion', 'external_reference']);
+      .in('object_type', ['task', 'meeting', 'completion', 'external_reference', 'document_template', 'contact']);
 
-    const objectSummaries = buildObjectSummaries(allMeta ?? []);
+    const objectSummaries    = buildObjectSummaries(allMeta ?? []);
+    const editableFieldSummary = buildEditableFieldSummary(allMeta ?? []);
 
     // ── Build context bundle ───────────────────────────────────────────────
     const isDeep = isAnalysisRequest(input);
@@ -184,7 +248,12 @@ export async function routeCommand(
     // ── Extract rejected tags from recent conversation ─────────────────────
     const rejectedTags = extractRejectedTags(bundle.recentMessages);
     const rejectedTagsNote = rejectedTags.length > 0
-      ? `\n## Rejected Tags — NEVER suggest these\nThe user has explicitly rejected these tags in this conversation. Do NOT include them in any payload or response, ever: ${rejectedTags.join(', ')}`
+      ? `\n## Rejected Tags — NEVER suggest these\nThe user has explicitly rejected these tags in this conversation: ${rejectedTags.join(', ')}`
+      : '';
+
+    // ── Observations as behavior instructions ─────────────────────────────
+    const observationInstructions = bundle.observations
+      ? `## Your Observations About This User\nYou have noticed these patterns. Use them actively to shape your responses — adjust your tone, suggestions, and defaults accordingly. Do not just acknowledge them; act on them.\n${bundle.observations}`
       : '';
 
     // ── System prompt ──────────────────────────────────────────────────────
@@ -193,6 +262,8 @@ export async function routeCommand(
       '',
       contextBlock,
       '',
+      observationInstructions,
+      '',
       '## Your Job',
       'Classify user input, extract structured data, and enrich tasks with full metadata when provided.',
       '',
@@ -200,78 +271,93 @@ export async function routeCommand(
       objectSummaries,
       '',
       '## Task Identifiers',
-      'Tasks in the current load are identified as BucketN (e.g. N1, S2, RW1, L1, D1).',
-      'When the user references a task by identifier or title, use it to act on that specific task.',
+      'Tasks and FC objects are identified as PrefixN (e.g. N1, S2, RW1, L1, D1, CP1, CM1, MT1, EX1, TM1, CT1).',
+      'Prefix key: N=now, S=soon, RW=realwork, L=later, D=delegate, CP=capture, CM=completion, MT=meeting, EX=extract, TM=template, CT=contact.',
+      'When the user references an object by identifier, use it to act on that specific object.',
       '',
       '## Intent Classification',
-      '- capture_task: A single clear action item.',
+      '- capture_task: A single clear action item to add.',
       '- capture_tasks: Multiple action items in one message.',
       '- capture_completion: User is logging something they completed.',
-      '- question: User is asking for information or analysis.',
-      '- command: Explicit system command (move, delegate, delete, update, etc.)',
-      '  Tag manager commands: "manage tags", "open tags", "tag manager", "add a tag", "create a tag", "show tags" → command with command_type: open_tag_manager',
+      '- update_object: User wants to change, move, rename, tag, delegate, complete, or update an existing object.',
+      '  Use this for: "move N3 to soon", "change the title of RW2", "mark S1 done", "delegate D1 to Sarah", "add tag X to N2", "update the outcome on CM1", "rename TM1".',
+      '  IMPORTANT: If the user asks what you plan to change, or asks for clarification about a pending update, return intent: question — do NOT lose the update context.',
+      '- question: User is asking for information, analysis, or clarification. Also use this if the user asks what you are about to do.',
+      '- command: Explicit system command.',
+      '  Tag manager: "manage tags", "open tags", "tag manager", "add a tag", "create a tag" → command_type: open_tag_manager',
       '- unclear: Ambiguous — ask for clarification.',
       '',
+      '## update_object Rules',
+      'When the user wants to update an existing FC object:',
+      '- Identify the object type and identifier (e.g. N3 = task, TM1 = document_template)',
+      '- Return one or more operations in the `operations` array',
+      '- Each operation: { "field": "db_field_name", "value": "new_value" }',
+      '- For tag operations: { "field": "tags", "value": "Tag Name", "tag_op": "add" } or "remove"',
+      '- For delegate: two operations — bucket_key=delegate AND tags add the person name',
+      '- For complete_task: use field "is_completed" value "true" — this triggers the full completion flow (marks done + logs completion record)',
+      '',
+      '## Editable Fields Per Object Type',
+      editableFieldSummary,
+      '',
       '## Primary Vocabulary (always recognised)',
-      'These phrases map to fields. Resolve them against Available Tags and Available Contexts above.',
-      '- "bucket X" or "put it in X" or "X bucket" → bucket_key',
+      '- "bucket X" or "put it in X" or "move to X" → bucket_key',
       '  Valid bucket keys: now, soon, realwork, later, delegate, capture',
-      '  Common aliases: "fire" or "on fire" → now, "up next" → soon, "real work" → realwork',
+      '  Aliases: "fire"/"on fire" → now, "up next" → soon, "real work" → realwork',
       '- "code it to X" or "context X" → context_id (resolve X against Available Contexts, return the UUID)',
-      '- "tag it X" or "tagged X" or "tag X" → tags array (resolve X against Available Tags, use exact name)',
+      '- "tag it X" or "tagged X" → tags add operation',
       '- "by DATE" or "due DATE" or "target DATE" → target_date (ISO format YYYY-MM-DD)',
+      '- "delegate to X" → bucket_key=delegate + add People tag X',
+      '- "mark done" or "complete" or "finished" → is_completed=true (complete_task flow)',
       '',
       '## Tag Rules',
       '- Only use tags from the Available Tags list in context.',
-      '- If the user names a tag that does not exist, say so clearly and omit it from the payload.',
-      '- If the user asks "is X a tag?" or "do we have a tag for X?" — answer directly from the Available Tags list. This is a question, not a capture.',
-      '- NEVER suggest a tag the user has rejected in this conversation (see Rejected Tags below).',
-      '- Once a tag is rejected, it is off the table for the entire conversation — do not bring it back.',
+      '- If the user names a tag that does not exist, say so clearly and omit it.',
+      '- NEVER suggest a tag the user has rejected in this conversation.',
       rejectedTagsNote,
       '',
       '## Enrichment Rules',
-      '- Always attempt to extract bucket, context_id, tags, and target_date from the input.',
-      '- Only use context_id UUIDs from the Available Contexts list. Match by name (case-insensitive). Return the UUID, not the name.',
-      '- If bucket is not specified, use "capture".',
-      '- If multiple tasks are described, extract ALL of them — apply the same metadata to each.',
-      '- For task generation requests ("give me steps to X", "list tasks for Y"), generate the task titles yourself.',
+      '- Always attempt to extract bucket, context_id, tags, and target_date from captures.',
+      '- Only use context_id UUIDs from the Available Contexts list.',
+      '- If bucket is not specified for a capture, use "capture".',
+      '- For task generation requests, generate the task titles yourself.',
       '',
-      '## Rules',
-      '- Be conservative on intent. Commentary = question or unclear.',
+      '## General Rules',
+      '- Be conservative on intent. Commentary = question.',
       '- "I just did X", "I finished X", "I completed X" → capture_completion.',
-      '- Extract the most concise title possible.',
       '- Never capture philosophical statements as tasks.',
-      '- For questions and analysis, use the situation brief and history for situated answers.',
       '- Pattern for analysis: "Based on what I see — [fact]. My read — [inference]."',
       '- Never pretend inference is fact.',
-      '- If no situation brief, gently prompt the user to write one.',
-      '- CRITICAL: When you have enough information to capture, ALWAYS return capture_task or capture_tasks — NEVER return question or unclear.',
-      '- CRITICAL: In your response field, always use FUTURE tense for captures — "Here\'s what I\'ll add..." NOT "Captured..." or "Added...".',
-      '- CRITICAL: If the user pastes a long block of text or description (especially after being asked for it), treat it as capture_task. Extract the most concise title from the content, use the full text as context, and propose a clean task title. Never return unclear for long text dumps.',
+      '- CRITICAL: When you have enough info to capture or update, always return the action intent — never question or unclear.',
+      '- CRITICAL: Response field always uses FUTURE tense for captures/updates — "Here\'s what I\'ll do..." NOT "Done..."',
+      '- CRITICAL: Long text dumps (especially after being asked) → capture_task. Extract concise title, use text as context.',
       '',
-      isDeep ? [
-        '## Observation Instruction',
-        'Include an "observation" field — 1-2 sentences capturing a pattern you noticed.',
-        'observation_type: pattern | preference | flag',
-        '',
-      ].join('\n') : '',
+      isDeep ? '## Observation Instruction\nInclude an "observation" field — 1-2 sentences capturing a pattern you noticed.\nobservation_type: pattern | preference | flag\n' : '',
       '## Response Format — ONLY valid JSON, no markdown fences',
       '',
-      'Single task:',
+      'Single capture:',
       '{ "intent": "capture_task", "title": "concise title", "bucket_key": "soon", "context_id": "uuid-or-null", "tags": ["Tag1"], "target_date": "2026-04-20 or null", "response": "Karl\'s response", "recognised_phrase": "the key phrase" }',
       '',
-      'Multiple tasks:',
-      '{ "intent": "capture_tasks", "tasks": [{ "title": "task one", "bucket_key": "soon", "context_id": "uuid-or-null", "tags": ["Tag1"], "target_date": null }], "summary": "X tasks found", "response": "Karl\'s response listing what was captured", "recognised_phrase": "the key phrase" }',
+      'Multiple captures:',
+      '{ "intent": "capture_tasks", "tasks": [{ "title": "task one", "bucket_key": "soon", "context_id": "uuid-or-null", "tags": ["Tag1"], "target_date": null }], "summary": "X tasks found", "response": "Karl\'s response", "recognised_phrase": "the key phrase" }',
       '',
-      'Completion:',
+      'Completion capture:',
       '{ "intent": "capture_completion", "title": "what was completed", "outcome": "result", "response": "Karl\'s response" }',
       '',
+      'Update object:',
+      '{ "intent": "update_object", "object_type": "task", "identifier": "N3", "operations": [{ "field": "bucket_key", "value": "soon" }], "response": "Karl\'s summary of what will change" }',
+      '',
+      'Delegate example:',
+      '{ "intent": "update_object", "object_type": "task", "identifier": "D1", "operations": [{ "field": "bucket_key", "value": "delegate" }, { "field": "tags", "value": "Sarah", "tag_op": "add" }], "response": "I\'ll move this to Delegate and tag Sarah." }',
+      '',
+      'Complete task example:',
+      '{ "intent": "update_object", "object_type": "task", "identifier": "N2", "operations": [{ "field": "is_completed", "value": "true" }], "response": "I\'ll mark that done and log it as a completion." }',
+      '',
       isDeep
-        ? 'Question/command/unclear (analysis): { "intent": "question", "response": "Karl\'s response", "observation": "pattern note", "observation_type": "pattern" }'
+        ? 'Question/analysis: { "intent": "question", "response": "Karl\'s response", "observation": "pattern note", "observation_type": "pattern" }'
         : 'Question/command/unclear: { "intent": "question", "response": "Karl\'s response" }',
-    ].join('\n');
+    ].filter(Boolean).join('\n');
 
-    // ── Call Anthropic with prompt caching ────────────────────────────────
+    // ── Call Anthropic ────────────────────────────────────────────────────
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -283,29 +369,21 @@ export async function routeCommand(
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: isDeep ? 1500 : 800,
-        system: [
-          {
-            type: 'text',
-            text: systemPrompt,
-            cache_control: { type: 'ephemeral' },
-          }
-        ],
+        system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
         messages: anthropicMessages,
       }),
     });
 
-    const usage = (await res.clone().json().catch(() => null))?.usage;
-    if (usage) {
-      console.log('[commandRouter] tokens:', {
-        input:        usage.input_tokens,
-        output:       usage.output_tokens,
-        cache_write:  usage.cache_creation_input_tokens ?? 0,
-        cache_read:   usage.cache_read_input_tokens ?? 0,
-      });
-    }
+    const rawData = await res.json();
+    const usage = rawData.usage;
+    if (usage) console.log('[commandRouter] tokens:', {
+      input:       usage.input_tokens,
+      output:      usage.output_tokens,
+      cache_write: usage.cache_creation_input_tokens ?? 0,
+      cache_read:  usage.cache_read_input_tokens ?? 0,
+    });
 
-    const data = await res.json();
-    const text = data.content?.[0]?.text ?? '';
+    const text = rawData.content?.[0]?.text ?? '';
 
     let parsed: any;
     try {
@@ -315,7 +393,7 @@ export async function routeCommand(
       return { intent: 'unclear', response: "I didn't quite get that. Can you rephrase?" };
     }
 
-    const intent = parsed.intent as IntentType;
+    const intent      = parsed.intent as IntentType;
     const karlResponse = parsed.response ?? "I'm not sure what to do with that.";
 
     // ── Persist exchange ───────────────────────────────────────────────────
@@ -345,15 +423,8 @@ export async function routeCommand(
         (t: string) => !rejectedTags.includes(t)
       );
 
-      const suggestedTags = await suggestTagsForCapture(
-        user_id,
-        parsed.title,
-        karlTags
-      );
-
-      // Filter suggested tags against rejected list too
+      const suggestedTags = await suggestTagsForCapture(user_id, parsed.title, karlTags);
       const filteredSuggested = suggestedTags.filter(t => !rejectedTags.includes(t));
-
       const allTags = Array.from(new Set([...karlTags, ...filteredSuggested])).slice(0, 5);
 
       const tagMention = allTags.length > 0
@@ -376,10 +447,9 @@ export async function routeCommand(
       };
     }
 
-    // ── capture_tasks — enrich each task with tag suggestions ─────────────
+    // ── capture_tasks — enrich each task ──────────────────────────────────
     if (intent === 'capture_tasks') {
       const tasks = parsed.tasks ?? parsed.titles?.map((t: string) => ({ title: t })) ?? [];
-
       const combinedTitles = tasks.map((t: any) => t.title).join(', ');
       const suggestedTags  = await suggestTagsForCapture(user_id, combinedTitles, []);
       const filteredSuggested = suggestedTags.filter(t => !rejectedTags.includes(t));
@@ -398,10 +468,7 @@ export async function routeCommand(
 
       return {
         intent: 'capture_tasks',
-        payload: {
-          tasks:   enrichedTasks,
-          summary: parsed.summary ?? `${enrichedTasks.length} tasks`,
-        },
+        payload: { tasks: enrichedTasks, summary: parsed.summary ?? `${enrichedTasks.length} tasks` },
         response: enrichedResponse,
       };
     }
@@ -410,20 +477,30 @@ export async function routeCommand(
     if (intent === 'capture_completion') {
       return {
         intent: 'capture_completion',
+        payload: { title: parsed.title, outcome: parsed.outcome ?? '' },
+        response: karlResponse,
+      };
+    }
+
+    // ── update_object ──────────────────────────────────────────────────────
+    if (intent === 'update_object') {
+      return {
+        intent: 'update_object',
         payload: {
-          title:   parsed.title,
-          outcome: parsed.outcome ?? '',
+          object_type: parsed.object_type,
+          identifier:  parsed.identifier,
+          operations:  parsed.operations ?? [],
         },
         response: karlResponse,
       };
     }
 
-    // ── command — check for tag manager ───────────────────────────────────
+    // ── command ────────────────────────────────────────────────────────────
     if (intent === 'command' && parsed.command_type === 'open_tag_manager') {
       return {
         intent: 'command',
         payload: { command_type: 'open_tag_manager' },
-        response: parsed.response ?? 'Opening tag manager — add your tags there.',
+        response: parsed.response ?? 'Opening tag manager.',
       };
     }
 
@@ -433,16 +510,4 @@ export async function routeCommand(
     console.error('[commandRouter]', err);
     return { intent: 'unclear', error: err.message, response: 'Something went wrong. Try again.' };
   }
-}
-
-function buildObjectSummaries(meta: FieldMeta[]): string {
-  const byType: Record<string, FieldMeta[]> = {};
-  for (const f of meta) {
-    if (!byType[f.object_type]) byType[f.object_type] = [];
-    byType[f.object_type].push(f);
-  }
-  return Object.entries(byType).map(([type, fields]) => {
-    const required = fields.filter(f => f.insert_behavior === 'required').map(f => f.label).join(', ');
-    return `- ${type}: required fields are ${required}`;
-  }).join('\n');
 }

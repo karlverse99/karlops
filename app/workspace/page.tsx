@@ -84,6 +84,17 @@ function groupTasksByBucket(tasks: Task[]): Record<string, Task[]> {
   return grouped;
 }
 
+function buildPendingSummary(data: any): string {
+  if (data.intent === 'capture_completion') return `completion: ${data.payload.title}`;
+  if (data.intent === 'update_object') {
+    const ops = (data.payload.operations ?? [])
+      .map((op: any) => op.tag_op ? `${op.tag_op} tag ${op.value}` : `${op.field}=${op.value}`)
+      .join(', ');
+    return `update ${data.payload.identifier}: ${ops}`;
+  }
+  return data.payload.summary ?? data.payload.title;
+}
+
 function renderMarkdown(text: string): React.ReactNode[] {
   const parts = text.split(/(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g);
   return parts.map((part, i) => {
@@ -503,6 +514,15 @@ export default function WorkspacePage() {
     setChat(prev => [...prev, { role, content, timestamp: new Date() }]);
   };
 
+  const refreshAfterUpdate = async () => {
+    if (!koUser) return;
+    await loadTasks(koUser.id);
+    await loadCompletionCount(koUser.id);
+    await loadMeetingCount(koUser.id);
+    await loadExtractCount(koUser.id);
+    await loadContactCount(koUser.id);
+  };
+
   const handleSubmit = async () => {
     const text = input.trim();
     if (!text || !sessionReady) return;
@@ -512,9 +532,10 @@ export default function WorkspacePage() {
     setThinking(true);
 
     try {
+      // ── Pending action in flight ─────────────────────────────────────────
       if (pending) {
-          const isConfirm = isConfirmMatch(text);
-          const isDeny    = isDenyMatch(text);
+        const isConfirm = isConfirmMatch(text);
+        const isDeny    = isDenyMatch(text);
 
         if (isConfirm) {
           const res = await fetch('/api/ko/command', {
@@ -525,12 +546,7 @@ export default function WorkspacePage() {
           const data = await res.json();
           setPending(null);
           addMessage('assistant', data.response ?? 'Done.');
-          if (koUser) {
-            await loadTasks(koUser.id);
-            await loadCompletionCount(koUser.id);
-            await loadMeetingCount(koUser.id);
-            await loadExtractCount(koUser.id);
-          }
+          await refreshAfterUpdate();
           return;
         }
 
@@ -539,8 +555,33 @@ export default function WorkspacePage() {
           addMessage('assistant', 'Got it — cancelled.');
           return;
         }
+
+        // Not confirm or deny — send to Karl but KEEP pending alive.
+        // Karl may be answering a clarifying question about the pending action.
+        const res = await fetch('/api/ko/command', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
+          body: JSON.stringify({ input: text }),
+        });
+        const data = await res.json();
+
+        // If Karl returns a new actionable intent, replace the pending.
+        // If Karl answers conversationally (question/unclear), keep existing pending.
+        const isActionable = ['capture_task', 'capture_tasks', 'capture_completion', 'update_object'].includes(data.intent);
+        if (isActionable && data.payload) {
+          setPending({ intent: data.intent, payload: data.payload, summary: buildPendingSummary(data) });
+        }
+        // else: leave existing pending in place
+
+        if (data.intent === 'command' && data.payload?.command_type === 'open_tag_manager') {
+          setShowTagManager(true);
+        }
+
+        addMessage('assistant', data.response ?? "I'm not sure what to do with that.");
+        return;
       }
 
+      // ── No pending — normal classification flow ───────────────────────────
       const res = await fetch('/api/ko/command', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
@@ -548,14 +589,13 @@ export default function WorkspacePage() {
       });
       const data = await res.json();
 
-      if ((data.intent === 'capture_task' || data.intent === 'capture_tasks' || data.intent === 'capture_completion') && data.payload) {
-        const summary = data.intent === 'capture_completion' ? `completion: ${data.payload.title}` : data.payload.summary ?? data.payload.title;
-        setPending({ intent: data.intent, payload: data.payload, summary });
+      const isActionable = ['capture_task', 'capture_tasks', 'capture_completion', 'update_object'].includes(data.intent);
+      if (isActionable && data.payload) {
+        setPending({ intent: data.intent, payload: data.payload, summary: buildPendingSummary(data) });
       } else {
         setPending(null);
       }
 
-      // Check for tag manager command
       if (data.intent === 'command' && data.payload?.command_type === 'open_tag_manager') {
         setShowTagManager(true);
       }
@@ -895,7 +935,7 @@ export default function WorkspacePage() {
             {pending && (
               <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: '0.75rem' }}>
                 <div style={{ padding: '0.5rem 0.75rem', background: '#0d1a0d', border: '1px solid #1a3a1a', borderRadius: '8px', fontSize: '0.75rem', color: '#4ade80' }}>
-                  Pending: <strong>{pending.summary}</strong> — say <em>yes</em> to capture or <em>no</em> to cancel
+                  Pending: <strong>{pending.summary}</strong> — say <em>yes</em> to confirm or <em>no</em> to cancel
                 </div>
               </div>
             )}
@@ -910,7 +950,7 @@ export default function WorkspacePage() {
                 value={input}
                 onChange={e => { setInput(e.target.value); e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px'; }}
                 onKeyDown={handleKeyDown}
-                placeholder={sessionReady ? (pending ? 'yes to confirm, no to cancel...' : 'Drop a task, ask something, or give an order...') : 'Starting up...'}
+                placeholder={sessionReady ? (pending ? 'yes to confirm, no to cancel, or ask a question...' : 'Drop a task, ask something, or give an order...') : 'Starting up...'}
                 disabled={!sessionReady || thinking}
                 rows={1}
                 style={{ flex: 1, background: '#111', border: '1px solid #222', borderRadius: '6px', color: '#e5e5e5', fontSize: '0.85rem', padding: '0.6rem 0.75rem', fontFamily: 'monospace', resize: 'none', outline: 'none', lineHeight: 1.5, minHeight: '36px', maxHeight: '120px', overflowY: 'auto', transition: 'border-color 0.15s' }}
