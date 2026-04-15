@@ -222,7 +222,7 @@ export async function routeCommand(
       .eq('user_id', user_id)
       .in('object_type', ['task', 'meeting', 'completion', 'external_reference', 'document_template', 'contact']);
 
-    const objectSummaries    = buildObjectSummaries(allMeta ?? []);
+    const objectSummaries      = buildObjectSummaries(allMeta ?? []);
     const editableFieldSummary = buildEditableFieldSummary(allMeta ?? []);
 
     // ── Build context bundle ───────────────────────────────────────────────
@@ -279,13 +279,28 @@ export async function routeCommand(
       '- capture_task: A single clear action item to add.',
       '- capture_tasks: Multiple action items in one message.',
       '- capture_completion: User is logging something they completed.',
-      '- update_object: User wants to change, move, rename, tag, delegate, complete, or update an existing object.',
-      '  Use this for: "move N3 to soon", "change the title of RW2", "mark S1 done", "delegate D1 to Sarah", "add tag X to N2", "update the outcome on CM1", "rename TM1".',
-      '  IMPORTANT: If the user asks what you plan to change, or asks for clarification about a pending update, return intent: question — do NOT lose the update context.',
-      '- question: User is asking for information, analysis, or clarification. Also use this if the user asks what you are about to do.',
+      '- update_object: User wants to change, move, rename, tag, delegate, or update an existing object.',
+      '  Use this for: "move N3 to soon", "change the title of RW2", "delegate D1 to Sarah", "add tag X to N2", "update the outcome on CM1", "rename TM1".',
+      '  Do NOT use this for task completion — see complete_task rule below.',
+      '- question: User is asking for information, analysis, or clarification.',
+      '  ALWAYS use question (never unclear) when the user asks anything meta about a pending action:',
+      '  "what are you going to change?", "would you have done that?", "what does that do?", "why did you pick that?" — all are question.',
       '- command: Explicit system command.',
       '  Tag manager: "manage tags", "open tags", "tag manager", "add a tag", "create a tag" → command_type: open_tag_manager',
-      '- unclear: Ambiguous — ask for clarification.',
+      '- unclear: LAST RESORT ONLY. Use only when you genuinely cannot determine intent and none of the above fit.',
+      '  Never use unclear for meta-questions about pending actions. Never use unclear for short affirmations or reactions.',
+      '',
+      '## complete_task — TWO STEP FLOW (CRITICAL)',
+      'When the user wants to mark a task done ("mark N1 done", "complete S2", "finish RW1"):',
+      'STEP 1 — You do NOT immediately return update_object.',
+      '  Instead return intent: question and ask for the outcome:',
+      '  "What was the result? Give me a line on what happened or how it was resolved."',
+      '  Include "outcome_pending": true and "identifier": "N1" and "object_type": "task" in your JSON so the workspace knows to keep context.',
+      'STEP 2 — When the user provides the outcome, THEN return:',
+      '  { "intent": "update_object", "object_type": "task", "identifier": "N1",',
+      '    "operations": [{ "field": "is_completed", "value": "true" }, { "field": "outcome", "value": "<their answer>" }],',
+      '    "response": "..." }',
+      'EXCEPTION: If the user explicitly says "no outcome" or "just mark it done" or "no comment", skip the question and go straight to update_object with outcome="".',
       '',
       '## update_object Rules',
       'When the user wants to update an existing FC object:',
@@ -294,7 +309,6 @@ export async function routeCommand(
       '- Each operation: { "field": "db_field_name", "value": "new_value" }',
       '- For tag operations: { "field": "tags", "value": "Tag Name", "tag_op": "add" } or "remove"',
       '- For delegate: two operations — bucket_key=delegate AND tags add the person name',
-      '- For complete_task: use field "is_completed" value "true" — this triggers the full completion flow (marks done + logs completion record)',
       '',
       '## Editable Fields Per Object Type',
       editableFieldSummary,
@@ -307,7 +321,7 @@ export async function routeCommand(
       '- "tag it X" or "tagged X" → tags add operation',
       '- "by DATE" or "due DATE" or "target DATE" → target_date (ISO format YYYY-MM-DD)',
       '- "delegate to X" → bucket_key=delegate + add People tag X',
-      '- "mark done" or "complete" or "finished" → is_completed=true (complete_task flow)',
+      '- "mark done" or "complete" or "finished" → complete_task two-step flow (see above)',
       '',
       '## Tag Rules',
       '- Only use tags from the Available Tags list in context.',
@@ -343,14 +357,17 @@ export async function routeCommand(
       'Completion capture:',
       '{ "intent": "capture_completion", "title": "what was completed", "outcome": "result", "response": "Karl\'s response" }',
       '',
+      'Complete task step 1 (asking for outcome):',
+      '{ "intent": "question", "outcome_pending": true, "identifier": "N1", "object_type": "task", "response": "What was the result? Give me a line on what happened." }',
+      '',
+      'Complete task step 2 (after outcome provided):',
+      '{ "intent": "update_object", "object_type": "task", "identifier": "N1", "operations": [{ "field": "is_completed", "value": "true" }, { "field": "outcome", "value": "user\'s outcome text" }], "response": "I\'ll mark that done and log the outcome." }',
+      '',
       'Update object:',
       '{ "intent": "update_object", "object_type": "task", "identifier": "N3", "operations": [{ "field": "bucket_key", "value": "soon" }], "response": "Karl\'s summary of what will change" }',
       '',
       'Delegate example:',
       '{ "intent": "update_object", "object_type": "task", "identifier": "D1", "operations": [{ "field": "bucket_key", "value": "delegate" }, { "field": "tags", "value": "Sarah", "tag_op": "add" }], "response": "I\'ll move this to Delegate and tag Sarah." }',
-      '',
-      'Complete task example:',
-      '{ "intent": "update_object", "object_type": "task", "identifier": "N2", "operations": [{ "field": "is_completed", "value": "true" }], "response": "I\'ll mark that done and log it as a completion." }',
       '',
       isDeep
         ? 'Question/analysis: { "intent": "question", "response": "Karl\'s response", "observation": "pattern note", "observation_type": "pattern" }'
@@ -393,7 +410,7 @@ export async function routeCommand(
       return { intent: 'unclear', response: "I didn't quite get that. Can you rephrase?" };
     }
 
-    const intent      = parsed.intent as IntentType;
+    const intent       = parsed.intent as IntentType;
     const karlResponse = parsed.response ?? "I'm not sure what to do with that.";
 
     // ── Persist exchange ───────────────────────────────────────────────────
@@ -423,9 +440,9 @@ export async function routeCommand(
         (t: string) => !rejectedTags.includes(t)
       );
 
-      const suggestedTags = await suggestTagsForCapture(user_id, parsed.title, karlTags);
+      const suggestedTags     = await suggestTagsForCapture(user_id, parsed.title, karlTags);
       const filteredSuggested = suggestedTags.filter(t => !rejectedTags.includes(t));
-      const allTags = Array.from(new Set([...karlTags, ...filteredSuggested])).slice(0, 5);
+      const allTags           = Array.from(new Set([...karlTags, ...filteredSuggested])).slice(0, 5);
 
       const tagMention = allTags.length > 0
         ? ` Tagged: ${allTags.map(t => `#${t}`).join(' ')}.`
@@ -449,9 +466,9 @@ export async function routeCommand(
 
     // ── capture_tasks — enrich each task ──────────────────────────────────
     if (intent === 'capture_tasks') {
-      const tasks = parsed.tasks ?? parsed.titles?.map((t: string) => ({ title: t })) ?? [];
-      const combinedTitles = tasks.map((t: any) => t.title).join(', ');
-      const suggestedTags  = await suggestTagsForCapture(user_id, combinedTitles, []);
+      const tasks             = parsed.tasks ?? parsed.titles?.map((t: string) => ({ title: t })) ?? [];
+      const combinedTitles    = tasks.map((t: any) => t.title).join(', ');
+      const suggestedTags     = await suggestTagsForCapture(user_id, combinedTitles, []);
       const filteredSuggested = suggestedTags.filter(t => !rejectedTags.includes(t));
 
       const enrichedTasks = tasks.map((task: any) => {
@@ -501,6 +518,21 @@ export async function routeCommand(
         intent: 'command',
         payload: { command_type: 'open_tag_manager' },
         response: parsed.response ?? 'Opening tag manager.',
+      };
+    }
+
+    // ── question with outcome_pending — pass context through ───────────────
+    // Karl is mid-complete_task flow, waiting for the outcome from the user.
+    // Return the pending identifiers so workspace can keep context if needed.
+    if (intent === 'question' && parsed.outcome_pending) {
+      return {
+        intent: 'question',
+        payload: {
+          outcome_pending: true,
+          identifier:      parsed.identifier,
+          object_type:     parsed.object_type,
+        },
+        response: karlResponse,
       };
     }
 
