@@ -13,7 +13,6 @@ interface Meeting {
   outcome: string | null;
   description: string | null;
   notes: string | null;
-  attendees: string[] | null;
   tags: string[] | null;
   is_completed: boolean;
   context: { name: string; context_id: string } | null;
@@ -53,14 +52,13 @@ function formatDate(dateStr: string): string {
 }
 
 function exportAsCSV(meetings: Meeting[]): void {
-  const headers = ['Date', 'Title', 'Outcome', 'Description', 'Notes', 'Attendees', 'Tags', 'Context', 'Task'];
+  const headers = ['Date', 'Title', 'Outcome', 'Description', 'Notes', 'Tags', 'Context', 'Task'];
   const rows = meetings.map(m => [
     m.meeting_date ? formatDate(m.meeting_date) : '',
     `"${m.title.replace(/"/g, '""')}"`,
     `"${(m.outcome ?? '').replace(/"/g, '""')}"`,
     `"${(m.description ?? '').replace(/"/g, '""')}"`,
     `"${(m.notes ?? '').replace(/"/g, '""')}"`,
-    `"${(m.attendees ?? []).join(', ')}"`,
     `"${(m.tags ?? []).join(', ')}"`,
     m.context?.name ?? '',
     m.task?.title ?? '',
@@ -79,7 +77,6 @@ function exportAsMD(meetings: Meeting[]): void {
     lines.push(`## ${m.title}`);
     if (m.meeting_date) lines.push(`**Date:** ${formatDate(m.meeting_date)}`);
     if (m.context) lines.push(`**Context:** ${m.context.name}`);
-    if (m.attendees?.length) lines.push(`**Attendees:** ${m.attendees.join(', ')}`);
     if (m.tags?.length) lines.push(`**Tags:** ${m.tags.join(', ')}`);
     if (m.outcome) { lines.push(''); lines.push('**Outcome:**'); lines.push(m.outcome); }
     if (m.description) { lines.push(''); lines.push('**Description:**'); lines.push(m.description); }
@@ -155,7 +152,7 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
     setLoading(true);
     const { data } = await supabase
       .from('meeting')
-      .select(`meeting_id, title, meeting_date, outcome, description, notes, attendees, tags, is_completed,
+      .select(`meeting_id, title, meeting_date, outcome, description, notes, tags, is_completed,
         context:context_id ( name, context_id ),
         task:task_id ( title )`)
       .eq('user_id', userId)
@@ -230,7 +227,7 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
     setFormOutcome(m.outcome ?? '');
     setFormDescription(m.description ?? '');
     setFormNotes(m.notes ?? '');
-    setFormAttendees(m.attendees ?? []);
+    setFormAttendees([]);
     setFormTags(m.tags ?? []);
     setFormContextId(m.context?.context_id ?? '');
     setErr(''); setSelected(m); setMode('edit');
@@ -261,7 +258,6 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
       outcome: formOutcome.trim() || null,
       description: formDescription.trim() || null,
       notes: formNotes.trim() || null,
-      attendees: formAttendees.length > 0 ? formAttendees : null,
       tags: formTags.length > 0 ? formTags : null,
       context_id: formContextId || null,
     };
