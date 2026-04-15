@@ -43,7 +43,7 @@ interface ExtractsModalProps {
 }
 
 type CreatePath = 'choose' | 'template' | 'manual';
-type RightMode  = 'empty' | 'view' | 'create';
+type RightMode  = 'empty' | 'view' | 'edit' | 'create';
 
 const ACCENT        = '#8b5cf6';
 const ACCENT_BG     = '#f5f3ff';
@@ -168,6 +168,16 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
   const [saving, setSaving]             = useState(false);
   const [saveErr, setSaveErr]           = useState('');
 
+  // ── Edit form state ────────────────────────────────────────────────────────
+  const [editTitle, setEditTitle]         = useState('');
+  const [editFilename, setEditFilename]   = useState('');
+  const [editContext, setEditContext]     = useState('');
+  const [editTags, setEditTags]           = useState<string[]>([]);
+  const [editNotes, setEditNotes]         = useState('');
+  const [editDescription, setEditDescription] = useState('');
+  const [editErr, setEditErr]             = useState('');
+  const [editSaving, setEditSaving]       = useState(false);
+
   // ── Drag/resize ────────────────────────────────────────────────────────────
   const initX = Math.max(20, Math.round(window.innerWidth  / 2 - 600));
   const initY = Math.max(20, Math.round(window.innerHeight / 2 - 390));
@@ -248,7 +258,18 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
 
   // ── Handlers ───────────────────────────────────────────────────────────────
 
-  const openView = (r: Extract) => { setSelected(r); setRightMode('view'); setSaveErr(''); };
+  const openView = (r: Extract) => {
+    setSelected(r);
+    setEditTitle(r.title);
+    setEditFilename(r.filename ?? '');
+    setEditContext(r.context?.context_id ?? '');
+    setEditTags(r.tags ?? []);
+    setEditNotes(r.notes ?? '');
+    setEditDescription(r.description ?? '');
+    setEditErr('');
+    setRightMode('edit');
+    setSaveErr('');
+  };
 
   const openCreate = () => {
     setSelected(null); setRightMode('create'); setCreatePath('choose');
@@ -377,6 +398,27 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
     setSaveErr('');
   };
 
+
+  const handleEditSave = async () => {
+    if (!selected || !editTitle.trim()) { setEditErr('Title is required'); return; }
+    setEditSaving(true); setEditErr('');
+    try {
+      const { error } = await supabase.from('external_reference').update({
+        title:       editTitle.trim(),
+        filename:    editFilename.trim() || null,
+        context_id:  editContext || null,
+        tags:        editTags.length > 0 ? editTags : [],
+        notes:       editNotes.trim() || null,
+        description: editDescription.trim() || null,
+      }).eq('external_reference_id', selected.external_reference_id).eq('user_id', userId);
+      if (error) throw error;
+      await loadAll();
+      // Update selected with new values so view reflects changes
+      setSelected(s => s ? { ...s, title: editTitle.trim(), filename: editFilename.trim() || null, tags: editTags.length > 0 ? editTags : null, notes: editNotes.trim() || null, description: editDescription.trim() || null } : null);
+      setRightMode('empty'); setSelected(null);
+    } catch (e: any) { setEditErr(e.message); }
+    finally { setEditSaving(false); }
+  };
 
   const selectedTemplate   = templates.find(t => t.document_template_id === selectedTemplateId);
 
@@ -536,6 +578,85 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
             ))}
           </div>
         )}
+      </div>
+    );
+  };
+
+  const renderEdit = () => {
+    if (!selected) return null;
+    const identifier = `EX${extracts.findIndex(r => r.external_reference_id === selected.external_reference_id) + 1}`;
+    return (
+      <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
+          <div style={{ color: '#888', fontSize: '0.7rem', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Editing {identifier}</div>
+          {selected.document_template_id && (
+            <button onClick={() => handleNewVersion(selected)}
+              style={{ background: ACCENT, border: 'none', color: '#fff', padding: '0.25rem 0.7rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer', fontWeight: 600 }}>
+              ▶ new version
+            </button>
+          )}
+        </div>
+
+        <div style={{ marginBottom: '0.85rem' }}>
+          <div style={labelSt}>Title <span style={{ color: '#ef4444' }}>*</span></div>
+          <input value={editTitle} onChange={e => setEditTitle(e.target.value)} style={inputSt}
+            onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} />
+        </div>
+
+        <div style={{ marginBottom: '0.85rem' }}>
+          <div style={labelSt}>Filename</div>
+          <input value={editFilename} onChange={e => setEditFilename(e.target.value)} placeholder="report.pdf, notes.md..." style={inputSt}
+            onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} />
+        </div>
+
+        <div style={{ marginBottom: '0.85rem' }}>
+          <div style={labelSt}>Context</div>
+          <select value={editContext} onChange={e => setEditContext(e.target.value)} style={{ ...inputSt, cursor: 'pointer' } as any}
+            onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')}>
+            <option value="">— none —</option>
+            {contexts.map(c => <option key={c.context_id} value={c.context_id}>{c.name}</option>)}
+          </select>
+        </div>
+
+        <div style={{ marginBottom: '0.85rem' }}>
+          <TagPicker
+            key={`edit-tags-${selected.external_reference_id}`}
+            selected={editTags}
+            allTags={allTags}
+            tagGroups={tagGroups}
+            onChange={setEditTags}
+            onTagCreated={loadAll}
+            accentColor={ACCENT}
+            objectType="extract"
+            contextText={editTitle}
+            accessToken={accessToken}
+            userId={userId}
+            label="Tags"
+          />
+        </div>
+
+        <div style={{ marginBottom: '0.85rem' }}>
+          <div style={labelSt}>Description</div>
+          <input value={editDescription} onChange={e => setEditDescription(e.target.value)} style={inputSt}
+            onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} />
+        </div>
+
+        <div style={{ marginBottom: '0.85rem' }}>
+          <div style={labelSt}>Notes / Content</div>
+          <textarea value={editNotes} onChange={e => setEditNotes(e.target.value)} rows={8}
+            style={{ ...inputSt, resize: 'vertical', minHeight: 140 } as any}
+            onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} />
+        </div>
+
+        {editErr && <div style={{ color: '#ef4444', fontSize: '0.72rem', marginBottom: '0.75rem' }}>{editErr}</div>}
+        <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: 'auto', paddingTop: '1rem' }}>
+          <button onClick={() => { setRightMode('empty'); setSelected(null); }}
+            style={{ background: 'none', border: '1px solid #ddd', color: '#666', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer' }}>cancel</button>
+          <button onClick={handleEditSave} disabled={editSaving}
+            style={{ background: ACCENT, border: 'none', color: '#fff', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer', fontWeight: 600 }}>
+            {editSaving ? '...' : 'save changes'}
+          </button>
+        </div>
       </div>
     );
   };
@@ -825,6 +946,7 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
           {renderLeft()}
           {rightMode === 'empty'  && renderEmpty()}
           {rightMode === 'view'   && renderView()}
+          {rightMode === 'edit'   && renderEdit()}
           {rightMode === 'create' && renderCreate()}
         </div>
 
