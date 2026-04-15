@@ -792,6 +792,7 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
           {rightMode === 'view'   && renderView()}
           {rightMode === 'create' && renderCreate()}
         </div>
+        
 
         <div onMouseDown={e => { resizing.current = true; resizeStart.current = { mx: e.clientX, my: e.clientY, w: size.w, h: size.h }; }}
           style={{ position: 'absolute', bottom: 0, right: 0, width: 18, height: 18, cursor: 'se-resize', display: 'flex', alignItems: 'flex-end', justifyContent: 'flex-end', padding: 4 }}>
