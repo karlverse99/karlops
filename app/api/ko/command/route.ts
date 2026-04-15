@@ -107,7 +107,7 @@ async function resolveIdentifier(
     .order('created_at', { ascending: true });
 
   const row = rows?.[index - 1];
-  return row?.[pk] ?? null;
+  return (row as any)?.[pk] ?? null;
 }
 
 // Resolve a status label to task_status_id UUID
