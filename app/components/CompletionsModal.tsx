@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
+import TagPicker from '@/app/components/TagPicker';
 import { supabase } from '@/lib/supabase';
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
@@ -135,9 +136,6 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
   const [formCompletedAt, setFormCompletedAt] = useState('');
   const [formTags, setFormTags]               = useState<string[]>([]);
   const [formContextId, setFormContextId]     = useState('');
-  const [tagSearch, setTagSearch]             = useState('');
-  const [selectedGroupId, setSelectedGroupId] = useState('');
-  const [showTagDrop, setShowTagDrop]         = useState(false);
 
   // ─── Load ──────────────────────────────────────────────────────────────────
 
@@ -221,7 +219,7 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
     setFormCompletedAt(c.completed_at ? c.completed_at.slice(0, 16) : '');
     setFormTags(c.tags ?? []);
     setFormContextId(c.context?.context_id ?? '');
-    setTagSearch(''); setSelectedGroupId(''); setErr('');
+    setErr('');
     setSelected(c);
     setMode('edit');
   };
@@ -229,7 +227,7 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
   const openAdd = () => {
     setEditId(null); setFormTitle(''); setFormOutcome(''); setFormDescription('');
     setFormCompletedAt(new Date().toISOString().slice(0, 16));
-    setFormTags([]); setFormContextId(''); setTagSearch(''); setSelectedGroupId(''); setErr('');
+    setFormTags([]); setFormContextId(''); setErr('');
     setSelected(null); setMode('add');
   };
 
@@ -273,14 +271,6 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
     finally { setDeleting(false); }
   };
 
-  const toggleTag = (name: string) => setFormTags(prev => prev.includes(name) ? prev.filter(t => t !== name) : [...prev, name]);
-
-  const filteredPickerTags = allTags.filter(t => {
-    const matchesGroup = selectedGroupId ? t.tag_group_id === selectedGroupId : true;
-    const matchesSearch = tagSearch ? t.name.toLowerCase().includes(tagSearch.toLowerCase()) : true;
-    return matchesGroup && matchesSearch && !formTags.includes(t.name);
-  });
-
   // ─── Field renderer ────────────────────────────────────────────────────────
 
   const renderField = (meta: FieldMeta) => {
@@ -311,30 +301,19 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
       case 'tags':
         return (
           <div key="tags" style={{ marginBottom: '0.85rem' }}>
-            {label}
-            {formTags.length > 0 && (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem', marginBottom: '0.5rem' }}>
-                {formTags.map(tag => (
-                  <span key={tag} onClick={() => toggleTag(tag)} style={{ fontSize: '0.72rem', color: '#fff', background: ACCENT, borderRadius: '3px', padding: '0.15rem 0.4rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.25rem', fontFamily: 'monospace' }}>
-                    {tag} <span style={{ opacity: 0.8 }}>✕</span>
-                  </span>
-                ))}
-              </div>
-            )}
-            <div style={{ display: 'flex', gap: '0.5rem' }}>
-              <select value={selectedGroupId} onChange={e => setSelectedGroupId(e.target.value)} style={{ ...inputStyle, flex: '0 0 130px', fontSize: '0.72rem', padding: '0.35rem 0.5rem' }}>
-                <option value="">All groups</option>
-                {tagGroups.map(g => <option key={g.tag_group_id} value={g.tag_group_id}>{g.name}</option>)}
-              </select>
-              <div style={{ position: 'relative', flex: 1 }}>
-                <input value={tagSearch} onChange={e => { setTagSearch(e.target.value); setShowTagDrop(true); }} onFocus={() => setShowTagDrop(true)} onBlur={() => setTimeout(() => setShowTagDrop(false), 150)} placeholder="Search tags..." style={{ ...inputStyle, marginBottom: 0 }} onFocusCapture={e => (e.target.style.borderColor = ACCENT)} onBlurCapture={e => (e.target.style.borderColor = '#ddd')} />
-                {showTagDrop && filteredPickerTags.length > 0 && (
-                  <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #ddd', borderRadius: '4px', zIndex: 20, maxHeight: '140px', overflowY: 'auto', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}>
-                    {filteredPickerTags.map(tag => <div key={tag.tag_id} onMouseDown={() => { toggleTag(tag.name); setTagSearch(''); }} style={{ padding: '0.4rem 0.65rem', fontSize: '0.78rem', color: '#333', cursor: 'pointer', borderBottom: '1px solid #f5f5f5', fontFamily: 'monospace' }} onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BG)} onMouseLeave={e => (e.currentTarget.style.background = '#fff')}>{tag.name}</div>)}
-                  </div>
-                )}
-              </div>
-            </div>
+            <TagPicker
+              selected={formTags}
+              allTags={allTags}
+              tagGroups={tagGroups}
+              onChange={setFormTags}
+              onTagCreated={loadTags}
+              accentColor={ACCENT}
+              objectType="completion"
+              contextText={formTitle}
+              accessToken={accessToken}
+              userId={userId}
+              label="Tags"
+            />
           </div>
         );
 

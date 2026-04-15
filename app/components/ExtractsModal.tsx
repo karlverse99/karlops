@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
+import TagPicker from '@/app/components/TagPicker';
 import { supabase } from '@/lib/supabase';
 import KarlSpinner from './KarlSpinner';
 
@@ -127,7 +128,8 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
   const [extracts, setExtracts]   = useState<Extract[]>([]);
   const [templates, setTemplates] = useState<Template[]>([]);
   const [contexts, setContexts]   = useState<Context[]>([]);
-  const [allTags, setAllTags]     = useState<Tag[]>([]);
+  const [allTags, setAllTags]         = useState<Tag[]>([]);
+  const [tagGroups, setTagGroups]     = useState<TagGroup[]>([]);
   const [loading, setLoading]     = useState(true);
 
   // ── UI ─────────────────────────────────────────────────────────────────────
@@ -154,8 +156,6 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
   const [manualContext, setManualContext]       = useState('');
   const [manualTags, setManualTags]             = useState<string[]>([]);
   const [manualFilename, setManualFilename]     = useState('');
-  const [manualTagSearch, setManualTagSearch]   = useState('');
-  const [showManualTagDrop, setShowManualTagDrop] = useState(false);
   const [karlAssistInput, setKarlAssistInput]   = useState('');
   const [karlAssistLoading, setKarlAssistLoading] = useState(false);
   const [karlAssistHistory, setKarlAssistHistory] = useState<{ role: 'user' | 'karl'; content: string }[]>([]);
@@ -164,8 +164,6 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
   const [saveTitle, setSaveTitle]       = useState('');
   const [saveContext, setSaveContext]   = useState('');
   const [saveTags, setSaveTags]         = useState<string[]>([]);
-  const [saveTagSearch, setSaveTagSearch] = useState('');
-  const [showSaveTagDrop, setShowSaveTagDrop] = useState(false);
   const [saving, setSaving]             = useState(false);
   const [saveErr, setSaveErr]           = useState('');
 
@@ -185,7 +183,7 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
 
   const loadAll = async () => {
     setLoading(true);
-    const [{ data: exData }, { data: tmData }, { data: ctxData }, { data: tgData }] = await Promise.all([
+    const [{ data: exData }, { data: tmData }, { data: ctxData }, { data: grData }, { data: tgData }] = await Promise.all([
       supabase.from('external_reference')
         .select(`external_reference_id, title, filename, location, ref_type, description, notes, tags, document_template_id, created_at,
           context:context_id ( name, context_id ),
@@ -198,11 +196,13 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
         .eq('is_active', true)
         .order('name'),
       supabase.from('context').select('context_id, name').eq('user_id', userId).eq('is_archived', false).order('name'),
+      supabase.from('tag_group').select('tag_group_id, name').eq('user_id', userId).order('name'),
       supabase.from('tag').select('tag_id, name, tag_group_id').eq('user_id', userId).order('name'),
     ]);
     if (exData)  { setExtracts(exData as any); onCountChange(exData.length); }
     if (tmData)  setTemplates(tmData as any);
     if (ctxData) setContexts(ctxData);
+    if (grData)  setTagGroups(grData);
     if (tgData)  setAllTags(tgData);
     setLoading(false);
   };
@@ -376,11 +376,7 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
     setSaveErr('');
   };
 
-  const toggleSaveTag   = (n: string) => setSaveTags(p => p.includes(n) ? p.filter(t => t !== n) : [...p, n]);
-  const toggleManualTag = (n: string) => setManualTags(p => p.includes(n) ? p.filter(t => t !== n) : [...p, n]);
 
-  const filteredSaveTags   = allTags.filter(t => !saveTags.includes(t.name)   && (saveTagSearch   ? t.name.toLowerCase().includes(saveTagSearch.toLowerCase())   : true));
-  const filteredManualTags = allTags.filter(t => !manualTags.includes(t.name) && (manualTagSearch ? t.name.toLowerCase().includes(manualTagSearch.toLowerCase()) : true));
   const selectedTemplate   = templates.find(t => t.document_template_id === selectedTemplateId);
 
   // ─── RENDER ────────────────────────────────────────────────────────────────
@@ -637,23 +633,20 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
               <option value="">— context —</option>
               {contexts.map(c => <option key={c.context_id} value={c.context_id}>{c.name}</option>)}
             </select>
-            <div style={{ position: 'relative', flex: 1 }}>
-              <input value={saveTagSearch} onChange={e => { setSaveTagSearch(e.target.value); setShowSaveTagDrop(true); }}
-                onFocus={e => { setShowSaveTagDrop(true); e.target.style.borderColor = ACCENT; }}
-                onBlur={e => { setTimeout(() => setShowSaveTagDrop(false), 150); e.target.style.borderColor = '#ddd'; }}
-                placeholder="Tags..." style={inputSt} />
-              {showSaveTagDrop && filteredSaveTags.length > 0 && (
-                <div style={{ position: 'absolute', bottom: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #ddd', borderRadius: 4, maxHeight: 110, overflowY: 'auto', boxShadow: '0 -4px 12px rgba(0,0,0,0.1)', zIndex: 20 }}>
-                  {filteredSaveTags.map(t => <div key={t.tag_id} onMouseDown={() => { toggleSaveTag(t.name); setSaveTagSearch(''); }} style={{ padding: '0.3rem 0.6rem', fontSize: '0.73rem', cursor: 'pointer' }} onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BG)} onMouseLeave={e => (e.currentTarget.style.background = '#fff')}>{t.name}</div>)}
-                </div>
-              )}
-            </div>
           </div>
-          {saveTags.length > 0 && (
-            <div style={{ display: 'flex', gap: '0.3rem', marginBottom: '0.35rem', flexWrap: 'wrap' }}>
-              {saveTags.map(t => <span key={t} onClick={() => toggleSaveTag(t)} style={{ fontSize: '0.67rem', color: '#fff', background: ACCENT, borderRadius: 3, padding: '0.08rem 0.3rem', cursor: 'pointer' }}>{t} ✕</span>)}
-            </div>
-          )}
+          <TagPicker
+            selected={saveTags}
+            allTags={allTags}
+            tagGroups={tagGroups}
+            onChange={setSaveTags}
+            onTagCreated={loadAll}
+            accentColor={ACCENT}
+            objectType="extract"
+            contextText={saveTitle}
+            accessToken={accessToken}
+            userId={userId}
+            label="Tags"
+          />
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'flex-end' }}>
             {saveErr && <span style={{ color: '#ef4444', fontSize: '0.7rem', flex: 1 }}>{saveErr}</span>}
             <button onClick={() => setRightMode('empty')} style={{ background: 'none', border: '1px solid #ddd', color: '#888', padding: '0.35rem 0.7rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.72rem', cursor: 'pointer' }}>cancel</button>
@@ -694,23 +687,19 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
           </div>
 
           <div>
-            <div style={labelSt}>Tags</div>
-            {manualTags.length > 0 && (
-              <div style={{ display: 'flex', gap: '0.3rem', marginBottom: '0.4rem', flexWrap: 'wrap' }}>
-                {manualTags.map(t => <span key={t} onClick={() => toggleManualTag(t)} style={{ fontSize: '0.68rem', color: '#fff', background: ACCENT, borderRadius: 3, padding: '0.1rem 0.35rem', cursor: 'pointer' }}>{t} ✕</span>)}
-              </div>
-            )}
-            <div style={{ position: 'relative' }}>
-              <input value={manualTagSearch} onChange={e => { setManualTagSearch(e.target.value); setShowManualTagDrop(true); }}
-                onFocus={e => { setShowManualTagDrop(true); e.target.style.borderColor = ACCENT; }}
-                onBlur={e => { setTimeout(() => setShowManualTagDrop(false), 150); e.target.style.borderColor = '#ddd'; }}
-                placeholder="Search tags..." style={inputSt} />
-              {showManualTagDrop && filteredManualTags.length > 0 && (
-                <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #ddd', borderRadius: 4, maxHeight: 110, overflowY: 'auto', boxShadow: '0 4px 12px rgba(0,0,0,0.1)', zIndex: 20 }}>
-                  {filteredManualTags.map(t => <div key={t.tag_id} onMouseDown={() => { toggleManualTag(t.name); setManualTagSearch(''); }} style={{ padding: '0.3rem 0.6rem', fontSize: '0.73rem', cursor: 'pointer' }} onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BG)} onMouseLeave={e => (e.currentTarget.style.background = '#fff')}>{t.name}</div>)}
-                </div>
-              )}
-            </div>
+            <TagPicker
+              selected={manualTags}
+              allTags={allTags}
+              tagGroups={tagGroups}
+              onChange={setManualTags}
+              onTagCreated={loadAll}
+              accentColor={ACCENT}
+              objectType="extract"
+              contextText={manualTitle}
+              accessToken={accessToken}
+              userId={userId}
+              label="Tags"
+            />
           </div>
 
           <div>
