@@ -40,21 +40,6 @@ const BUCKET_PREFIX_MAP: Record<string, string> = {
   CT: 'contact',
 };
 
-// Prefix → object_type (for cross-checking Karl's object_type claim)
-const PREFIX_TO_OBJECT: Record<string, string> = {
-  N:  'task',
-  S:  'task',
-  RW: 'task',
-  L:  'task',
-  D:  'task',
-  CP: 'task',
-  CM: 'completion',
-  MT: 'meeting',
-  EX: 'external_reference',
-  TM: 'document_template',
-  CT: 'contact',
-};
-
 // Parse identifier string into { prefix, index }
 function parseIdentifier(identifier: string): { prefix: string; index: number } | null {
   const match = identifier.toUpperCase().match(/^([A-Z]+)(\d+)$/);
@@ -63,8 +48,6 @@ function parseIdentifier(identifier: string): { prefix: string; index: number } 
 }
 
 // Resolve an identifier like "N3" or "TM1" to a DB record UUID
-// Tasks: re-query in sort order to reconstruct the bucket list
-// Other objects: query in created_at order
 async function resolveIdentifier(
   user_id: string,
   identifier: string,
@@ -119,9 +102,7 @@ async function resolveStatusId(user_id: string, label: string): Promise<string |
     .eq('user_id', user_id);
 
   if (!data) return null;
-  const match = data.find(
-    s => s.label.toLowerCase() === label.toLowerCase()
-  );
+  const match = data.find(s => s.label.toLowerCase() === label.toLowerCase());
   return match?.task_status_id ?? null;
 }
 
@@ -133,7 +114,7 @@ async function executeOperation(
   record_id: string,
   op: { field: string; value: string | string[]; tag_op?: 'add' | 'remove' }
 ): Promise<string> {
-  const db   = createSupabaseAdmin();
+  const db    = createSupabaseAdmin();
   const table = OBJECT_TABLE[object_type];
   const pk    = OBJECT_PK[object_type];
 
@@ -143,16 +124,14 @@ async function executeOperation(
   if (op.field === 'tags') {
     const tagName = String(op.value);
 
-    // Fetch current tags
     const { data: current } = await db
       .from(table).select('tags').eq(pk, record_id).single();
-    const currentTags: string[] = current?.tags ?? [];
+    const currentTags: string[] = (current as any)?.tags ?? [];
 
     let newTags: string[];
     if (op.tag_op === 'remove') {
       newTags = currentTags.filter(t => t !== tagName);
     } else {
-      // Default: add
       newTags = currentTags.includes(tagName)
         ? currentTags
         : [...currentTags, tagName].slice(0, 5);
@@ -162,9 +141,7 @@ async function executeOperation(
       .from(table).update({ tags: newTags }).eq(pk, record_id).eq('user_id', user_id);
     if (error) throw new Error(error.message);
 
-    return op.tag_op === 'remove'
-      ? `removed tag #${tagName}`
-      : `added tag #${tagName}`;
+    return op.tag_op === 'remove' ? `removed tag #${tagName}` : `added tag #${tagName}`;
   }
 
   // ── Status by label ────────────────────────────────────────────────────
@@ -252,7 +229,10 @@ export async function POST(req: NextRequest) {
 
       // ── Standalone completion capture ────────────────────────────────────
       if (pending.intent === 'capture_completion') {
-        const result = await captureCompletion(user.id, pending.payload);
+        const result = await captureCompletion(user.id, {
+          title:   pending.payload.title,
+          outcome: pending.payload.outcome ?? '',
+        });
         if (!result.success) throw new Error(result.error);
 
         writeKarlObservation(
@@ -273,7 +253,6 @@ export async function POST(req: NextRequest) {
       if (pending.intent === 'update_object') {
         const { object_type, identifier, operations } = pending.payload;
 
-        // Resolve identifier → UUID
         const record_id = await resolveIdentifier(user.id, identifier, object_type);
         if (!record_id) {
           return NextResponse.json({
@@ -282,37 +261,31 @@ export async function POST(req: NextRequest) {
           });
         }
 
-        // Check for complete_task special case
+        // ── complete_task special case ─────────────────────────────────────
         const isComplete = operations.some(
           (op: any) => op.field === 'is_completed' && op.value === 'true'
         );
 
         if (isComplete && object_type === 'task') {
-          // Full completion flow: mark task done + log completion record
           const db = createSupabaseAdmin();
 
-          // Fetch task details for completion record
           const { data: task } = await db
             .from('task')
-            .select('title, tags, context_id')
+            .select('title')
             .eq('task_id', record_id)
             .eq('user_id', user.id)
             .single();
 
           if (!task) throw new Error(`Task ${identifier} not found`);
 
-          // Mark task completed
           await db.from('task')
             .update({ is_completed: true })
             .eq('task_id', record_id)
             .eq('user_id', user.id);
 
-          // Log completion record (same as captureCompletion)
-          const completionResult = await captureCompletion(user.id, {
-            title:      task.title,
-            outcome:    '',
-            tags:       task.tags ?? [],
-            context_id: task.context_id ?? null,
+          await captureCompletion(user.id, {
+            title:   task.title,
+            outcome: '',
           });
 
           writeKarlObservation(
@@ -329,7 +302,7 @@ export async function POST(req: NextRequest) {
           });
         }
 
-        // Execute all other operations sequentially
+        // ── Generic field/tag updates ──────────────────────────────────────
         const descriptions: string[] = [];
         for (const op of operations) {
           const desc = await executeOperation(user.id, object_type, record_id, op);
