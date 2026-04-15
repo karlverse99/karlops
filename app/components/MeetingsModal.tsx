@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef } from 'react';
+import TagPicker from '@/app/components/TagPicker';
 import { supabase } from '@/lib/supabase';
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
@@ -141,21 +142,10 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
   const [formTags, setFormTags]               = useState<string[]>([]);
   const [formContextId, setFormContextId]     = useState('');
 
-  // ─── Tag picker state ──────────────────────────────────────────────────────
-  const [tagSearch, setTagSearch]                         = useState('');
-  const [attendeeSearch, setAttendeeSearch]               = useState('');
-  const [selectedTagGroupId, setSelectedTagGroupId]       = useState('');
-  const [selectedPeopleGroupId, setSelectedPeopleGroupId] = useState('');
-  const [showTagDrop, setShowTagDrop]                     = useState(false);
-  const [showAttendeeDrop, setShowAttendeeDrop]           = useState(false);
-
   // ─── Complete form state ───────────────────────────────────────────────────
   const [completeOutcome, setCompleteOutcome]     = useState('');
   const [completeTags, setCompleteTags]           = useState<string[]>([]);
   const [completeContextId, setCompleteContextId] = useState('');
-  const [completeTagSearch, setCompleteTagSearch] = useState('');
-  const [completeTagGroupId, setCompleteTagGroupId] = useState('');
-  const [showCompleteTagDrop, setShowCompleteTagDrop] = useState(false);
   const [completeSaving, setCompleteSaving]       = useState(false);
   const [completeErr, setCompleteErr]             = useState('');
 
@@ -243,7 +233,6 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
     setFormAttendees(m.attendees ?? []);
     setFormTags(m.tags ?? []);
     setFormContextId(m.context?.context_id ?? '');
-    setTagSearch(''); setAttendeeSearch(''); setSelectedTagGroupId(''); setSelectedPeopleGroupId('');
     setErr(''); setSelected(m); setMode('edit');
   };
 
@@ -251,7 +240,6 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
     setEditId(null); setFormTitle(''); setFormMeetingDate(new Date().toISOString().slice(0, 16));
     setFormOutcome(''); setFormDescription(''); setFormNotes('');
     setFormAttendees([]); setFormTags([]); setFormContextId('');
-    setTagSearch(''); setAttendeeSearch(''); setSelectedTagGroupId(''); setSelectedPeopleGroupId('');
     setErr(''); setSelected(null); setMode('add');
   };
 
@@ -259,7 +247,7 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
     setCompleteOutcome(m.outcome ?? '');
     setCompleteTags(m.tags ?? []);
     setCompleteContextId(m.context?.context_id ?? '');
-    setCompleteTagSearch(''); setCompleteTagGroupId(''); setCompleteErr('');
+    setCompleteErr('');
     setSelected(m); setMode('complete');
   };
 
@@ -318,53 +306,9 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
     finally { setCompleteSaving(false); }
   };
 
-  const toggleTag = (name: string) => setFormTags(prev => prev.includes(name) ? prev.filter(t => t !== name) : [...prev, name]);
-  const toggleAttendee = (name: string) => setFormAttendees(prev => prev.includes(name) ? prev.filter(a => a !== name) : [...prev, name]);
-  const toggleCompleteTag = (name: string) => setCompleteTags(prev => prev.includes(name) ? prev.filter(t => t !== name) : [...prev, name]);
-
-  // ─── Tag picker renderer ───────────────────────────────────────────────────
-
-  const renderTagPicker = (
-    key: string, label: string, selected: string[], toggle: (n: string) => void,
-    search: string, setSearch: (v: string) => void,
-    groupId: string, setGroupId: (v: string) => void,
-    showDrop: boolean, setShowDrop: (v: boolean) => void,
-  ) => {
-    const filtered = allTags.filter(t =>
-      (groupId ? t.tag_group_id === groupId : true) &&
-      (search ? t.name.toLowerCase().includes(search.toLowerCase()) : true) &&
-      !selected.includes(t.name)
-    );
-
-    return (
-      <div key={key} style={{ marginBottom: '0.85rem' }}>
-        <div style={formLabelStyle}>{label}</div>
-        {selected.length > 0 && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem', marginBottom: '0.5rem' }}>
-            {selected.map(name => (
-              <span key={name} onClick={() => toggle(name)}
-                style={{ fontSize: '0.72rem', color: '#fff', background: ACCENT, borderRadius: '3px', padding: '0.15rem 0.4rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.25rem', fontFamily: 'monospace' }}
-              >{name} <span style={{ opacity: 0.8 }}>✕</span></span>
-            ))}
-          </div>
-        )}
-        <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <select value={groupId} onChange={e => setGroupId(e.target.value)} style={{ ...inputStyle, flex: '0 0 130px', fontSize: '0.72rem', padding: '0.35rem 0.5rem' }}>
-            <option value="">All groups</option>
-            {tagGroups.map(g => <option key={g.tag_group_id} value={g.tag_group_id}>{g.name}</option>)}
-          </select>
-          <div style={{ position: 'relative', flex: 1 }}>
-            <input value={search} onChange={e => { setSearch(e.target.value); setShowDrop(true); }} onFocus={() => setShowDrop(true)} onBlur={() => setTimeout(() => setShowDrop(false), 150)} placeholder="Search..." style={{ ...inputStyle, marginBottom: 0 }} onFocusCapture={e => (e.target.style.borderColor = ACCENT)} onBlurCapture={e => (e.target.style.borderColor = '#ddd')} />
-            {showDrop && filtered.length > 0 && (
-              <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #ddd', borderRadius: '4px', zIndex: 20, maxHeight: '140px', overflowY: 'auto', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}>
-                {filtered.map(tag => <div key={tag.tag_id} onMouseDown={() => { toggle(tag.name); setSearch(''); }} style={{ padding: '0.4rem 0.65rem', fontSize: '0.78rem', color: '#333', cursor: 'pointer', borderBottom: '1px solid #f5f5f5', fontFamily: 'monospace' }} onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BG)} onMouseLeave={e => (e.currentTarget.style.background = '#fff')}>{tag.name}</div>)}
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  };
+  // People group for attendees picker
+  const peopleTagGroup = tagGroups.filter(g => g.name === 'People');
+  const peopleTags     = allTags.filter(t => peopleTagGroup.some(g => g.tag_group_id === t.tag_group_id));
 
   // ─── Field renderer ────────────────────────────────────────────────────────
 
@@ -388,9 +332,41 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
       case 'notes':
         return <div key="notes" style={{ marginBottom: '0.85rem' }}>{label}<textarea value={formNotes} onChange={e => setFormNotes(e.target.value)} rows={3} style={{ ...inputStyle, resize: 'vertical', minHeight: '64px' }} onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} /></div>;
       case 'attendees':
-        return renderTagPicker('attendees', 'Attendees', formAttendees, toggleAttendee, attendeeSearch, setAttendeeSearch, selectedPeopleGroupId, setSelectedPeopleGroupId, showAttendeeDrop, setShowAttendeeDrop);
+        return (
+          <div key="attendees">
+            <TagPicker
+              selected={formAttendees}
+              allTags={peopleTags}
+              tagGroups={peopleTagGroup}
+              onChange={setFormAttendees}
+              onTagCreated={loadTags}
+              accentColor={ACCENT}
+              objectType="meeting"
+              contextText={formTitle}
+              accessToken={accessToken}
+              userId={userId}
+              label="Attendees (People tags)"
+            />
+          </div>
+        );
       case 'tags':
-        return renderTagPicker('tags', 'Tags', formTags, toggleTag, tagSearch, setTagSearch, selectedTagGroupId, setSelectedTagGroupId, showTagDrop, setShowTagDrop);
+        return (
+          <div key="tags">
+            <TagPicker
+              selected={formTags}
+              allTags={allTags}
+              tagGroups={tagGroups}
+              onChange={setFormTags}
+              onTagCreated={loadTags}
+              accentColor={ACCENT}
+              objectType="meeting"
+              contextText={formTitle}
+              accessToken={accessToken}
+              userId={userId}
+              label="Tags"
+            />
+          </div>
+        );
       case 'context_id':
         return (
           <div key="context_id" style={{ marginBottom: '0.85rem' }}>{label}
@@ -515,7 +491,19 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
         <textarea value={completeOutcome} onChange={e => setCompleteOutcome(e.target.value)} rows={4} style={{ ...inputStyle, resize: 'vertical', minHeight: '80px' }} onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} />
       </div>
 
-      {renderTagPicker('complete_tags', 'Tags', completeTags, toggleCompleteTag, completeTagSearch, setCompleteTagSearch, completeTagGroupId, setCompleteTagGroupId, showCompleteTagDrop, setShowCompleteTagDrop)}
+      <TagPicker
+        selected={completeTags}
+        allTags={allTags}
+        tagGroups={tagGroups}
+        onChange={setCompleteTags}
+        onTagCreated={loadTags}
+        accentColor={ACCENT}
+        objectType="meeting"
+        contextText={selected?.title ?? ''}
+        accessToken={accessToken}
+        userId={userId}
+        label="Tags"
+      />
 
       <div style={{ marginBottom: '0.85rem' }}>
         <div style={formLabelStyle}>Context</div>

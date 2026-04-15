@@ -79,7 +79,7 @@ export default function TagPicker({
 
   const browseAnchorRef = useRef<HTMLDivElement>(null);
   const browseRef       = useRef<HTMLDivElement>(null);
-  const [browsePos, setBrowsePos] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [browsePos, setBrowsePos] = useState<{ top?: number; bottom?: number; left: number; width: number } | null>(null);
 
   const atMax        = selected.length >= maxTags;
   const accentBg     = `${accentColor}12`;
@@ -92,14 +92,32 @@ export default function TagPicker({
 
   // ─── Position browse panel ────────────────────────────────────────────────
 
+  const PANEL_W = 380;
+  const PANEL_H = 340;
+
   const openBrowse = () => {
     if (browseAnchorRef.current) {
-      const rect = browseAnchorRef.current.getBoundingClientRect();
-      setBrowsePos({
-        top:   rect.bottom + 6,
-        left:  rect.left,
-        width: Math.max(rect.width, 360),
-      });
+      const rect        = browseAnchorRef.current.getBoundingClientRect();
+      const vw          = window.innerWidth;
+      const vh          = window.innerHeight;
+      const spaceRight  = vw - rect.right - 8;
+      const spaceLeft   = rect.left - 8;
+
+      // Prefer right side of viewport; fall back to left, then best fit
+      const left = spaceRight >= PANEL_W
+        ? rect.right + 8
+        : spaceLeft >= PANEL_W
+          ? rect.left - PANEL_W - 8
+          : Math.max(8, vw - PANEL_W - 8);
+
+      // Open downward if room, otherwise flip up
+      const pos: { top?: number; bottom?: number; left: number; width: number } = { left, width: PANEL_W };
+      if (vh - rect.bottom - 8 >= PANEL_H) {
+        pos.top = rect.bottom + 4;
+      } else {
+        pos.bottom = vh - rect.top + 4;
+      }
+      setBrowsePos(pos);
     }
     setBrowseGroup('all');
     setBrowseSearch('');
@@ -411,7 +429,8 @@ export default function TagPicker({
           ref={browseRef}
           style={{
             position: 'fixed',
-            top:      browsePos.top,
+            ...(browsePos.top    !== undefined ? { top:    browsePos.top    } : {}),
+            ...(browsePos.bottom !== undefined ? { bottom: browsePos.bottom } : {}),
             left:     browsePos.left,
             width:    browsePos.width,
             zIndex:   99999,
