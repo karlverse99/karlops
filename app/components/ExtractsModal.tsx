@@ -450,41 +450,74 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
     const tmplNm = selected.document_template_id ? templates.find(t => t.document_template_id === selected.document_template_id)?.name : null;
     return (
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        <div style={{ flex: 1, overflowY: 'auto', padding: '1.5rem 1.75rem', scrollbarWidth: 'thin', scrollbarColor: `${ACCENT_BORDER} transparent` }}>
-          {/* Title + metadata */}
-          <div style={{ marginBottom: '1.25rem' }}>
-            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '1rem', marginBottom: '0.5rem' }}>
-              <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#111', wordBreak: 'break-word', fontFamily: 'monospace', lineHeight: 1.3 }}>{selected.title}</div>
-              {selected.document_template_id && (
-                <button onClick={() => handleNewVersion(selected)}
-                  style={{ flexShrink: 0, background: ACCENT, border: 'none', color: '#fff', padding: '0.3rem 0.75rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer', fontWeight: 600 }}>
-                  ▶ new version
-                </button>
-              )}
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-              {tmplNm && <span style={{ fontSize: '0.63rem', color: ACCENT, background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, borderRadius: 3, padding: '0.1rem 0.45rem', fontWeight: 600 }}>from: {tmplNm}</span>}
-              {selected.context && <span style={{ fontSize: '0.63rem', color: '#666', background: '#f5f5f5', border: '1px solid #e5e5e5', borderRadius: 3, padding: '0.1rem 0.45rem' }}>{selected.context.name}</span>}
-              {selected.tags?.map(t => <span key={t} style={{ fontSize: '0.63rem', color: ACCENT, background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, borderRadius: 3, padding: '0.1rem 0.45rem' }}>#{t}</span>)}
-              <span style={{ fontSize: '0.6rem', color: '#aaa' }}>{fmtDate(selected.created_at)}</span>
+        <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem 1.5rem', scrollbarWidth: 'thin', scrollbarColor: `${ACCENT_BORDER} transparent` }}>
+
+          {/* Title row */}
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '1rem', marginBottom: '1rem' }}>
+            <div style={{ fontSize: '1.05rem', fontWeight: 700, color: '#111', wordBreak: 'break-word', fontFamily: 'monospace', lineHeight: 1.3 }}>{selected.title}</div>
+            {selected.document_template_id && (
+              <button onClick={() => handleNewVersion(selected)}
+                style={{ flexShrink: 0, background: ACCENT, border: 'none', color: '#fff', padding: '0.3rem 0.75rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer', fontWeight: 600 }}>
+                ▶ new version
+              </button>
+            )}
+          </div>
+
+          {/* Metadata fields */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '1.25rem' }}>
+            {selected.context && (
+              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                <span style={{ fontSize: '0.6rem', color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, width: '80px', flexShrink: 0 }}>Context</span>
+                <span style={{ fontSize: '0.78rem', color: '#444', fontFamily: 'monospace' }}>{selected.context.name}</span>
+              </div>
+            )}
+            {tmplNm && (
+              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                <span style={{ fontSize: '0.6rem', color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, width: '80px', flexShrink: 0 }}>Template</span>
+                <span style={{ fontSize: '0.78rem', color: ACCENT, fontFamily: 'monospace' }}>{tmplNm}</span>
+              </div>
+            )}
+            {selected.filename && (
+              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                <span style={{ fontSize: '0.6rem', color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, width: '80px', flexShrink: 0 }}>File</span>
+                <span style={{ fontSize: '0.78rem', color: '#444', fontFamily: 'monospace' }}>{selected.filename}</span>
+              </div>
+            )}
+            {selected.ref_type && (
+              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                <span style={{ fontSize: '0.6rem', color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, width: '80px', flexShrink: 0 }}>Type</span>
+                <span style={{ fontSize: '0.78rem', color: '#444', fontFamily: 'monospace' }}>{selected.ref_type}</span>
+              </div>
+            )}
+            {selected.tags && selected.tags.length > 0 && (
+              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                <span style={{ fontSize: '0.6rem', color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, width: '80px', flexShrink: 0 }}>Tags</span>
+                <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
+                  {selected.tags.map(t => (
+                    <span key={t} style={{ fontSize: '0.72rem', color: ACCENT, background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, borderRadius: 3, padding: '0.1rem 0.4rem', fontFamily: 'monospace' }}>#{t}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {selected.description && (
+              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
+                <span style={{ fontSize: '0.6rem', color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, width: '80px', flexShrink: 0, paddingTop: '0.15rem' }}>Description</span>
+                <span style={{ fontSize: '0.78rem', color: '#444', fontFamily: 'monospace', lineHeight: 1.5 }}>{selected.description}</span>
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+              <span style={{ fontSize: '0.6rem', color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, width: '80px', flexShrink: 0 }}>Created</span>
+              <span style={{ fontSize: '0.78rem', color: '#aaa', fontFamily: 'monospace' }}>{fmtDate(selected.created_at)}</span>
             </div>
           </div>
 
-          <div style={{ borderTop: `1px solid ${ACCENT_BORDER}`, marginBottom: '1.25rem' }} />
-
           {/* Content */}
-          {selected.notes
-            ? <pre style={{ color: '#333', fontSize: '0.8rem', lineHeight: 1.7, whiteSpace: 'pre-wrap', fontFamily: 'monospace', margin: 0 }}>{selected.notes}</pre>
-            : (
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', paddingTop: '3rem', gap: '0.75rem', color: '#ccc' }}>
-                <div style={{ fontSize: '0.8rem', fontStyle: 'italic' }}>No content recorded for this extract.</div>
-                <button onClick={openCreate}
-                  style={{ background: 'none', border: `1px solid ${ACCENT_BORDER}`, color: ACCENT, padding: '0.3rem 0.75rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer' }}>
-                  + add content
-                </button>
-              </div>
-            )
-          }
+          {selected.notes && (
+            <>
+              <div style={{ borderTop: `1px solid ${ACCENT_BORDER}`, marginBottom: '1rem' }} />
+              <pre style={{ color: '#333', fontSize: '0.8rem', lineHeight: 1.7, whiteSpace: 'pre-wrap', fontFamily: 'monospace', margin: 0 }}>{selected.notes}</pre>
+            </>
+          )}
         </div>
         {selected.notes && (
           <div style={{ padding: '0.6rem 1.25rem', borderTop: `1px solid ${ACCENT_BORDER}`, background: '#fafafa', display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
