@@ -13,6 +13,7 @@ export interface CaptureTaskPayload {
   description?: string;
   notes?: string;
   target_date?: string;
+  delegated_to?: string | null;  // tag_id of People tag — required when bucket_key = delegate
 }
 
 export interface CaptureTaskResult {
@@ -41,24 +42,32 @@ export async function captureTask(
     const defaultMap: Record<string, string> = {};
     for (const d of defaults ?? []) defaultMap[d.field] = d.value;
 
+    const bucket_key = payload.bucket_key ?? defaultMap['bucket_key'] ?? 'capture';
+
+    // ── Validate delegate requires delegated_to ────────────────────────────
+    if (bucket_key === 'delegate' && !payload.delegated_to) {
+      return { success: false, error: 'Delegate tasks require a delegee (delegated_to). Use "Other" if unassigned.' };
+    }
+
     // ── Build insert record — payload wins over defaults ───────────────────
-    const record = {
+    const record: Record<string, any> = {
       user_id,
       title:          payload.title.trim(),
-      bucket_key:     payload.bucket_key     ?? defaultMap['bucket_key']     ?? 'capture',
+      bucket_key,
       context_id:     payload.context_id     ?? defaultMap['context_id']     ?? null,
       task_status_id: payload.task_status_id ?? defaultMap['task_status_id'] ?? null,
       tags:           payload.tags           ?? [],
       description:    payload.description    ?? null,
       notes:          payload.notes          ?? null,
       target_date:    payload.target_date    ?? null,
+      delegated_to:   bucket_key === 'delegate' ? (payload.delegated_to ?? null) : null,
     };
 
     // ── Insert ─────────────────────────────────────────────────────────────
     const { data: task, error: insertError } = await db
       .from('task')
       .insert(record)
-      .select('task_id, title, bucket_key, context_id, task_status_id, tags, created_at')
+      .select('task_id, title, bucket_key, context_id, task_status_id, tags, delegated_to, created_at')
       .single();
 
     if (insertError) throw insertError;

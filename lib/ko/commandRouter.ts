@@ -21,8 +21,8 @@ export type IntentType =
   | 'unclear';
 
 export interface UpdateOperation {
-  field: string;               // DB field name e.g. 'bucket_key', 'title', 'tags'
-  value: string | string[];    // new value. For tags: the tag name string
+  field: string;               // DB field name e.g. 'bucket_key', 'title', 'tags', 'delegated_to'
+  value: string | string[];    // new value. For tags: the tag name string. For delegated_to: tag_id uuid
   tag_op?: 'add' | 'remove';  // required when field === 'tags'
 }
 
@@ -72,6 +72,153 @@ const ANALYSIS_TRIGGERS = [
 function isAnalysisRequest(input: string): boolean {
   const lower = input.toLowerCase();
   return ANALYSIS_TRIGGERS.some(t => lower.includes(t));
+}
+
+// ── People tag resolution — fuzzy match for delegee ──────────────────────────
+// Resolves a free-text name to a People tag_id.
+// Resolution order:
+//   1. Exact match on tag name
+//   2. Case-insensitive match on tag name
+//   3. Partial match on tag name
+//   4. Partial match on tag description
+//   5. Contact name match (contacts auto-create People tags)
+//   6. Contact notes match
+// Returns { tag_id, name } if found, null if not.
+
+interface PeopleTag {
+  tag_id: string;
+  name: string;
+  description: string | null;
+}
+
+async function resolveDelegatee(
+  user_id: string,
+  nameHint: string
+): Promise<{ tag_id: string; name: string } | null> {
+  if (!nameHint || nameHint.toLowerCase() === 'skip' || nameHint.toLowerCase() === 'other') {
+    return resolveOtherTag(user_id);
+  }
+
+  const db = createSupabaseAdmin();
+
+  // Load all People tags
+  const { data: peopleTags } = await db
+    .from('tag')
+    .select('tag_id, name, description')
+    .eq('user_id', user_id)
+    .eq('is_archived', false)
+    .in('tag_group_id',
+      db.from('tag_group')
+        .select('tag_group_id')
+        .eq('user_id', user_id)
+        .eq('name', 'People')
+    );
+
+  const tags: PeopleTag[] = peopleTags ?? [];
+  const hint = nameHint.toLowerCase().trim();
+
+  // 1. Exact name match
+  let match = tags.find(t => t.name === nameHint);
+  if (match) return { tag_id: match.tag_id, name: match.name };
+
+  // 2. Case-insensitive name match
+  match = tags.find(t => t.name.toLowerCase() === hint);
+  if (match) return { tag_id: match.tag_id, name: match.name };
+
+  // 3. Partial name match
+  match = tags.find(t => t.name.toLowerCase().includes(hint) || hint.includes(t.name.toLowerCase()));
+  if (match) return { tag_id: match.tag_id, name: match.name };
+
+  // 4. Description match
+  match = tags.find(t => t.description && t.description.toLowerCase().includes(hint));
+  if (match) return { tag_id: match.tag_id, name: match.name };
+
+  // 5 & 6. Contact name/notes match — contacts auto-create People tags
+  const { data: contacts } = await db
+    .from('contact')
+    .select('name, notes, tag_id')
+    .eq('user_id', user_id)
+    .eq('is_archived', false);
+
+  for (const contact of contacts ?? []) {
+    const nameMatch  = contact.name?.toLowerCase().includes(hint) || hint.includes(contact.name?.toLowerCase() ?? '');
+    const notesMatch = contact.notes?.toLowerCase().includes(hint);
+    if ((nameMatch || notesMatch) && contact.tag_id) {
+      // Resolve to the People tag created for this contact
+      const contactTag = tags.find(t => t.tag_id === contact.tag_id);
+      if (contactTag) return { tag_id: contactTag.tag_id, name: contactTag.name };
+    }
+  }
+
+  return null;
+}
+
+async function resolveOtherTag(
+  user_id: string
+): Promise<{ tag_id: string; name: string } | null> {
+  const db = createSupabaseAdmin();
+
+  // Find the "Other" People tag
+  const { data } = await db
+    .from('tag')
+    .select('tag_id, name, tag_group_id')
+    .eq('user_id', user_id)
+    .eq('name', 'Other')
+    .eq('is_archived', false)
+    .maybeSingle();
+
+  if (data) return { tag_id: data.tag_id, name: data.name };
+
+  // Fallback: find by People group if somehow name differs
+  const { data: peopleGroup } = await db
+    .from('tag_group')
+    .select('tag_group_id')
+    .eq('user_id', user_id)
+    .eq('name', 'People')
+    .maybeSingle();
+
+  if (!peopleGroup) return null;
+
+  const { data: otherTag } = await db
+    .from('tag')
+    .select('tag_id, name')
+    .eq('user_id', user_id)
+    .eq('tag_group_id', peopleGroup.tag_group_id)
+    .eq('name', 'Other')
+    .maybeSingle();
+
+  return otherTag ? { tag_id: otherTag.tag_id, name: otherTag.name } : null;
+}
+
+// ── Create a new People tag for an unrecognised delegee ───────────────────────
+
+async function createPeopleTag(
+  user_id: string,
+  name: string
+): Promise<{ tag_id: string; name: string } | null> {
+  const db = createSupabaseAdmin();
+
+  const { data: peopleGroup } = await db
+    .from('tag_group')
+    .select('tag_group_id')
+    .eq('user_id', user_id)
+    .eq('name', 'People')
+    .maybeSingle();
+
+  if (!peopleGroup) return null;
+
+  const { data } = await db
+    .from('tag')
+    .insert({
+      user_id,
+      tag_group_id: peopleGroup.tag_group_id,
+      name:         name.trim(),
+      is_archived:  false,
+    })
+    .select('tag_id, name')
+    .single();
+
+  return data ?? null;
 }
 
 // ── Tag suggestion for chat captures ─────────────────────────────────────────
@@ -308,7 +455,17 @@ export async function routeCommand(
       '- Return one or more operations in the `operations` array',
       '- Each operation: { "field": "db_field_name", "value": "new_value" }',
       '- For tag operations: { "field": "tags", "value": "Tag Name", "tag_op": "add" } or "remove"',
-      '- For delegate: two operations — bucket_key=delegate AND tags add the person name',
+      '- For delegate: set bucket_key=delegate AND set delegated_to with the person name hint.',
+      '  The system will resolve the name to a People tag UUID automatically.',
+      '  If the user says "skip" or "other" or "don\'t care" for delegated_to, use the value "Other".',
+      '',
+      '## Delegation Rules — IMPORTANT',
+      '- delegation_to is REQUIRED when bucket_key = delegate. Never set bucket_key=delegate without also setting delegated_to.',
+      '- delegated_to must always be a name or "Other" — never a UUID (resolution happens server-side).',
+      '- When the user says "delegate N1 to Sarah" — return two operations: bucket_key=delegate and delegated_to=Sarah.',
+      '- When the user says "delegate N1" with no person — ask "Who\'s handling this? Say \'skip\' if you don\'t need to track."',
+      '  Return intent: question with delegation_pending: true and identifier in payload.',
+      '- When user responds to delegation_pending with a name or "skip" — return update_object with both operations.',
       '',
       '## Editable Fields Per Object Type',
       editableFieldSummary,
@@ -320,7 +477,7 @@ export async function routeCommand(
       '- "code it to X" or "context X" → context_id (resolve X against Available Contexts, return the UUID)',
       '- "tag it X" or "tagged X" → tags add operation',
       '- "by DATE" or "due DATE" or "target DATE" → target_date (ISO format YYYY-MM-DD)',
-      '- "delegate to X" → bucket_key=delegate + add People tag X',
+      '- "delegate to X" → bucket_key=delegate + delegated_to=X (name string, not UUID)',
       '- "mark done" or "complete" or "finished" → complete_task two-step flow (see above)',
       '',
       '## Tag Rules',
@@ -346,13 +503,14 @@ export async function routeCommand(
       '- CRITICAL: Long text dumps (especially after being asked) → capture_task. Extract concise title, use text as context.',
       '',
       isDeep ? '## Observation Instruction\nInclude an "observation" field — 1-2 sentences capturing a pattern you noticed.\nobservation_type: pattern | preference | flag\n' : '',
+      '',
       '## Response Format — ONLY valid JSON, no markdown fences',
       '',
       'Single capture:',
-      '{ "intent": "capture_task", "title": "concise title", "bucket_key": "soon", "context_id": "uuid-or-null", "tags": ["Tag1"], "target_date": "2026-04-20 or null", "response": "Karl\'s response", "recognised_phrase": "the key phrase" }',
+      '{ "intent": "capture_task", "title": "concise title", "bucket_key": "soon", "context_id": "uuid-or-null", "tags": ["Tag1"], "target_date": "2026-04-20 or null", "delegated_to": "name-or-null", "response": "Karl\'s response", "recognised_phrase": "the key phrase" }',
       '',
       'Multiple captures:',
-      '{ "intent": "capture_tasks", "tasks": [{ "title": "task one", "bucket_key": "soon", "context_id": "uuid-or-null", "tags": ["Tag1"], "target_date": null }], "summary": "X tasks found", "response": "Karl\'s response", "recognised_phrase": "the key phrase" }',
+      '{ "intent": "capture_tasks", "tasks": [{ "title": "task one", "bucket_key": "soon", "context_id": "uuid-or-null", "tags": ["Tag1"], "target_date": null, "delegated_to": null }], "summary": "X tasks found", "response": "Karl\'s response", "recognised_phrase": "the key phrase" }',
       '',
       'Completion capture:',
       '{ "intent": "capture_completion", "title": "what was completed", "outcome": "result", "response": "Karl\'s response" }',
@@ -363,11 +521,14 @@ export async function routeCommand(
       'Complete task step 2 (after outcome provided):',
       '{ "intent": "update_object", "object_type": "task", "identifier": "N1", "operations": [{ "field": "is_completed", "value": "true" }, { "field": "outcome", "value": "user\'s outcome text" }], "response": "I\'ll mark that done and log the outcome." }',
       '',
+      'Delegate — asking who:',
+      '{ "intent": "question", "delegation_pending": true, "identifier": "N1", "object_type": "task", "response": "Who\'s handling this? Say \'skip\' if you don\'t need to track." }',
+      '',
+      'Delegate — with person (name resolved server-side):',
+      '{ "intent": "update_object", "object_type": "task", "identifier": "N1", "operations": [{ "field": "bucket_key", "value": "delegate" }, { "field": "delegated_to", "value": "Sarah" }], "response": "I\'ll move this to Delegate, assigned to Sarah." }',
+      '',
       'Update object:',
       '{ "intent": "update_object", "object_type": "task", "identifier": "N3", "operations": [{ "field": "bucket_key", "value": "soon" }], "response": "Karl\'s summary of what will change" }',
-      '',
-      'Delegate example:',
-      '{ "intent": "update_object", "object_type": "task", "identifier": "D1", "operations": [{ "field": "bucket_key", "value": "delegate" }, { "field": "tags", "value": "Sarah", "tag_op": "add" }], "response": "I\'ll move this to Delegate and tag Sarah." }',
       '',
       isDeep
         ? 'Question/analysis: { "intent": "question", "response": "Karl\'s response", "observation": "pattern note", "observation_type": "pattern" }'
@@ -434,7 +595,7 @@ export async function routeCommand(
       );
     }
 
-    // ── capture_task — enrich with tag suggestions ─────────────────────────
+    // ── capture_task — enrich with tag suggestions + resolve delegated_to ──
     if (intent === 'capture_task') {
       const karlTags: string[] = (parsed.tags ?? []).filter(
         (t: string) => !rejectedTags.includes(t)
@@ -444,21 +605,50 @@ export async function routeCommand(
       const filteredSuggested = suggestedTags.filter(t => !rejectedTags.includes(t));
       const allTags           = Array.from(new Set([...karlTags, ...filteredSuggested])).slice(0, 5);
 
+      // Resolve delegated_to name → People tag_id
+      let delegatedToId: string | null = null;
+      let delegatedToName: string | null = null;
+      if (parsed.bucket_key === 'delegate' && parsed.delegated_to) {
+        const resolved = await resolveDelegatee(user_id, parsed.delegated_to);
+        if (resolved) {
+          delegatedToId   = resolved.tag_id;
+          delegatedToName = resolved.name;
+        } else {
+          // Create a new People tag for this person
+          const created = await createPeopleTag(user_id, parsed.delegated_to);
+          if (created) {
+            delegatedToId   = created.tag_id;
+            delegatedToName = created.name;
+          }
+        }
+      }
+
       const tagMention = allTags.length > 0
         ? ` Tagged: ${allTags.map(t => `#${t}`).join(' ')}.`
         : ' No tags — will land in capture.';
 
-      const enrichedResponse = karlResponse.replace(/\.$/, '') + tagMention;
+      const delegateMention = delegatedToName
+        ? ` Delegated to: ${delegatedToName}.`
+        : parsed.bucket_key === 'delegate' ? ' No delegee — assigning to Other.' : '';
+
+      // If delegate but no resolved delegee, fall back to Other
+      if (parsed.bucket_key === 'delegate' && !delegatedToId) {
+        const other = await resolveOtherTag(user_id);
+        if (other) { delegatedToId = other.tag_id; delegatedToName = other.name; }
+      }
+
+      const enrichedResponse = karlResponse.replace(/\.$/, '') + tagMention + delegateMention;
       await appendSessionMessage(user_id, 'karl', enrichedResponse);
 
       return {
         intent: 'capture_task',
         payload: {
-          title:       parsed.title,
-          bucket_key:  parsed.bucket_key  ?? 'capture',
-          context_id:  parsed.context_id  ?? null,
-          tags:        allTags,
-          target_date: parsed.target_date ?? null,
+          title:        parsed.title,
+          bucket_key:   parsed.bucket_key  ?? 'capture',
+          context_id:   parsed.context_id  ?? null,
+          tags:         allTags,
+          target_date:  parsed.target_date ?? null,
+          delegated_to: delegatedToId,
         },
         response: enrichedResponse,
       };
@@ -471,11 +661,28 @@ export async function routeCommand(
       const suggestedTags     = await suggestTagsForCapture(user_id, combinedTitles, []);
       const filteredSuggested = suggestedTags.filter(t => !rejectedTags.includes(t));
 
-      const enrichedTasks = tasks.map((task: any) => {
+      const enrichedTasks = await Promise.all(tasks.map(async (task: any) => {
         const taskTags = (task.tags ?? []).filter((t: string) => !rejectedTags.includes(t));
         const merged   = Array.from(new Set([...taskTags, ...filteredSuggested])).slice(0, 5);
-        return { ...task, tags: merged };
-      });
+
+        let delegatedToId: string | null = null;
+        if (task.bucket_key === 'delegate') {
+          const nameHint = task.delegated_to ?? 'Other';
+          const resolved = await resolveDelegatee(user_id, nameHint);
+          if (resolved) {
+            delegatedToId = resolved.tag_id;
+          } else {
+            const created = await createPeopleTag(user_id, nameHint);
+            delegatedToId = created?.tag_id ?? null;
+          }
+          if (!delegatedToId) {
+            const other = await resolveOtherTag(user_id);
+            delegatedToId = other?.tag_id ?? null;
+          }
+        }
+
+        return { ...task, tags: merged, delegated_to: delegatedToId };
+      }));
 
       const tagMention = filteredSuggested.length > 0
         ? ` Suggested tags: ${filteredSuggested.map(t => `#${t}`).join(' ')}.`
@@ -499,14 +706,37 @@ export async function routeCommand(
       };
     }
 
-    // ── update_object ──────────────────────────────────────────────────────
+    // ── update_object — resolve delegated_to name if present ──────────────
     if (intent === 'update_object') {
+      const operations: UpdateOperation[] = parsed.operations ?? [];
+
+      // Find any delegated_to operation and resolve the name to a tag_id
+      const resolvedOps = await Promise.all(operations.map(async (op: UpdateOperation) => {
+        if (op.field === 'delegated_to' && typeof op.value === 'string') {
+          const resolved = await resolveDelegatee(user_id, op.value);
+          if (resolved) {
+            return { ...op, value: resolved.tag_id, _resolved_name: resolved.name };
+          }
+          // Name not found — create a new People tag
+          const created = await createPeopleTag(user_id, op.value);
+          if (created) {
+            return { ...op, value: created.tag_id, _resolved_name: created.name };
+          }
+          // Last resort: Other
+          const other = await resolveOtherTag(user_id);
+          return other
+            ? { ...op, value: other.tag_id, _resolved_name: other.name }
+            : op;
+        }
+        return op;
+      }));
+
       return {
         intent: 'update_object',
         payload: {
           object_type: parsed.object_type,
           identifier:  parsed.identifier,
-          operations:  parsed.operations ?? [],
+          operations:  resolvedOps,
         },
         response: karlResponse,
       };
@@ -521,9 +751,7 @@ export async function routeCommand(
       };
     }
 
-    // ── question with outcome_pending — pass context through ───────────────
-    // Karl is mid-complete_task flow, waiting for the outcome from the user.
-    // Return the pending identifiers so workspace can keep context if needed.
+    // ── question with outcome_pending ──────────────────────────────────────
     if (intent === 'question' && parsed.outcome_pending) {
       return {
         intent: 'question',
@@ -531,6 +759,19 @@ export async function routeCommand(
           outcome_pending: true,
           identifier:      parsed.identifier,
           object_type:     parsed.object_type,
+        },
+        response: karlResponse,
+      };
+    }
+
+    // ── question with delegation_pending ──────────────────────────────────
+    if (intent === 'question' && parsed.delegation_pending) {
+      return {
+        intent: 'question',
+        payload: {
+          delegation_pending: true,
+          identifier:         parsed.identifier,
+          object_type:        parsed.object_type,
         },
         response: karlResponse,
       };
