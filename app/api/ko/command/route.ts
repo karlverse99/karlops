@@ -38,7 +38,7 @@ function parseIdentifier(identifier: string): { prefix: string; index: number } 
   return { prefix: match[1], index: parseInt(match[2], 10) };
 }
 
-async function resolveIdentifier(user_id: string, identifier: string, object_type: string): Promise<string | null> {
+async function resolveIdentifier(user_id: string, identifier: string, object_type: string, context_filter?: string | null): Promise<string | null> {
   const db = createSupabaseAdmin();
   const parsed = parseIdentifier(identifier);
   if (!parsed) return null;
@@ -48,11 +48,14 @@ async function resolveIdentifier(user_id: string, identifier: string, object_typ
 
   if (object_type === 'task') {
     if (!bucketKey || !['now', 'soon', 'realwork', 'later', 'delegate', 'capture'].includes(bucketKey)) return null;
-    const { data: tasks } = await db.from('task').select('task_id')
+    let query = db.from('task').select('task_id')
       .eq('user_id', user_id).eq('bucket_key', bucketKey)
       .eq('is_completed', false).eq('is_archived', false)
       .order('sort_order', { ascending: true, nullsFirst: false })
       .order('created_at', { ascending: true });
+    // Match the UI's context filter so identifier positions align with what user sees
+    if (context_filter) query = query.eq('context_id', context_filter);
+    const { data: tasks } = await query;
     return tasks?.[index - 1]?.task_id ?? null;
   }
 
@@ -160,9 +163,9 @@ async function executeCaptureTasksBulk(user_id: string, tasks: any[]): Promise<N
 }
 
 // ── Execute update_object payload ─────────────────────────────────────────────
-async function executeUpdateObject(user_id: string, payload: any): Promise<NextResponse> {
+async function executeUpdateObject(user_id: string, payload: any, context_filter?: string | null): Promise<NextResponse> {
   const { object_type, identifier, operations } = payload;
-  const record_id = await resolveIdentifier(user_id, identifier, object_type);
+  const record_id = await resolveIdentifier(user_id, identifier, object_type, context_filter);
   if (!record_id) {
     return NextResponse.json({ success: false, response: `Couldn't find ${identifier} — it may have moved. Try refreshing.` });
   }
@@ -204,13 +207,13 @@ async function executeUpdateObject(user_id: string, payload: any): Promise<NextR
 }
 
 // ── Execute process_document payload ──────────────────────────────────────────
-async function executeProcessDocument(user_id: string, payload: any): Promise<NextResponse> {
+async function executeProcessDocument(user_id: string, payload: any, context_filter?: string | null): Promise<NextResponse> {
   const db = createSupabaseAdmin();
   const results: string[] = [];
   const capturedTasks: any[] = [];
 
   if (payload.doc_action === 'complete_meeting' && payload.target_identifier) {
-    const meeting_id = await resolveIdentifier(user_id, payload.target_identifier, 'meeting');
+    const meeting_id = await resolveIdentifier(user_id, payload.target_identifier, 'meeting', context_filter);
     if (meeting_id && payload.summary) {
       await db.from('meeting').update({ notes: payload.summary, is_completed: true }).eq('meeting_id', meeting_id).eq('user_id', user_id);
       results.push(`Meeting ${payload.target_identifier} completed`);
@@ -247,7 +250,7 @@ export async function POST(req: NextRequest) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const body = await req.json();
-  const { input, pending } = body;
+  const { input, pending, context_filter } = body;
 
   if (!input) return NextResponse.json({ error: 'No input provided' }, { status: 400 });
 
@@ -286,9 +289,9 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      if (action === 'update_object') return await executeUpdateObject(user.id, pending);
+      if (action === 'update_object') return await executeUpdateObject(user.id, pending, context_filter);
 
-      if (action === 'process_document') return await executeProcessDocument(user.id, pending);
+      if (action === 'process_document') return await executeProcessDocument(user.id, pending, context_filter);
     }
 
     // ── Karl says cancel ───────────────────────────────────────────────────

@@ -520,7 +520,7 @@ export default function WorkspacePage() {
       const res = await fetch('/api/ko/command', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
-        body: JSON.stringify({ input: text, pending: pendingForKarl }),
+        body: JSON.stringify({ input: text, pending: pendingForKarl, context_filter: contextFilter }),
       });
       const data = await res.json();
 
