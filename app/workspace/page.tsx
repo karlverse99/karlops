@@ -11,6 +11,7 @@ import TaskListModal from '@/app/components/TaskListModal';
 import TemplatesModal from '@/app/components/TemplatesModal';
 import ContactsModal from '@/app/components/ContactsModal';
 import TagManagerModal from '@/app/components/TagManagerModal';
+import DelegateModal from '@/app/components/DelegateModal';
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -27,12 +28,23 @@ interface Task {
   task_status_id: string | null;
   target_date: string | null;
   sort_order: number | null;
+  delegated_to: string | null;
 }
 interface ChatMessage { role: 'user' | 'assistant'; content: string; timestamp: Date; }
 interface BucketDef { key: string; label: string; icon: string; color: string; accent: string; }
 interface Context { context_id: string; name: string; }
 interface TaskStatus { task_status_id: string; name: string; label: string; }
 interface PendingAction { intent: string; payload: Record<string, any>; summary: string; }
+
+// Delegate modal state — used for both drag-drop and chat delegation_pending
+interface DelegateModalState {
+  taskId: string;
+  taskTitle: string;
+  preselectedTagId?: string | null;
+  preselectedName?: string | null;
+  // After confirm, what do we do? 'drop' = update bucket+delegee, 'update' = just delegee
+  mode: 'drop' | 'update';
+}
 
 // ─── CONSTANTS ───────────────────────────────────────────────────────────────
 
@@ -153,7 +165,8 @@ function TaskPill({ task, bucket, statusLabel, taskIndex, onClick, onDragStart }
 
 // ─── COMPONENTS: BucketSection ───────────────────────────────────────────────
 
-const DROPPABLE_BUCKETS = ['now', 'soon', 'realwork', 'later'];
+// Delegate bucket is droppable but triggers DelegateModal instead of direct drop
+const DROPPABLE_BUCKETS = ['now', 'soon', 'realwork', 'later', 'delegate'];
 
 function BucketSection({ bucket, tasks, statusMap, onTaskClick, onDragStart, onDrop, onReorder }: {
   bucket: BucketDef;
@@ -313,6 +326,10 @@ export default function WorkspacePage() {
   const [templateCount, setTemplateCount]     = useState(0);
   const [contactCount, setContactCount]       = useState(0);
   const [selectedTask, setSelectedTask]       = useState<Task | null>(null);
+
+  // DelegateModal state — null = hidden
+  const [delegateModal, setDelegateModal]     = useState<DelegateModalState | null>(null);
+
   const draggedTask                            = useRef<Task | null>(null);
 
   const chatBottomRef = useRef<HTMLDivElement>(null);
@@ -429,7 +446,7 @@ export default function WorkspacePage() {
   const loadTasks = async (userId: string) => {
     const { data: taskData } = await supabase
       .from('task')
-      .select('task_id, title, bucket_key, tags, is_completed, is_archived, created_at, context_id, task_status_id, target_date, sort_order')
+      .select('task_id, title, bucket_key, tags, is_completed, is_archived, created_at, context_id, task_status_id, target_date, sort_order, delegated_to')
       .eq('user_id', userId)
       .eq('is_completed', false)
       .eq('is_archived', false)
@@ -440,45 +457,27 @@ export default function WorkspacePage() {
   };
 
   const loadCompletionCount = async (userId: string) => {
-    const { count } = await supabase
-      .from('completion')
-      .select('completion_id', { count: 'exact', head: true })
-      .eq('user_id', userId);
+    const { count } = await supabase.from('completion').select('completion_id', { count: 'exact', head: true }).eq('user_id', userId);
     if (count !== null) setCompletionCount(count);
   };
 
   const loadMeetingCount = async (userId: string) => {
-    const { count } = await supabase
-      .from('meeting')
-      .select('meeting_id', { count: 'exact', head: true })
-      .eq('user_id', userId)
-      .eq('is_completed', false);
+    const { count } = await supabase.from('meeting').select('meeting_id', { count: 'exact', head: true }).eq('user_id', userId).eq('is_completed', false);
     if (count !== null) setMeetingCount(count);
   };
 
   const loadExtractCount = async (userId: string) => {
-    const { count } = await supabase
-      .from('external_reference')
-      .select('external_reference_id', { count: 'exact', head: true })
-      .eq('user_id', userId);
+    const { count } = await supabase.from('external_reference').select('external_reference_id', { count: 'exact', head: true }).eq('user_id', userId);
     if (count !== null) setExtractCount(count);
   };
 
   const loadTemplateCount = async (userId: string) => {
-    const { count } = await supabase
-      .from('document_template')
-      .select('document_template_id', { count: 'exact', head: true })
-      .or(`user_id.eq.${userId},is_system.eq.true`)
-      .eq('is_active', true);
+    const { count } = await supabase.from('document_template').select('document_template_id', { count: 'exact', head: true }).or(`user_id.eq.${userId},is_system.eq.true`).eq('is_active', true);
     if (count !== null) setTemplateCount(count);
   };
 
   const loadContactCount = async (userId: string) => {
-    const { count } = await supabase
-      .from('contact')
-      .select('contact_id', { count: 'exact', head: true })
-      .eq('user_id', userId)
-      .eq('is_archived', false);
+    const { count } = await supabase.from('contact').select('contact_id', { count: 'exact', head: true }).eq('user_id', userId).eq('is_archived', false);
     if (count !== null) setContactCount(count);
   };
 
@@ -556,8 +555,7 @@ export default function WorkspacePage() {
           return;
         }
 
-        // Not confirm or deny — send to Karl but KEEP pending alive.
-        // Karl may be answering a clarifying question about the pending action.
+        // Not confirm or deny — send to Karl but keep pending alive
         const res = await fetch('/api/ko/command', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
@@ -565,16 +563,30 @@ export default function WorkspacePage() {
         });
         const data = await res.json();
 
-        // If Karl returns a new actionable intent, replace the pending.
-        // If Karl answers conversationally (question/unclear), keep existing pending.
         const isActionable = ['capture_task', 'capture_tasks', 'capture_completion', 'update_object'].includes(data.intent);
         if (isActionable && data.payload) {
           setPending({ intent: data.intent, payload: data.payload, summary: buildPendingSummary(data) });
         }
-        // else: leave existing pending in place
 
         if (data.intent === 'command' && data.payload?.command_type === 'open_tag_manager') {
           setShowTagManager(true);
+        }
+
+        // ── delegation_pending — pop DelegateModal for the task ────────────
+        if (data.intent === 'question' && data.payload?.delegation_pending) {
+          const taskId = resolveIdentifierToTaskId(data.payload.identifier);
+          if (taskId) {
+            const task = tasks.find(t => t.id === taskId);
+            if (task) {
+              setDelegateModal({
+                taskId: task.id,
+                taskTitle: task.title,
+                preselectedTagId: data.payload.preselected_tag_id ?? null,
+                preselectedName:  data.payload.preselected_name  ?? null,
+                mode: 'update',
+              });
+            }
+          }
         }
 
         addMessage('assistant', data.response ?? "I'm not sure what to do with that.");
@@ -600,6 +612,23 @@ export default function WorkspacePage() {
         setShowTagManager(true);
       }
 
+      // ── delegation_pending — pop DelegateModal ────────────────────────────
+      if (data.intent === 'question' && data.payload?.delegation_pending) {
+        const taskId = resolveIdentifierToTaskId(data.payload.identifier);
+        if (taskId) {
+          const task = tasks.find(t => t.id === taskId);
+          if (task) {
+            setDelegateModal({
+              taskId: task.id,
+              taskTitle: task.title,
+              preselectedTagId: data.payload.preselected_tag_id ?? null,
+              preselectedName:  data.payload.preselected_name  ?? null,
+              mode: 'update',
+            });
+          }
+        }
+      }
+
       addMessage('assistant', data.response ?? "I'm not sure what to do with that.");
 
     } catch (err: any) {
@@ -607,6 +636,46 @@ export default function WorkspacePage() {
     } finally {
       setThinking(false);
     }
+  };
+
+  // ── Resolve identifier (e.g. "D1") to a task_id ───────────────────────────
+  // Identifiers are computed at display time from bucket position
+  const resolveIdentifierToTaskId = (identifier: string): string | null => {
+    if (!identifier) return null;
+    const upper = identifier.toUpperCase();
+
+    // Map prefix to bucket
+    const prefixMap: Record<string, string> = {
+      N: 'now', S: 'soon', RW: 'realwork', L: 'later',
+      D: 'delegate', CP: 'capture',
+    };
+
+    let bucketKey: string | null = null;
+    let indexStr = '';
+
+    // Try two-char prefix first (RW, CP)
+    for (const [prefix, bucket] of Object.entries(prefixMap)) {
+      if (upper.startsWith(prefix)) {
+        bucketKey = bucket;
+        indexStr  = upper.slice(prefix.length);
+        break;
+      }
+    }
+
+    if (!bucketKey || !indexStr) return null;
+    const idx = parseInt(indexStr, 10) - 1;
+    if (isNaN(idx) || idx < 0) return null;
+
+    const bucketTasks = tasks
+      .filter(t => t.bucket_key === bucketKey)
+      .sort((a, b) => {
+        if (a.sort_order !== null && b.sort_order !== null) return a.sort_order - b.sort_order;
+        if (a.sort_order !== null) return -1;
+        if (b.sort_order !== null) return 1;
+        return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+      });
+
+    return bucketTasks[idx]?.id ?? null;
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -622,23 +691,72 @@ export default function WorkspacePage() {
     draggedTask.current = task;
   };
 
+  // ── Drop handler — intercepts delegate bucket, opens DelegateModal ─────────
   const handleDrop = async (targetBucketKey: string) => {
     const task = draggedTask.current;
     draggedTask.current = null;
     if (!task || !koUser) return;
     if (task.bucket_key === targetBucketKey) return;
 
-    setTasks(prev => prev.map(t => t.id === task.id ? { ...t, bucket_key: targetBucketKey } : t));
+    // Delegate bucket — show DelegateModal before writing to DB
+    if (targetBucketKey === 'delegate') {
+      setDelegateModal({
+        taskId:    task.id,
+        taskTitle: task.title,
+        mode:      'drop',
+      });
+      return;
+    }
+
+    // All other buckets — direct update
+    setTasks(prev => prev.map(t => t.id === task.id ? { ...t, bucket_key: targetBucketKey, delegated_to: null } : t));
 
     const { error } = await supabase
       .from('task')
-      .update({ bucket_key: targetBucketKey, sort_order: null })
+      .update({ bucket_key: targetBucketKey, delegated_to: null, sort_order: null })
       .eq('task_id', task.id)
       .eq('user_id', koUser.id);
 
     if (error) {
       console.error('[handleDrop]', error);
       await loadTasks(koUser.id);
+    }
+  };
+
+  // ── DelegateModal confirm — write bucket + delegated_to to DB ─────────────
+  const handleDelegateConfirm = async (tagId: string, tagName: string) => {
+    if (!delegateModal || !koUser) return;
+
+    const { taskId, mode } = delegateModal;
+    setDelegateModal(null);
+
+    // Optimistic update
+    setTasks(prev => prev.map(t =>
+      t.id === taskId
+        ? { ...t, bucket_key: 'delegate', delegated_to: tagId }
+        : t
+    ));
+
+    const updatePayload: Record<string, any> = {
+      delegated_to: tagId,
+      sort_order:   null,
+    };
+    if (mode === 'drop') {
+      updatePayload.bucket_key = 'delegate';
+    }
+
+    const { error } = await supabase
+      .from('task')
+      .update(updatePayload)
+      .eq('task_id', taskId)
+      .eq('user_id', koUser.id);
+
+    if (error) {
+      console.error('[handleDelegateConfirm]', error);
+      await loadTasks(koUser.id);
+    } else {
+      // Confirm to user in chat if this came from a delegation_pending flow
+      addMessage('assistant', `Delegated to **${tagName}**. Task moved to Delegated bucket.`);
     }
   };
 
@@ -708,83 +826,48 @@ export default function WorkspacePage() {
 
       {/* MODALS */}
       {showTaskAdd && koUser && (
-        <TaskAddModal
-          userId={koUser.id}
-          accessToken={accessToken}
-          onClose={() => setShowTaskAdd(false)}
-          onSaved={() => { loadTasks(koUser.id); setShowTaskAdd(false); }}
-        />
+        <TaskAddModal userId={koUser.id} accessToken={accessToken} onClose={() => setShowTaskAdd(false)} onSaved={() => { loadTasks(koUser.id); setShowTaskAdd(false); }} />
       )}
       {showCompletions && koUser && (
-        <CompletionsModal
-          userId={koUser.id}
-          accessToken={accessToken}
-          onClose={() => setShowCompletions(false)}
-          onCountChange={setCompletionCount}
-        />
+        <CompletionsModal userId={koUser.id} accessToken={accessToken} onClose={() => setShowCompletions(false)} onCountChange={setCompletionCount} />
       )}
       {showMeetings && koUser && (
-        <MeetingsModal
-          userId={koUser.id}
-          accessToken={accessToken}
-          onClose={() => setShowMeetings(false)}
-          onCountChange={setMeetingCount}
-        />
+        <MeetingsModal userId={koUser.id} accessToken={accessToken} onClose={() => setShowMeetings(false)} onCountChange={setMeetingCount} />
       )}
       {showExtracts && koUser && (
-        <ExtractsModal
-          userId={koUser.id}
-          accessToken={accessToken}
-          onClose={() => setShowExtracts(false)}
-          onCountChange={setExtractCount}
-        />
+        <ExtractsModal userId={koUser.id} accessToken={accessToken} onClose={() => setShowExtracts(false)} onCountChange={setExtractCount} />
       )}
       {showTaskList && koUser && (
-        <TaskListModal
-          userId={koUser.id}
-          accessToken={accessToken}
-          onClose={() => setShowTaskList(false)}
-          onSaved={() => loadTasks(koUser.id)}
-        />
+        <TaskListModal userId={koUser.id} accessToken={accessToken} onClose={() => setShowTaskList(false)} onSaved={() => loadTasks(koUser.id)} />
       )}
       {showTemplates && koUser && (
-        <TemplatesModal
-          userId={koUser.id}
-          accessToken={accessToken}
-          onClose={() => setShowTemplates(false)}
-          onCountChange={setTemplateCount}
-        />
+        <TemplatesModal userId={koUser.id} accessToken={accessToken} onClose={() => setShowTemplates(false)} onCountChange={setTemplateCount} />
       )}
       {showContacts && koUser && (
-        <ContactsModal
-          userId={koUser.id}
-          accessToken={accessToken}
-          onClose={() => setShowContacts(false)}
-          onCountChange={setContactCount}
-        />
+        <ContactsModal userId={koUser.id} accessToken={accessToken} onClose={() => setShowContacts(false)} onCountChange={setContactCount} />
       )}
       {showTagManager && koUser && (
-        <TagManagerModal
-          userId={koUser.id}
-          accessToken={accessToken}
-          onClose={() => setShowTagManager(false)}
-          onChanged={() => {}}
-        />
+        <TagManagerModal userId={koUser.id} accessToken={accessToken} onClose={() => setShowTagManager(false)} onChanged={() => {}} />
       )}
       {selectedTask && koUser && (
-        <TaskDetailModal
-          taskId={selectedTask.id}
+        <TaskDetailModal taskId={selectedTask.id} userId={koUser.id} accessToken={accessToken} onClose={() => setSelectedTask(null)} onSaved={() => { loadTasks(koUser.id); setSelectedTask(null); }} />
+      )}
+
+      {/* DELEGATE MODAL — drag-drop + delegation_pending */}
+      {delegateModal && koUser && (
+        <DelegateModal
+          taskId={delegateModal.taskId}
+          taskTitle={delegateModal.taskTitle}
           userId={koUser.id}
-          accessToken={accessToken}
-          onClose={() => setSelectedTask(null)}
-          onSaved={() => { loadTasks(koUser.id); setSelectedTask(null); }}
+          preselectedTagId={delegateModal.preselectedTagId}
+          preselectedName={delegateModal.preselectedName}
+          onConfirm={handleDelegateConfirm}
+          onCancel={() => setDelegateModal(null)}
         />
       )}
 
       {/* HEADER */}
       <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 1.25rem', height: '44px', borderBottom: '1px solid #1a1a1a', flexShrink: 0, background: '#0d0d0d' }}>
-
-        {/* LEFT: brand + user */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <img src="/ko-icon.svg" alt="KO" style={{ width: '28px', height: '28px' }} />
           <span style={{ color: '#ffffff', fontSize: '0.9rem', fontWeight: 700, letterSpacing: '0.02em' }}>KarlOps</span>
@@ -793,85 +876,23 @@ export default function WorkspacePage() {
           <span style={{ color: '#555', fontSize: '0.7rem' }}>|</span>
           <span style={{ color: '#aaa', fontSize: '0.7rem' }}>{koUser?.display_name ?? '...'}</span>
         </div>
-
-        {/* RIGHT: FC buttons + counts + admin */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-
-            {/* +add task(s) */}
-            <button onClick={() => setShowTaskAdd(true)}
-              style={{ background: '#0d1a14', border: '1px solid #10b981', color: '#10b981', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
-              onMouseEnter={e => (e.currentTarget.style.background = '#0f2a20')}
-              onMouseLeave={e => (e.currentTarget.style.background = '#0d1a14')}
-            >+add task(s)</button>
-
-            {/* +complete(n) */}
-            <button onClick={() => setShowCompletions(true)}
-              style={{ background: '#1a0e00', border: '1px solid #4a2a00', color: '#f97316', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
-              onMouseEnter={e => (e.currentTarget.style.background = '#2a1800')}
-              onMouseLeave={e => (e.currentTarget.style.background = '#1a0e00')}
-            ><span style={{ color: '#f97316' }}>+complete</span><span style={{ color: '#ffffff' }}>({completionCount})</span></button>
-
-            {/* +meeting(n) */}
-            <button onClick={() => setShowMeetings(true)}
-              style={{ background: '#0a0f1a', border: '1px solid #1a3060', color: '#3b82f6', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
-              onMouseEnter={e => (e.currentTarget.style.background = '#0f1a2a')}
-              onMouseLeave={e => (e.currentTarget.style.background = '#0a0f1a')}
-            ><span style={{ color: '#3b82f6' }}>+meeting</span><span style={{ color: '#ffffff' }}>({meetingCount})</span></button>
-
-            {/* +extracts(n) */}
-            <button onClick={() => setShowExtracts(true)}
-              style={{ background: '#120a1a', border: '1px solid #3a1a5a', color: '#8b5cf6', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
-              onMouseEnter={e => (e.currentTarget.style.background = '#1e1030')}
-              onMouseLeave={e => (e.currentTarget.style.background = '#120a1a')}
-            ><span style={{ color: '#8b5cf6' }}>+extracts</span><span style={{ color: '#ffffff' }}>({extractCount})</span></button>
-
-            {/* +template(n) */}
-            <button onClick={() => setShowTemplates(true)}
-              style={{ background: '#0a1f1d', border: '1px solid #0f3330', color: '#14b8a6', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
-              onMouseEnter={e => (e.currentTarget.style.background = '#0f2a27')}
-              onMouseLeave={e => (e.currentTarget.style.background = '#0a1f1d')}
-            ><span style={{ color: '#14b8a6' }}>+template</span><span style={{ color: '#ffffff' }}>({templateCount})</span></button>
-
-            {/* +contacts(n) */}
-            <button onClick={() => setShowContacts(true)}
-              style={{ background: '#1a0a0a', border: '1px solid #4a1010', color: '#991b1b', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }}
-              onMouseEnter={e => (e.currentTarget.style.background = '#2a1010')}
-              onMouseLeave={e => (e.currentTarget.style.background = '#1a0a0a')}
-            ><span style={{ color: '#991b1b' }}>+contacts</span><span style={{ color: '#ffffff' }}>({contactCount})</span></button>
-
+            <button onClick={() => setShowTaskAdd(true)} style={{ background: '#0d1a14', border: '1px solid #10b981', color: '#10b981', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }} onMouseEnter={e => (e.currentTarget.style.background = '#0f2a20')} onMouseLeave={e => (e.currentTarget.style.background = '#0d1a14')}>+add task(s)</button>
+            <button onClick={() => setShowCompletions(true)} style={{ background: '#1a0e00', border: '1px solid #4a2a00', color: '#f97316', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }} onMouseEnter={e => (e.currentTarget.style.background = '#2a1800')} onMouseLeave={e => (e.currentTarget.style.background = '#1a0e00')}><span style={{ color: '#f97316' }}>+complete</span><span style={{ color: '#ffffff' }}>({completionCount})</span></button>
+            <button onClick={() => setShowMeetings(true)} style={{ background: '#0a0f1a', border: '1px solid #1a3060', color: '#3b82f6', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }} onMouseEnter={e => (e.currentTarget.style.background = '#0f1a2a')} onMouseLeave={e => (e.currentTarget.style.background = '#0a0f1a')}><span style={{ color: '#3b82f6' }}>+meeting</span><span style={{ color: '#ffffff' }}>({meetingCount})</span></button>
+            <button onClick={() => setShowExtracts(true)} style={{ background: '#120a1a', border: '1px solid #3a1a5a', color: '#8b5cf6', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }} onMouseEnter={e => (e.currentTarget.style.background = '#1e1030')} onMouseLeave={e => (e.currentTarget.style.background = '#120a1a')}><span style={{ color: '#8b5cf6' }}>+extracts</span><span style={{ color: '#ffffff' }}>({extractCount})</span></button>
+            <button onClick={() => setShowTemplates(true)} style={{ background: '#0a1f1d', border: '1px solid #0f3330', color: '#14b8a6', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }} onMouseEnter={e => (e.currentTarget.style.background = '#0f2a27')} onMouseLeave={e => (e.currentTarget.style.background = '#0a1f1d')}><span style={{ color: '#14b8a6' }}>+template</span><span style={{ color: '#ffffff' }}>({templateCount})</span></button>
+            <button onClick={() => setShowContacts(true)} style={{ background: '#1a0a0a', border: '1px solid #4a1010', color: '#991b1b', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }} onMouseEnter={e => (e.currentTarget.style.background = '#2a1010')} onMouseLeave={e => (e.currentTarget.style.background = '#1a0a0a')}><span style={{ color: '#991b1b' }}>+contacts</span><span style={{ color: '#ffffff' }}>({contactCount})</span></button>
           </div>
-
           <span style={{ color: '#333', fontSize: '0.7rem' }}>|</span>
-
-          {/* open(n) */}
-          <span
-            onClick={() => setShowTaskList(true)}
-            style={{ color: '#ffffff', fontSize: '0.7rem', cursor: 'pointer' }}
-            onMouseEnter={e => (e.currentTarget.style.color = '#fbbf24')}
-            onMouseLeave={e => (e.currentTarget.style.color = '#ffffff')}
-          >
+          <span onClick={() => setShowTaskList(true)} style={{ color: '#ffffff', fontSize: '0.7rem', cursor: 'pointer' }} onMouseEnter={e => (e.currentTarget.style.color = '#fbbf24')} onMouseLeave={e => (e.currentTarget.style.color = '#ffffff')}>
             open(<span style={{ color: '#fbbf24', fontWeight: 600 }}>{contextFilter ? totalFiltered : totalOpen}</span>)
-            {contextFilter && totalOpen !== totalFiltered && (
-              <span style={{ color: '#888' }}> / {totalOpen}</span>
-            )}
+            {contextFilter && totalOpen !== totalFiltered && <span style={{ color: '#888' }}> / {totalOpen}</span>}
           </span>
-
           <span style={{ color: '#333', fontSize: '0.7rem' }}>|</span>
-
-          <a href="/admin"
-            style={{ color: '#ffffff', fontSize: '0.7rem', textDecoration: 'none', fontFamily: 'monospace' }}
-            onMouseEnter={e => (e.currentTarget.style.color = '#fbbf24')}
-            onMouseLeave={e => (e.currentTarget.style.color = '#ffffff')}
-          >admin</a>
-
-          <button onClick={handleLogout}
-            style={{ background: 'none', border: 'none', color: '#ffffff', fontSize: '0.7rem', fontFamily: 'monospace', cursor: 'pointer', padding: 0 }}
-            onMouseEnter={e => (e.currentTarget.style.color = '#fbbf24')}
-            onMouseLeave={e => (e.currentTarget.style.color = '#ffffff')}
-          >sign out</button>
-
+          <a href="/admin" style={{ color: '#ffffff', fontSize: '0.7rem', textDecoration: 'none', fontFamily: 'monospace' }} onMouseEnter={e => (e.currentTarget.style.color = '#fbbf24')} onMouseLeave={e => (e.currentTarget.style.color = '#ffffff')}>admin</a>
+          <button onClick={handleLogout} style={{ background: 'none', border: 'none', color: '#ffffff', fontSize: '0.7rem', fontFamily: 'monospace', cursor: 'pointer', padding: 0 }} onMouseEnter={e => (e.currentTarget.style.color = '#fbbf24')} onMouseLeave={e => (e.currentTarget.style.color = '#ffffff')}>sign out</button>
         </div>
       </header>
 
@@ -884,11 +905,7 @@ export default function WorkspacePage() {
             ? <div style={{ color: '#aaa', fontSize: '0.75rem', paddingTop: '1rem' }}>Initializing...</div>
             : (
               <>
-                <ContextFilter
-                  contexts={contexts}
-                  selected={contextFilter}
-                  onChange={setContextFilter}
-                />
+                <ContextFilter contexts={contexts} selected={contextFilter} onChange={setContextFilter} />
                 {buckets.map(bucket => (
                   <BucketSection
                     key={bucket.key}
@@ -916,8 +933,6 @@ export default function WorkspacePage() {
 
         {/* RIGHT: CHAT */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-
-          {/* Chat history */}
           <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem 1.25rem 0.5rem', scrollbarWidth: 'thin', scrollbarColor: '#222 transparent' }}>
             {chat.map((msg, i) => <ChatBubble key={i} msg={msg} />)}
             {thinking && (
@@ -961,13 +976,10 @@ export default function WorkspacePage() {
                 onClick={handleSubmit}
                 disabled={!input.trim() || !sessionReady || thinking}
                 style={{ background: input.trim() && sessionReady && !thinking ? '#1a2a1a' : '#111', border: `1px solid ${input.trim() && sessionReady && !thinking ? '#2a4a2a' : '#1a1a1a'}`, color: input.trim() && sessionReady && !thinking ? '#4ade80' : '#555', borderRadius: '6px', padding: '0.5rem 1rem', fontSize: '0.8rem', fontFamily: 'monospace', cursor: input.trim() && sessionReady && !thinking ? 'pointer' : 'not-allowed', flexShrink: 0, height: '36px', transition: 'all 0.15s' }}
-              >
-                send
-              </button>
+              >send</button>
             </div>
             <div style={{ color: '#555', fontSize: '0.65rem', marginTop: '0.4rem' }}>↵ send · shift+↵ newline</div>
           </div>
-
         </div>
       </div>
     </div>

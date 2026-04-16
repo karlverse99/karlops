@@ -80,7 +80,7 @@ function BucketPicker({ value, onChange }: { value: string; onChange: (v: string
 }
 
 // ─── DelegateePicker ──────────────────────────────────────────────────────────
-// Single-select People tag picker. "Other" always pinned at top.
+// Single-select People tag picker. "Other" always pinned at top. Search when > 5 tags.
 
 function DelegateePicker({
   value,
@@ -92,16 +92,49 @@ function DelegateePicker({
   peopleTags: Tag[];
 }) {
   const DELEGATE_PURPLE = '#8b5cf6';
+  const [search, setSearch] = useState('');
 
-  // Sort: Other first, then alphabetical
+  const selectedTag = peopleTags.find(t => t.tag_id === value);
+
   const sorted = [
     ...peopleTags.filter(t => t.name === 'Other'),
     ...peopleTags.filter(t => t.name !== 'Other').sort((a, b) => a.name.localeCompare(b.name)),
-  ];
+  ].filter(t =>
+    !search ||
+    t.name.toLowerCase().includes(search.toLowerCase()) ||
+    (t.description ?? '').toLowerCase().includes(search.toLowerCase())
+  );
 
   return (
     <div>
-      <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap', alignItems: 'center' }}>
+      {/* Selected confirmation strip */}
+      {value && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem', padding: '0.3rem 0.6rem', background: `${DELEGATE_PURPLE}10`, border: `1px solid ${DELEGATE_PURPLE}40`, borderRadius: '4px' }}>
+          <span style={{ color: DELEGATE_PURPLE, fontSize: '0.72rem' }}>→</span>
+          <span style={{ color: DELEGATE_PURPLE, fontWeight: 700, fontSize: '0.78rem' }}>{selectedTag?.name}</span>
+          <span
+            onClick={() => onChange('', '')}
+            style={{ marginLeft: 'auto', fontSize: '0.62rem', color: '#bbb', cursor: 'pointer' }}
+            onMouseEnter={e => (e.currentTarget.style.color = '#888')}
+            onMouseLeave={e => (e.currentTarget.style.color = '#bbb')}
+          >✕ clear</span>
+        </div>
+      )}
+
+      {/* Search — only shown when list is long */}
+      {peopleTags.length > 5 && (
+        <input
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          placeholder="Search..."
+          style={{ width: '100%', background: '#fafafa', border: '1px solid #ddd', borderRadius: '4px', padding: '0.3rem 0.5rem', fontFamily: 'monospace', fontSize: '0.72rem', color: '#333', outline: 'none', boxSizing: 'border-box' as const, marginBottom: '0.4rem' }}
+          onFocus={e => (e.target.style.borderColor = DELEGATE_PURPLE)}
+          onBlur={e => (e.target.style.borderColor = '#ddd')}
+        />
+      )}
+
+      {/* Pills */}
+      <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
         {sorted.map(t => {
           const isSelected = value === t.tag_id;
           const isOther    = t.name === 'Other';
@@ -117,27 +150,20 @@ function DelegateePicker({
                 cursor: 'pointer',
                 fontFamily: 'monospace',
                 transition: 'all 0.15s',
-                border: `1px solid ${isSelected ? DELEGATE_PURPLE : isOther ? '#ddd' : '#ddd'}`,
-                background: isSelected ? `${DELEGATE_PURPLE}15` : isOther ? '#f5f5f5' : '#fafafa',
+                border: `1px solid ${isSelected ? DELEGATE_PURPLE : '#ddd'}`,
+                background: isSelected ? `${DELEGATE_PURPLE}15` : '#fafafa',
                 color: isSelected ? DELEGATE_PURPLE : isOther ? '#999' : '#555',
+                fontWeight: isSelected ? 700 : 400,
                 fontStyle: isOther ? 'italic' : 'normal',
               }}
-              onMouseEnter={e => { if (!isSelected) e.currentTarget.style.borderColor = '#bbb'; }}
-              onMouseLeave={e => { if (!isSelected) e.currentTarget.style.borderColor = '#ddd'; }}
+              onMouseEnter={e => { if (!isSelected) { e.currentTarget.style.borderColor = DELEGATE_PURPLE; e.currentTarget.style.color = DELEGATE_PURPLE; } }}
+              onMouseLeave={e => { if (!isSelected) { e.currentTarget.style.borderColor = '#ddd'; e.currentTarget.style.color = isOther ? '#999' : '#555'; } }}
             >
-              {isOther ? 'Other ↙ skip' : t.name}
+              {t.name}
             </div>
           );
         })}
       </div>
-      {value && (
-        <div
-          onClick={() => onChange('', '')}
-          style={{ marginTop: '0.4rem', fontSize: '0.65rem', color: '#aaa', cursor: 'pointer', display: 'inline-block' }}
-        >
-          ✕ clear
-        </div>
-      )}
     </div>
   );
 }
@@ -351,8 +377,6 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
     f.update_behavior === 'editable' && f.display_order < 999 && !SPECIAL_FIELDS.includes(f.field)
   ).sort((a, b) => a.display_order - b.display_order);
 
-  const curated     = isCurated(draft);
-  const missing     = missingForCuration(draft);
   const contextText = `${draft.title ?? ''} ${draft.notes ?? ''} ${draft.description ?? ''}`.trim();
   const isDelegate  = draft.bucket_key === 'delegate';
 
@@ -375,11 +399,6 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
             <span style={{ color: '#000', fontSize: '0.85rem', fontWeight: 700 }}>
               {completing ? 'Complete Task' : 'Task Detail'}
             </span>
-            {!loading && !completing && !confirmDelete && (
-              curated
-                ? <span style={{ fontSize: '0.65rem', color: '#16a34a', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '4px', padding: '0.15rem 0.5rem' }}>✓ Curated</span>
-                : <span style={{ fontSize: '0.65rem', color: '#92400e', background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: '4px', padding: '0.15rem 0.5rem' }}>Needs {missing.join(' & ')}</span>
-            )}
             {!loading && !completing && !confirmDelete && isDelegate && delegatedToName && (
               <span style={{ fontSize: '0.65rem', color: '#7c3aed', background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: '4px', padding: '0.15rem 0.5rem' }}>
                 → {delegatedToName}
@@ -478,7 +497,7 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
                   )}
                   {!draft.delegated_to && (
                     <div style={{ fontSize: '0.65rem', color: '#a78bfa', marginTop: '0.4rem' }}>
-                      Required. Choose "Other ↙ skip" if you don't need to track who.
+                      Required — select a person or choose Other.
                     </div>
                   )}
                 </div>
