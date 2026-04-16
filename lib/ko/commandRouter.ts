@@ -560,9 +560,14 @@ export async function routeCommand(
       const action = parsed.action ?? 'capture_task';
 
       if (action === 'capture_task') {
-        const karlTags    = (parsed.tags ?? []).filter((t: string) => !rejectedTags.includes(t));
-        const suggested   = await suggestTagsForCapture(user_id, parsed.title ?? '', karlTags, rejectedTags);
-        const allTags     = Array.from(new Set([...karlTags, ...suggested])).slice(0, 5);
+        const karlTags = (parsed.tags ?? []).filter((t: string) => !rejectedTags.includes(t));
+
+        // On modify_pending: trust Karl's tags exactly — user has explicitly set them.
+        // On pending: enrich with suggestions.
+        const suggested = intent === 'modify_pending'
+          ? []
+          : await suggestTagsForCapture(user_id, parsed.title ?? '', karlTags, rejectedTags);
+        const allTags = Array.from(new Set([...karlTags, ...suggested])).slice(0, 5);
 
         let delegatedToId: string | null = null;
         if (parsed.bucket_key === 'delegate' && parsed.delegated_to) {

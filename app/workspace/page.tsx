@@ -78,14 +78,18 @@ function groupTasksByBucket(tasks: Task[]): Record<string, Task[]> {
 }
 
 function buildPendingSummary(data: any): string {
-  if (data.intent === 'capture_completion') return `completion: ${data.payload.title}`;
-  if (data.intent === 'update_object') {
-    const ops = (data.payload.operations ?? [])
+  const p = data.payload ?? {};
+  const action = p.action ?? data.intent ?? '';
+  if (action === 'capture_completion') return `completion: ${p.title ?? '...'}`;
+  if (action === 'update_object') {
+    const ops = (p.operations ?? [])
       .map((op: any) => op.tag_op ? `${op.tag_op} tag ${op.value}` : `${op.field}=${op.value}`)
       .join(', ');
-    return `update ${data.payload.identifier}: ${ops}`;
+    return `update ${p.identifier}: ${ops}`;
   }
-  return data.payload.summary ?? data.payload.title;
+  if (action === 'capture_tasks') return `${p.tasks?.length ?? '?'} tasks`;
+  if (action === 'process_document') return `process document: ${p.doc_action ?? p.content_type ?? '...'}`;
+  return p.title ?? p.summary ?? 'pending action';
 }
 
 function renderMarkdown(text: string): React.ReactNode[] {
@@ -915,7 +919,7 @@ export default function WorkspacePage() {
             {pending && (
               <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: '0.75rem' }}>
                 <div style={{ padding: '0.5rem 0.75rem', background: '#0d1a0d', border: '1px solid #1a3a1a', borderRadius: '8px', fontSize: '0.75rem', color: '#4ade80' }}>
-                  Pending: <strong>{pending.summary}</strong>
+                  Pending: <strong>{pending.summary ?? pending.payload?.title ?? 'action'}</strong>
                 </div>
               </div>
             )}
