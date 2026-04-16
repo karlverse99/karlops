@@ -1,7 +1,3 @@
-// lib/ko/buildKarlContext.ts
-// KarlOps L — Assembles Karl's context bundle before every Anthropic API call
-// Tiered: every call gets the base bundle, analysis calls get deep pull
-
 import { createSupabaseAdmin } from '@/lib/supabase-server';
 
 export interface ChatMessage {
@@ -11,20 +7,20 @@ export interface ChatMessage {
 }
 
 export interface KarlContextBundle {
-  situationBrief: string;        // who the user is and what they're doing
-  recentMessages: ChatMessage[]; // last N messages from ko_session
-  bucketSnapshot: string;        // open tasks with identifiers by bucket
-  recentCompletions: string;     // recent completion titles (windowed)
-  observations: string;          // Karl's running notes on user patterns
-  availableTags: string;         // all tags Karl can assign
-  availableContexts: string;     // all contexts Karl can assign (name|id pairs)
-  vocab: string;                 // learned phrase→intent mappings
-  fieldKnowledge: string;        // field metadata with descriptions + llm_notes
+  situationBrief: string;
+  recentMessages: ChatMessage[];
+  bucketSnapshot: string;
+  recentCompletions: string;
+  observations: string;
+  availableTags: string;
+  availableContexts: string;
+  vocab: string;
+  fieldKnowledge: string;
 }
 
 export interface KarlDeepBundle extends KarlContextBundle {
-  fullCompletions: string;  // all completions in window with outcomes
-  tasksByContext: string;   // open tasks grouped by context
+  fullCompletions: string;
+  tasksByContext: string;
 }
 
 const BUCKET_PREFIX: Record<string, string> = {
@@ -88,8 +84,9 @@ export async function buildKarlContext(user_id: string): Promise<KarlContextBund
     db.from('ko_session')
       .select('messages')
       .eq('user_id', user_id).maybeSingle(),
+    // FIX: include tags so Karl can see what's on each task
     db.from('task')
-      .select('task_id, title, bucket_key, sort_order')
+      .select('task_id, title, bucket_key, tags, sort_order')
       .eq('user_id', user_id).eq('is_completed', false).eq('is_archived', false)
       .order('sort_order', { ascending: true, nullsFirst: false })
       .order('created_at', { ascending: true }),
@@ -119,11 +116,11 @@ export async function buildKarlContext(user_id: string): Promise<KarlContextBund
   const allMessages: ChatMessage[] = sessionRes.data?.messages ?? [];
   const recentMessages = allMessages.slice(-historyDepth);
 
-  // Bucket snapshot
-  const byBucket: Record<string, { task_id: string; title: string }[]> = {};
+  // Bucket snapshot — FIX: include tags on each task line
+  const byBucket: Record<string, { task_id: string; title: string; tags: string[] }[]> = {};
   for (const t of taskRes.data ?? []) {
     if (!byBucket[t.bucket_key]) byBucket[t.bucket_key] = [];
-    byBucket[t.bucket_key].push({ task_id: t.task_id, title: t.title });
+    byBucket[t.bucket_key].push({ task_id: t.task_id, title: t.title, tags: t.tags ?? [] });
   }
   const bucketOrder = ['now', 'soon', 'realwork', 'later', 'delegate', 'capture'];
   const snapshotLines: string[] = [];
@@ -135,7 +132,10 @@ export async function buildKarlContext(user_id: string): Promise<KarlContextBund
       snapshotLines.push(`capture: ${items.length} uncurated tasks`);
     } else {
       snapshotLines.push(`${bucket}:`);
-      items.forEach((t, i) => snapshotLines.push(`  ${prefix}${i + 1} ${t.title}`));
+      items.forEach((t, i) => {
+        const tagStr = t.tags.length ? ` [${t.tags.join(', ')}]` : '';
+        snapshotLines.push(`  ${prefix}${i + 1} ${t.title}${tagStr}`);
+      });
     }
   }
   const bucketSnapshot = snapshotLines.join('\n') || 'no open tasks';
@@ -223,7 +223,8 @@ export async function buildKarlDeepContext(user_id: string): Promise<KarlDeepBun
   for (const t of tasks ?? []) {
     const ctx = (t.context as any)?.name ?? 'No Context';
     if (!byContext[ctx]) byContext[ctx] = [];
-    byContext[ctx].push(`  ${t.bucket_key} ${t.title}`);
+    const tagStr = t.tags?.length ? ` [${t.tags.join(', ')}]` : '';
+    byContext[ctx].push(`  ${t.bucket_key} ${t.title}${tagStr}`);
   }
   const tasksByContext = Object.entries(byContext)
     .map(([ctx, items]) => `${ctx}:\n${items.join('\n')}`)
@@ -242,7 +243,7 @@ export function formatContextForPrompt(bundle: KarlContextBundle): string {
     parts.push(`## User Situation\nNot yet configured. Encourage the user to write their situation brief.`);
   }
 
-  parts.push(`## Current Task Load\nTasks are identified as BucketN (e.g. N1, S2, RW1, L1, D1) for reference in commands.\n${bundle.bucketSnapshot}`);
+  parts.push(`## Current Task Load\nTasks are identified as BucketN (e.g. N1, S2, RW1, L1, D1) for reference in commands.\nTags are shown in brackets after each task title.\n${bundle.bucketSnapshot}`);
   parts.push(`## Recent Completions\n${bundle.recentCompletions}`);
 
   if (bundle.observations) {
@@ -301,8 +302,6 @@ export async function writeKarlObservation(
 }
 
 // ── Update llm_notes on a field metadata row ──────────────────────────────────
-// Called when Karl learns something new about how a field is used.
-// Never touches the canonical description — only llm_notes.
 export async function updateFieldLlmNotes(
   user_id: string,
   object_type: string,
