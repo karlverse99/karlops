@@ -83,7 +83,7 @@ function isDocumentInput(input: string): boolean {
   const lower = input.toLowerCase();
   // Explicit document signals
   const docSignals = [
-    'transcript', 'meeting notes', 'email thread', 'here's the', 'here is the',
+    'transcript', 'meeting notes', 'email thread', "here's the", 'here is the',
     'paste', 'copied from', 'from the doc', 'from the meeting', 'summary',
     'attendees', 'agenda', 'action items', 'minutes',
   ];
