@@ -554,12 +554,21 @@ export async function routeCommand(
 
     const text = rawData.content?.[0]?.text ?? '';
     let parsed: any;
+
+    // Try 1: clean code fences and parse directly
     try {
       parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
     } catch {
+      // Try 2: Karl sometimes returns prose before the JSON block, extract it
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        try { parsed = JSON.parse(jsonMatch[0]); } catch { /* malformed, fall through */ }
+      }
+    }
+
+    if (!parsed) {
       console.error('[commandRouter] JSON parse failed. Raw response:', text);
-      // Karl returned prose instead of JSON — rescue it as a question response
-      // rather than discarding it. This happens on complex reasoning questions.
+      // Karl returned pure prose -- rescue it rather than showing an error
       if (text && text.length > 10) {
         await appendSessionMessage(user_id, 'user', input);
         await appendSessionMessage(user_id, 'karl', text);
