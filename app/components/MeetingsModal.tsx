@@ -144,6 +144,7 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
 
   // ─── Complete form state ───────────────────────────────────────────────────
   const [completeOutcome, setCompleteOutcome]     = useState('');
+  const [completeNotes, setCompleteNotes]         = useState('');  // ← NEW: saves to meeting.notes
   const [completeTags, setCompleteTags]           = useState<string[]>([]);
   const [completeContextId, setCompleteContextId] = useState('');
   const [completeSaving, setCompleteSaving]       = useState(false);
@@ -245,6 +246,7 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
 
   const openComplete = (m: Meeting) => {
     setCompleteOutcome(m.outcome ?? '');
+    setCompleteNotes(m.notes ?? '');          // ← pre-populate from existing notes
     setCompleteTags(m.tags ?? []);
     setCompleteContextId(m.context?.context_id ?? '');
     setCompleteErr('');
@@ -286,18 +288,27 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
     setCompleteSaving(true); setCompleteErr('');
 
     try {
+      // 1. Create completion record
       const { error: compErr } = await supabase.from('completion').insert({
-        user_id: userId, title: selected.title, outcome: completeOutcome.trim(),
+        user_id:    userId,
+        title:      selected.title,
+        outcome:    completeOutcome.trim(),
         completed_at: new Date().toISOString(),
-        tags: completeTags.length > 0 ? completeTags : null,
+        tags:       completeTags.length > 0 ? completeTags : null,
         context_id: completeContextId || null,
         meeting_id: selected.meeting_id,
       });
       if (compErr) throw compErr;
 
+      // 2. Update meeting record — mark complete, save outcome AND notes
       const { error: meetErr } = await supabase.from('meeting')
-        .update({ is_completed: true, outcome: completeOutcome.trim() })
-        .eq('meeting_id', selected.meeting_id).eq('user_id', userId);
+        .update({
+          is_completed: true,
+          outcome:      completeOutcome.trim(),
+          notes:        completeNotes.trim() || null,   // ← FIX: save notes to meeting record
+        })
+        .eq('meeting_id', selected.meeting_id)
+        .eq('user_id', userId);
       if (meetErr) throw meetErr;
 
       await loadMeetings();
@@ -488,9 +499,35 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
       </div>
       <div style={{ color: '#333', fontSize: '0.82rem', fontFamily: 'monospace', marginBottom: '1rem', fontWeight: 600 }}>{selected?.title}</div>
 
+      {/* Outcome — short summary line */}
       <div style={{ marginBottom: '0.85rem' }}>
-        <div style={formLabelStyle}>Outcome<span style={{ color: '#ef4444' }}>*</span></div>
-        <textarea value={completeOutcome} onChange={e => setCompleteOutcome(e.target.value)} rows={4} style={{ ...inputStyle, resize: 'vertical', minHeight: '80px' }} onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} />
+        <div style={formLabelStyle}>Outcome <span style={{ color: '#ef4444' }}>*</span></div>
+        <textarea
+          value={completeOutcome}
+          onChange={e => setCompleteOutcome(e.target.value)}
+          rows={2}
+          placeholder="One or two lines — what was the result or decision?"
+          style={{ ...inputStyle, resize: 'vertical', minHeight: '52px' }}
+          onFocus={e => (e.target.style.borderColor = ACCENT)}
+          onBlur={e => (e.target.style.borderColor = '#ddd')}
+        />
+      </div>
+
+      {/* Notes — full summary, saves to meeting.notes */}
+      <div style={{ marginBottom: '0.85rem' }}>
+        <div style={formLabelStyle}>Notes / Summary</div>
+        <textarea
+          value={completeNotes}
+          onChange={e => setCompleteNotes(e.target.value)}
+          rows={6}
+          placeholder="Full meeting summary, key decisions, transcript paste, action items..."
+          style={{ ...inputStyle, resize: 'vertical', minHeight: '120px' }}
+          onFocus={e => (e.target.style.borderColor = ACCENT)}
+          onBlur={e => (e.target.style.borderColor = '#ddd')}
+        />
+        <div style={{ fontSize: '0.62rem', color: '#bbb', marginTop: '0.25rem' }}>
+          Saved to the meeting record. Paste a transcript summary here.
+        </div>
       </div>
 
       <TagPicker

@@ -19,6 +19,7 @@ export interface KarlContextBundle {
   availableTags: string;         // all tags Karl can assign
   availableContexts: string;     // all contexts Karl can assign (name|id pairs)
   vocab: string;                 // learned phrase→intent mappings
+  fieldKnowledge: string;        // field metadata with descriptions + llm_notes
 }
 
 export interface KarlDeepBundle extends KarlContextBundle {
@@ -37,11 +38,41 @@ const BUCKET_PREFIX: Record<string, string> = {
 
 const MAX_OBSERVATIONS = 50;
 
+// ── Field knowledge — pulled once, included in every call ─────────────────────
+async function buildFieldKnowledge(user_id: string): Promise<string> {
+  const db = createSupabaseAdmin();
+
+  const { data: fields } = await db
+    .from('ko_field_metadata')
+    .select('object_type, field, label, field_type, insert_behavior, update_behavior, description, llm_notes')
+    .eq('user_id', user_id)
+    .in('object_type', ['task', 'completion', 'meeting', 'contact', 'external_reference', 'document_template'])
+    .lt('display_order', 999)
+    .order('object_type')
+    .order('display_order');
+
+  if (!fields?.length) return '';
+
+  const byType: Record<string, string[]> = {};
+  for (const f of fields) {
+    if (!byType[f.object_type]) byType[f.object_type] = [];
+
+    const parts = [`  ${f.field} (${f.label}, ${f.field_type})`];
+    if (f.description) parts.push(`    what: ${f.description}`);
+    if (f.llm_notes)   parts.push(`    how:  ${f.llm_notes}`);
+
+    byType[f.object_type].push(parts.join('\n'));
+  }
+
+  return Object.entries(byType)
+    .map(([type, fieldLines]) => `${type}:\n${fieldLines.join('\n')}`)
+    .join('\n\n');
+}
+
 // ── Base context — every Karl call ────────────────────────────────────────────
 export async function buildKarlContext(user_id: string): Promise<KarlContextBundle> {
   const db = createSupabaseAdmin();
 
-  // Load everything in parallel
   const [
     situationRes,
     sessionRes,
@@ -126,12 +157,12 @@ export async function buildKarlContext(user_id: string): Promise<KarlContextBund
     ? obsRes.data.map(o => `[${o.observation_type}] ${o.content}`).join('\n')
     : '';
 
-  // Available tags — names only
+  // Available tags
   const availableTags = tagRes.data?.length
     ? tagRes.data.map(t => t.name).join(', ')
     : 'none';
 
-  // Available contexts — name|id so Karl can return the UUID
+  // Available contexts
   const availableContexts = contextRes.data?.length
     ? contextRes.data.map(c => `${c.name}|${c.context_id}`).join(', ')
     : 'none';
@@ -140,6 +171,9 @@ export async function buildKarlContext(user_id: string): Promise<KarlContextBund
   const vocab = vocabRes.data?.length
     ? vocabRes.data.map(v => `"${v.phrase}" → ${v.intent} (${v.object_type})`).join('\n')
     : '';
+
+  // Field knowledge — descriptions + llm_notes
+  const fieldKnowledge = await buildFieldKnowledge(user_id);
 
   return {
     situationBrief,
@@ -150,6 +184,7 @@ export async function buildKarlContext(user_id: string): Promise<KarlContextBund
     availableTags,
     availableContexts,
     vocab,
+    fieldKnowledge,
   };
 }
 
@@ -222,6 +257,10 @@ export function formatContextForPrompt(bundle: KarlContextBundle): string {
     parts.push(`## Learned Vocabulary\nPhrases this user has used before and what they map to. Use these to improve classification.\n${bundle.vocab}`);
   }
 
+  if (bundle.fieldKnowledge) {
+    parts.push(`## Field Knowledge\nFor every FC object field: what it is (what:) and how this user tends to use it (how:). Use this to reason about where content belongs when the user gives loose instructions.\n${bundle.fieldKnowledge}`);
+  }
+
   if ('fullCompletions' in bundle) {
     const deep = bundle as KarlDeepBundle;
     parts.push(`## Completion Detail (Evidence Record)\n${deep.fullCompletions}`);
@@ -259,6 +298,28 @@ export async function writeKarlObservation(
   }
 
   await db.from('karl_observation').insert({ user_id, content, observation_type, tags });
+}
+
+// ── Update llm_notes on a field metadata row ──────────────────────────────────
+// Called when Karl learns something new about how a field is used.
+// Never touches the canonical description — only llm_notes.
+export async function updateFieldLlmNotes(
+  user_id: string,
+  object_type: string,
+  field: string,
+  llm_notes: string
+): Promise<void> {
+  const db = createSupabaseAdmin();
+
+  const { error } = await db
+    .from('ko_field_metadata')
+    .update({ llm_notes })
+    .eq('user_id', user_id)
+    .eq('object_type', object_type)
+    .eq('field', field);
+
+  if (error) console.error('[updateFieldLlmNotes]', error);
+  else console.log(`[updateFieldLlmNotes] updated ${object_type}.${field}`);
 }
 
 // ── Upsert karl_vocab — increment use_count if phrase exists ─────────────────

@@ -9,6 +9,7 @@ import {
   appendSessionMessage,
   writeKarlObservation,
   upsertKarlVocab,
+  updateFieldLlmNotes,
 } from '@/lib/ko/buildKarlContext';
 
 export type IntentType =
@@ -16,6 +17,7 @@ export type IntentType =
   | 'capture_tasks'
   | 'capture_completion'
   | 'update_object'
+  | 'process_document'
   | 'question'
   | 'command'
   | 'unclear';
@@ -72,6 +74,20 @@ const ANALYSIS_TRIGGERS = [
 function isAnalysisRequest(input: string): boolean {
   const lower = input.toLowerCase();
   return ANALYSIS_TRIGGERS.some(t => lower.includes(t));
+}
+
+// Large text paste detection — likely a document, transcript, or content blob
+// Threshold: 500+ chars with no clear single-task pattern
+function isDocumentInput(input: string): boolean {
+  if (input.length < 500) return false;
+  const lower = input.toLowerCase();
+  // Explicit document signals
+  const docSignals = [
+    'transcript', 'meeting notes', 'email thread', 'here's the', 'here is the',
+    'paste', 'copied from', 'from the doc', 'from the meeting', 'summary',
+    'attendees', 'agenda', 'action items', 'minutes',
+  ];
+  return docSignals.some(s => lower.includes(s)) || input.split('\n').length > 15;
 }
 
 // ── People tag resolution — fuzzy match for delegee ──────────────────────────
@@ -433,6 +449,10 @@ export async function routeCommand(
       '- update_object: User wants to change, move, rename, tag, delegate, or update an existing object.',
       '  Use this for: "move N3 to soon", "change the title of RW2", "delegate D1 to Sarah", "add tag X to N2", "update the outcome on CM1", "rename TM1".',
       '  Do NOT use this for task completion — see complete_task rule below.',
+      '- process_document: User has pasted a large block of text (transcript, email, notes, article) and wants Karl to do something with it.',
+      '  Use this when input is 500+ characters OR contains document-like structure (multiple paragraphs, attendee lists, action items, etc).',
+      '  Karl must identify: (1) what type of content this is, (2) what the user wants done with it, (3) which FC object fields the output maps to.',
+      '  If the user instruction is clear ("summarize and complete the meeting"), proceed. If ambiguous, propose the most logical action and ask to confirm.',
       '- question: User is asking for information, analysis, or clarification.',
       '  ALWAYS use question (never unclear) when the user asks anything meta about a pending action:',
       '  "what are you going to change?", "would you have done that?", "what does that do?", "why did you pick that?" — all are question.',
@@ -489,6 +509,26 @@ export async function routeCommand(
       '- If the user names a tag that does not exist, say so clearly and omit it.',
       '- NEVER suggest a tag the user has rejected in this conversation.',
       rejectedTagsNote,
+      '',
+      '## Field Knowledge — Use This to Reason',
+      'The Field Knowledge section in your context tells you what every field is and how this user uses it.',
+      'When the user gives loose instructions ("complete the meeting", "summarize this", "add that to my notes"),',
+      'reason from field knowledge to determine the correct object type and field — do not ask unless genuinely ambiguous.',
+      'If you discover a better understanding of how a field is used, include a field_learning in your response.',
+      '',
+      '## process_document Rules',
+      'When processing a large text input:',
+      '1. Identify content type: transcript | email | notes | article | other',
+      '2. Identify user intent from their instruction or infer from content type',
+      '3. Map output to the correct FC object and field using Field Knowledge',
+      '4. Common mappings:',
+      '   - meeting transcript + "complete" or "summarize" → meeting.notes (summary) + is_completed = true',
+      '   - transcript + "extract tasks" → capture_tasks (list of extracted action items)',
+      '   - transcript + "document template" or template name → process via template flow',
+      '   - email thread + "what do I need to do" → capture_tasks',
+      '   - notes dump → capture_tasks or meeting.notes depending on context',
+      '5. Always show the user what you plan to do before doing it — this is a high-stakes operation',
+      '6. For meeting completion: identify which open meeting this relates to by title/date/attendees match',
       '',
       '## Enrichment Rules',
       '- Always attempt to extract bucket, context_id, tags, and target_date from captures.',
@@ -550,7 +590,7 @@ export async function routeCommand(
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: isDeep ? 1500 : 800,
+        max_tokens: isDeep ? 1500 : isDocumentInput(input) ? 2000 : 800,
         system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
         messages: anthropicMessages,
       }),

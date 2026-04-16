@@ -6,7 +6,7 @@ import { createSupabaseAdmin } from '@/lib/supabase-server';
 import { routeCommand, OBJECT_TABLE, OBJECT_PK } from '@/lib/ko/commandRouter';
 import { captureTask } from '@/lib/ko/commands/captureTask';
 import { captureCompletion } from '@/lib/ko/commands/captureCompletion';
-import { writeKarlObservation } from '@/lib/ko/buildKarlContext';
+import { writeKarlObservation, updateFieldLlmNotes } from '@/lib/ko/buildKarlContext';
 
 async function getUser(req: NextRequest) {
   const token = req.headers.get('authorization')?.replace('Bearer ', '');
@@ -25,7 +25,6 @@ const BUCKET_LABEL: Record<string, string> = {
   capture:  'Capture',
 };
 
-// Bucket prefix → DB bucket_key
 const BUCKET_PREFIX_MAP: Record<string, string> = {
   N:  'now',
   S:  'soon',
@@ -40,14 +39,12 @@ const BUCKET_PREFIX_MAP: Record<string, string> = {
   CT: 'contact',
 };
 
-// Parse identifier string into { prefix, index }
 function parseIdentifier(identifier: string): { prefix: string; index: number } | null {
   const match = identifier.toUpperCase().match(/^([A-Z]+)(\d+)$/);
   if (!match) return null;
   return { prefix: match[1], index: parseInt(match[2], 10) };
 }
 
-// Resolve an identifier like "N3" or "TM1" to a DB record UUID
 async function resolveIdentifier(
   user_id: string,
   identifier: string,
@@ -60,7 +57,6 @@ async function resolveIdentifier(
   const { prefix, index } = parsed;
   const bucketKey = BUCKET_PREFIX_MAP[prefix];
 
-  // Tasks — resolve by bucket + sort order
   if (object_type === 'task') {
     if (!bucketKey || !['now', 'soon', 'realwork', 'later', 'delegate', 'capture'].includes(bucketKey)) return null;
 
@@ -78,7 +74,6 @@ async function resolveIdentifier(
     return task?.task_id ?? null;
   }
 
-  // All other FC objects — resolve by created_at order
   const table = OBJECT_TABLE[object_type];
   const pk    = OBJECT_PK[object_type];
   if (!table || !pk) return null;
@@ -93,7 +88,6 @@ async function resolveIdentifier(
   return (row as any)?.[pk] ?? null;
 }
 
-// Resolve a status label to task_status_id UUID
 async function resolveStatusId(user_id: string, label: string): Promise<string | null> {
   const db = createSupabaseAdmin();
   const { data } = await db
@@ -106,8 +100,6 @@ async function resolveStatusId(user_id: string, label: string): Promise<string |
   return match?.task_status_id ?? null;
 }
 
-// Execute a single update operation against a record
-// Returns a human-readable description of what changed, or throws
 async function executeOperation(
   user_id: string,
   object_type: string,
@@ -120,48 +112,120 @@ async function executeOperation(
 
   if (!table || !pk) throw new Error(`Unknown object type: ${object_type}`);
 
-  // ── Tag add/remove ─────────────────────────────────────────────────────
   if (op.field === 'tags') {
     const tagName = String(op.value);
-
-    const { data: current } = await db
-      .from(table).select('tags').eq(pk, record_id).single();
+    const { data: current } = await db.from(table).select('tags').eq(pk, record_id).single();
     const currentTags: string[] = (current as any)?.tags ?? [];
 
     let newTags: string[];
     if (op.tag_op === 'remove') {
       newTags = currentTags.filter(t => t !== tagName);
     } else {
-      newTags = currentTags.includes(tagName)
-        ? currentTags
-        : [...currentTags, tagName].slice(0, 5);
+      newTags = currentTags.includes(tagName) ? currentTags : [...currentTags, tagName].slice(0, 5);
     }
 
-    const { error } = await db
-      .from(table).update({ tags: newTags }).eq(pk, record_id).eq('user_id', user_id);
+    const { error } = await db.from(table).update({ tags: newTags }).eq(pk, record_id).eq('user_id', user_id);
     if (error) throw new Error(error.message);
-
     return op.tag_op === 'remove' ? `removed tag #${tagName}` : `added tag #${tagName}`;
   }
 
-  // ── Status by label ────────────────────────────────────────────────────
   if (op.field === 'task_status_id') {
     const statusId = await resolveStatusId(user_id, String(op.value));
     if (!statusId) throw new Error(`Status "${op.value}" not found`);
-
-    const { error } = await db
-      .from(table).update({ task_status_id: statusId }).eq(pk, record_id).eq('user_id', user_id);
+    const { error } = await db.from(table).update({ task_status_id: statusId }).eq(pk, record_id).eq('user_id', user_id);
     if (error) throw new Error(error.message);
-
     return `status → ${op.value}`;
   }
 
-  // ── Generic scalar field ───────────────────────────────────────────────
-  const { error } = await db
-    .from(table).update({ [op.field]: op.value }).eq(pk, record_id).eq('user_id', user_id);
+  const { error } = await db.from(table).update({ [op.field]: op.value }).eq(pk, record_id).eq('user_id', user_id);
   if (error) throw new Error(error.message);
-
   return `${op.field} → ${op.value}`;
+}
+
+// ── process_document execution ────────────────────────────────────────────────
+async function executeProcessDocument(
+  user_id: string,
+  payload: {
+    action: string;
+    target_identifier?: string | null;
+    summary?: string | null;
+    extracted_tasks?: any[];
+    field_learning?: { object_type: string; field: string; llm_notes: string } | null;
+  }
+): Promise<{ response: string; refresh: boolean; tasks?: any[] }> {
+  const db = createSupabaseAdmin();
+  const results: string[] = [];
+
+  // ── complete_meeting ───────────────────────────────────────────────────────
+  if (payload.action === 'complete_meeting' && payload.target_identifier) {
+    const meeting_id = await resolveIdentifier(user_id, payload.target_identifier, 'meeting');
+
+    if (meeting_id && payload.summary) {
+      const { error } = await db
+        .from('meeting')
+        .update({ notes: payload.summary, is_completed: true })
+        .eq('meeting_id', meeting_id)
+        .eq('user_id', user_id);
+
+      if (error) throw new Error(error.message);
+      results.push(`Meeting ${payload.target_identifier} completed with summary`);
+    }
+  }
+
+  // ── extract_tasks — capture all extracted tasks ────────────────────────────
+  const capturedTasks: any[] = [];
+  if (payload.extracted_tasks?.length) {
+    for (const t of payload.extracted_tasks) {
+      const result = await captureTask(user_id, {
+        title:      t.title,
+        bucket_key: t.bucket_key ?? 'capture',
+        tags:       t.tags ?? [],
+        notes:      t.notes ?? null,
+      });
+      if (result.success) capturedTasks.push(result.task);
+    }
+    if (capturedTasks.length) {
+      results.push(`${capturedTasks.length} task${capturedTasks.length > 1 ? 's' : ''} captured`);
+    }
+  }
+
+  // ── update_notes — summary to a specific object field ─────────────────────
+  if (payload.action === 'update_notes' && payload.target_identifier && payload.summary) {
+    const object_type = payload.target_identifier.startsWith('MT') ? 'meeting'
+      : payload.target_identifier.startsWith('EX') ? 'external_reference'
+      : payload.target_identifier.startsWith('TM') ? 'document_template'
+      : 'task';
+
+    const record_id = await resolveIdentifier(user_id, payload.target_identifier, object_type);
+    if (record_id) {
+      const table = OBJECT_TABLE[object_type];
+      const pk    = OBJECT_PK[object_type];
+      await db.from(table).update({ notes: payload.summary }).eq(pk, record_id).eq('user_id', user_id);
+      results.push(`Notes updated on ${payload.target_identifier}`);
+    }
+  }
+
+  // ── field learning write-back ──────────────────────────────────────────────
+  if (payload.field_learning?.object_type && payload.field_learning?.field && payload.field_learning?.llm_notes) {
+    updateFieldLlmNotes(
+      user_id,
+      payload.field_learning.object_type,
+      payload.field_learning.field,
+      payload.field_learning.llm_notes
+    ).catch(err => console.error('[executeProcessDocument] field learning failed:', err));
+  }
+
+  writeKarlObservation(
+    user_id,
+    `User processed a document: action=${payload.action}, tasks=${capturedTasks.length}`,
+    'pattern'
+  ).catch(() => {});
+
+  return {
+    response: results.length ? results.join('. ') + '.' : 'Document processed.',
+    refresh:  capturedTasks.length > 0 || payload.action === 'complete_meeting',
+    tasks:    capturedTasks,
+  };
 }
 
 export async function POST(req: NextRequest) {
@@ -249,6 +313,18 @@ export async function POST(req: NextRequest) {
         });
       }
 
+      // ── process_document confirm ─────────────────────────────────────────
+      if (pending.intent === 'process_document') {
+        const result = await executeProcessDocument(user.id, pending.payload);
+        return NextResponse.json({
+          success: true,
+          intent: 'process_document',
+          tasks: result.tasks,
+          response: result.response,
+          refresh: result.refresh,
+        });
+      }
+
       // ── update_object ────────────────────────────────────────────────────
       if (pending.intent === 'update_object') {
         const { object_type, identifier, operations } = pending.payload;
@@ -283,11 +359,11 @@ export async function POST(req: NextRequest) {
             .eq('task_id', record_id)
             .eq('user_id', user.id);
 
-      const outcomeOp = operations.find((op: any) => op.field === 'outcome');
-await captureCompletion(user.id, {
-  title:   task.title,
-  outcome: outcomeOp?.value ?? '',
-});
+          const outcomeOp = operations.find((op: any) => op.field === 'outcome');
+          await captureCompletion(user.id, {
+            title:   task.title,
+            outcome: outcomeOp?.value ?? '',
+          });
 
           writeKarlObservation(
             user.id,
