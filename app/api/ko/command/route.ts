@@ -1,5 +1,5 @@
 // app/api/ko/command/route.ts
-// KarlOps L — Command execution route v0.7.0
+// KarlOps L — Command execution route v0.7.1
 // Karl decides everything. Route just executes.
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -84,7 +84,8 @@ async function executeOperation(user_id: string, object_type: string, record_id:
       : currentTags.includes(tagName) ? currentTags : [...currentTags, tagName].slice(0, 5);
     const { error } = await db.from(table).update({ tags: newTags }).eq(pk, record_id).eq('user_id', user_id);
     if (error) throw new Error(error.message);
-    return op.tag_op === 'remove' ? `removed tag #${tagName}` : `added tag #${tagName}`;
+    // Plain English — no field syntax
+    return op.tag_op === 'remove' ? `removed #${tagName}` : `added #${tagName}`;
   }
 
   if (op.field === 'task_status_id') {
@@ -92,12 +93,28 @@ async function executeOperation(user_id: string, object_type: string, record_id:
     if (!statusId) throw new Error(`Status "${op.value}" not found`);
     const { error } = await db.from(table).update({ task_status_id: statusId }).eq(pk, record_id).eq('user_id', user_id);
     if (error) throw new Error(error.message);
-    return `status → ${op.value}`;
+    return `status set to ${op.value}`;
+  }
+
+  if (op.field === 'bucket_key') {
+    const { error } = await db.from(table).update({ [op.field]: op.value }).eq(pk, record_id).eq('user_id', user_id);
+    if (error) throw new Error(error.message);
+    return `moved to ${BUCKET_LABEL[String(op.value)] ?? op.value}`;
+  }
+
+  if (op.field === 'notes' && (op as any).mode === 'append') {
+    const { data: current } = await db.from(table).select('notes').eq(pk, record_id).single();
+    const existing = (current as any)?.notes ?? '';
+    const newNotes = existing ? `${existing}\n${op.value}` : String(op.value);
+    const { error } = await db.from(table).update({ notes: newNotes }).eq(pk, record_id).eq('user_id', user_id);
+    if (error) throw new Error(error.message);
+    return `notes updated`;
   }
 
   const { error } = await db.from(table).update({ [op.field]: op.value }).eq(pk, record_id).eq('user_id', user_id);
   if (error) throw new Error(error.message);
-  return `${op.field} → ${op.value}`;
+  // Generic plain English fallback
+  return `${op.field} updated`;
 }
 
 // ── Execute a capture_task payload ────────────────────────────────────────────
@@ -115,6 +132,7 @@ async function executeCaptureTask(user_id: string, payload: any): Promise<NextRe
     intent:  'capture_task',
     task:    result.task,
     task_id: result.task_id,
+    refresh: true, // FIX: always refresh after capture so bucket view and counts update
     response: `Captured — **${result.task?.title}** → ${bucketLabel}${tagNote}.`,
     offer_preview: true,
   });
@@ -134,6 +152,7 @@ async function executeCaptureTasksBulk(user_id: string, tasks: any[]): Promise<N
     intent:   'capture_tasks',
     tasks:    success.map(r => r.task),
     task_ids: success.map(r => r.task_id),
+    refresh:  true,
     response: failed.length > 0
       ? `Captured ${success.length} tasks. ${failed.length} failed.`
       : `Captured ${success.length} task${success.length > 1 ? 's' : ''}.`,
@@ -160,7 +179,12 @@ async function executeUpdateObject(user_id: string, payload: any): Promise<NextR
     await captureCompletion(user_id, { title: task.title, outcome: outcomeOp?.value ?? '' });
     writeKarlObservation(user_id, `Completed task via chat: "${task.title}" (${identifier})`, 'pattern').catch(() => {});
 
-    return NextResponse.json({ success: true, intent: 'update_object', response: `Done — **${task.title}** marked complete and logged.`, refresh: true });
+    return NextResponse.json({
+      success: true,
+      intent: 'update_object',
+      refresh: true,
+      response: `Marked **${task.title}** complete and logged.`,
+    });
   }
 
   const descriptions: string[] = [];
@@ -171,7 +195,12 @@ async function executeUpdateObject(user_id: string, payload: any): Promise<NextR
 
   writeKarlObservation(user_id, `Updated ${object_type} ${identifier}: ${descriptions.join(', ')}`, 'pattern').catch(() => {});
 
-  return NextResponse.json({ success: true, intent: 'update_object', response: `Updated **${identifier}** — ${descriptions.join(', ')}.`, refresh: true });
+  return NextResponse.json({
+    success: true,
+    intent: 'update_object',
+    refresh: true,
+    response: `Done — ${descriptions.join(', ')}.`,
+  });
 }
 
 // ── Execute process_document payload ──────────────────────────────────────────
@@ -184,7 +213,7 @@ async function executeProcessDocument(user_id: string, payload: any): Promise<Ne
     const meeting_id = await resolveIdentifier(user_id, payload.target_identifier, 'meeting');
     if (meeting_id && payload.summary) {
       await db.from('meeting').update({ notes: payload.summary, is_completed: true }).eq('meeting_id', meeting_id).eq('user_id', user_id);
-      results.push(`Meeting ${payload.target_identifier} completed with summary`);
+      results.push(`Meeting ${payload.target_identifier} completed`);
     }
   }
 
@@ -218,13 +247,11 @@ export async function POST(req: NextRequest) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const body = await req.json();
-  // New: input + optional pending payload. No confirm flag.
   const { input, pending } = body;
 
   if (!input) return NextResponse.json({ error: 'No input provided' }, { status: 400 });
 
   try {
-    // Route everything through Karl — he gets the input AND the pending payload
     const result = await routeCommand(user.id, input, pending ?? null);
 
     // ── Karl says execute immediately (quick capture) ──────────────────────
@@ -250,7 +277,13 @@ export async function POST(req: NextRequest) {
         const compResult = await captureCompletion(user.id, { title: pending.title ?? pending.payload?.title, outcome: pending.outcome ?? pending.payload?.outcome ?? '' });
         if (!compResult.success) throw new Error(compResult.error);
         writeKarlObservation(user.id, `Logged completion: "${compResult.completion?.title}"`, 'pattern').catch(() => {});
-        return NextResponse.json({ success: true, intent: 'capture_completion', completion: compResult.completion, response: `Logged — **${compResult.completion?.title}**.` });
+        return NextResponse.json({
+          success: true,
+          intent: 'capture_completion',
+          completion: compResult.completion,
+          refresh: true,
+          response: `Logged — **${compResult.completion?.title}**.`,
+        });
       }
 
       if (action === 'update_object') return await executeUpdateObject(user.id, pending);
@@ -264,7 +297,6 @@ export async function POST(req: NextRequest) {
     }
 
     // ── All other intents — return Karl's response, workspace handles state ─
-    // pending, modify_pending, preview_pending, open_form, question, command, unclear
     return NextResponse.json({ success: true, ...result });
 
   } catch (err: any) {

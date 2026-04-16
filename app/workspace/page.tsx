@@ -42,7 +42,6 @@ interface DelegateModalState {
   taskTitle: string;
   preselectedTagId?: string | null;
   preselectedName?: string | null;
-  // After confirm, what do we do? 'drop' = update bucket+delegee, 'update' = just delegee
   mode: 'drop' | 'update';
 }
 
@@ -150,7 +149,6 @@ function TaskPill({ task, bucket, statusLabel, taskIndex, onClick, onDragStart }
 
 // ─── COMPONENTS: BucketSection ───────────────────────────────────────────────
 
-// Delegate bucket is droppable but triggers DelegateModal instead of direct drop
 const DROPPABLE_BUCKETS = ['now', 'soon', 'realwork', 'later', 'delegate'];
 
 function BucketSection({ bucket, tasks, statusMap, onTaskClick, onDragStart, onDrop, onReorder }: {
@@ -313,18 +311,16 @@ export default function WorkspacePage() {
   const [selectedTask, setSelectedTask]       = useState<Task | null>(null);
   const [pendingPreviewTaskId, setPendingPreviewTaskId] = useState<string | null>(null);
 
-  // DelegateModal state — null = hidden
   const [delegateModal, setDelegateModal]     = useState<DelegateModalState | null>(null);
 
   const draggedTask                            = useRef<Task | null>(null);
-
-  const chatBottomRef = useRef<HTMLDivElement>(null);
-  const inputRef      = useRef<HTMLTextAreaElement>(null);
-  const initDone      = useRef(false);
-  const [splitW, setSplitW]   = useState(340);
-  const splitDragging          = useRef(false);
-  const splitStartX            = useRef(0);
-  const splitStartW            = useRef(340);
+  const chatBottomRef                          = useRef<HTMLDivElement>(null);
+  const inputRef                               = useRef<HTMLTextAreaElement>(null);
+  const initDone                               = useRef(false);
+  const [splitW, setSplitW]                   = useState(340);
+  const splitDragging                          = useRef(false);
+  const splitStartX                            = useRef(0);
+  const splitStartW                            = useRef(340);
 
   // ─── Auth & Init ───────────────────────────────────────────────────────────
 
@@ -517,8 +513,6 @@ export default function WorkspacePage() {
     setThinking(true);
 
     try {
-      // Always send to Karl — input + current pending payload
-      // Karl decides everything: confirm, cancel, modify, preview, open form, new action, conversation
       const pendingForKarl = pending
         ? { ...pending.payload, action: pending.intent, intent: pending.intent }
         : null;
@@ -531,7 +525,8 @@ export default function WorkspacePage() {
       const data = await res.json();
 
       // ── Karl executed immediately (quick capture) ────────────────────
-      if (data.intent === 'execute') {
+      // Route returns 'capture_task' as intent after writing on execute path
+      if (data.intent === 'execute' || data.intent === 'capture_task') {
         setPending(null);
         addMessage('assistant', data.response ?? 'Done.');
         await refreshAfterUpdate();
@@ -548,6 +543,16 @@ export default function WorkspacePage() {
         return;
       }
 
+      // ── Successful write — route returned refresh:true ───────────────
+      // Covers update_object, capture_tasks, capture_completion, process_document
+      if (data.success && data.refresh) {
+        setPending(null);
+        addMessage('assistant', data.response ?? 'Done.');
+        await refreshAfterUpdate();
+        if (data.offer_preview && data.task_id) setPendingPreviewTaskId(data.task_id);
+        return;
+      }
+
       // ── Karl cancelled ───────────────────────────────────────────────
       if (data.intent === 'cancel_pending') {
         setPending(null);
@@ -557,9 +562,8 @@ export default function WorkspacePage() {
 
       // ── Karl modified pending — update payload, keep pending ─────────
       if (data.intent === 'modify_pending') {
-        const summary = data.payload?.title ?? data.payload?.tasks?.length
-          ? `${data.payload.tasks?.length} tasks`
-          : 'modified action';
+        const summary = data.payload?.title
+          ?? (data.payload?.tasks?.length ? `${data.payload.tasks.length} tasks` : 'modified action');
         setPending({ intent: data.payload?.action ?? 'capture_task', payload: data.payload ?? {}, summary });
         addMessage('assistant', data.response ?? 'Updated.');
         return;
@@ -600,13 +604,27 @@ export default function WorkspacePage() {
         if (taskId) {
           const task = tasks.find(t => t.id === taskId);
           if (task) {
-            setDelegateModal({ taskId: task.id, taskTitle: task.title, preselectedTagId: data.payload.preselected_tag_id ?? null, preselectedName: data.payload.preselected_name ?? null, mode: 'update' });
+            setDelegateModal({
+              taskId: task.id,
+              taskTitle: task.title,
+              preselectedTagId: data.payload.preselected_tag_id ?? null,
+              preselectedName: data.payload.preselected_name ?? null,
+              mode: 'update',
+            });
           }
         }
+        addMessage('assistant', data.response ?? 'Who is handling this?');
+        return;
       }
 
-      // ── Conversational — don't clear pending unless Karl returned a
-      //    genuinely new actionable intent ─────────────────────────────
+      // ── Question / conversational ────────────────────────────────────
+      // Karl answered a question. Never touch pending — it stays exactly as it was.
+      if (data.intent === 'question' || data.intent === 'unclear') {
+        addMessage('assistant', data.response ?? "I'm not sure what to do with that.");
+        return;
+      }
+
+      // ── Fallback — any other actionable intent with payload ──────────
       const isActionable = ['capture_task', 'capture_tasks', 'capture_completion', 'update_object', 'process_document'].includes(data.intent);
       if (isActionable && data.payload) {
         setPending({ intent: data.intent, payload: data.payload, summary: buildPendingSummary(data) });
@@ -615,13 +633,14 @@ export default function WorkspacePage() {
       addMessage('assistant', data.response ?? "I'm not sure what to do with that.");
 
     } catch (err: any) {
+      console.error('[handleSubmit]', err);
       addMessage('assistant', 'Something went wrong. Try again.');
     } finally {
       setThinking(false);
     }
   };
 
-  // ── Resolve identifier (e.g. "D1") to a task_id ───────────────────────────
+  // ── Resolve identifier (e.g. "S1") to a task_id ───────────────────────────
   const resolveIdentifierToTaskId = (identifier: string): string | null => {
     if (!identifier) return null;
     const upper = identifier.toUpperCase();
@@ -667,17 +686,11 @@ export default function WorkspacePage() {
     if (!task || !koUser) return;
     if (task.bucket_key === targetBucketKey) return;
 
-    // Delegate bucket — show DelegateModal before writing to DB
     if (targetBucketKey === 'delegate') {
-      setDelegateModal({
-        taskId:    task.id,
-        taskTitle: task.title,
-        mode:      'drop',
-      });
+      setDelegateModal({ taskId: task.id, taskTitle: task.title, mode: 'drop' });
       return;
     }
 
-    // All other buckets — direct update
     setTasks(prev => prev.map(t => t.id === task.id ? { ...t, bucket_key: targetBucketKey, delegated_to: null } : t));
 
     const { error } = await supabase
@@ -699,20 +712,12 @@ export default function WorkspacePage() {
     const { taskId, mode } = delegateModal;
     setDelegateModal(null);
 
-    // Optimistic update
     setTasks(prev => prev.map(t =>
-      t.id === taskId
-        ? { ...t, bucket_key: 'delegate', delegated_to: tagId }
-        : t
+      t.id === taskId ? { ...t, bucket_key: 'delegate', delegated_to: tagId } : t
     ));
 
-    const updatePayload: Record<string, any> = {
-      delegated_to: tagId,
-      sort_order:   null,
-    };
-    if (mode === 'drop') {
-      updatePayload.bucket_key = 'delegate';
-    }
+    const updatePayload: Record<string, any> = { delegated_to: tagId, sort_order: null };
+    if (mode === 'drop') updatePayload.bucket_key = 'delegate';
 
     const { error } = await supabase
       .from('task')
@@ -724,7 +729,6 @@ export default function WorkspacePage() {
       console.error('[handleDelegateConfirm]', error);
       await loadTasks(koUser.id);
     } else {
-      // Confirm to user in chat if this came from a delegation_pending flow
       addMessage('assistant', `Delegated to **${tagName}**. Task moved to Delegated bucket.`);
     }
   };
@@ -821,8 +825,6 @@ export default function WorkspacePage() {
       {selectedTask && koUser && (
         <TaskDetailModal taskId={selectedTask.id} userId={koUser.id} accessToken={accessToken} onClose={() => setSelectedTask(null)} onSaved={() => { loadTasks(koUser.id); setSelectedTask(null); }} />
       )}
-
-      {/* DELEGATE MODAL — drag-drop + delegation_pending */}
       {delegateModal && koUser && (
         <DelegateModal
           taskId={delegateModal.taskId}
