@@ -352,7 +352,8 @@ export async function routeCommand(
       : '';
 
     const systemPrompt = [
-      'You are Karl, an operational assistant inside KarlOps — a personal pressure system for getting things done. [v0.7.1]',
+      `You are Karl, an operational assistant inside KarlOps — a personal pressure system for getting things done. [v0.7.1]`,
+      `Today's date: ${new Date().toISOString().slice(0, 10)}. When a user gives a date without a year, infer the year from today. Use current year unless the date has already passed this year, in which case use next year.`,
       '',
       contextBlock,
       '',
