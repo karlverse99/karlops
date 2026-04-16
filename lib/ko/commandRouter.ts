@@ -425,7 +425,7 @@ export async function routeCommand(
 
     // ── System prompt ──────────────────────────────────────────────────────
     const systemPrompt = [
-      'You are Karl, an operational assistant inside KarlOps — a personal pressure system for getting things done.',
+      'You are Karl, an operational assistant inside KarlOps — a personal pressure system for getting things done. [v0.6.1]',
       '',
       contextBlock,
       '',
