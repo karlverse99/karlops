@@ -101,18 +101,22 @@ async function resolveDelegatee(
 
   const db = createSupabaseAdmin();
 
-  // Load all People tags
+  // Resolve People tag group first, then load tags
+  const { data: peopleGroup } = await db
+    .from('tag_group')
+    .select('tag_group_id')
+    .eq('user_id', user_id)
+    .eq('name', 'People')
+    .maybeSingle();
+
+  if (!peopleGroup) return null;
+
   const { data: peopleTags } = await db
     .from('tag')
     .select('tag_id, name, description')
     .eq('user_id', user_id)
-    .eq('is_archived', false)
-    .in('tag_group_id',
-      db.from('tag_group')
-        .select('tag_group_id')
-        .eq('user_id', user_id)
-        .eq('name', 'People')
-    );
+    .eq('tag_group_id', peopleGroup.tag_group_id)
+    .eq('is_archived', false);
 
   const tags: PeopleTag[] = peopleTags ?? [];
   const hint = nameHint.toLowerCase().trim();
