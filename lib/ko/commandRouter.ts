@@ -558,6 +558,13 @@ export async function routeCommand(
       parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
     } catch {
       console.error('[commandRouter] JSON parse failed. Raw response:', text);
+      // Karl returned prose instead of JSON — rescue it as a question response
+      // rather than discarding it. This happens on complex reasoning questions.
+      if (text && text.length > 10) {
+        await appendSessionMessage(user_id, 'user', input);
+        await appendSessionMessage(user_id, 'karl', text);
+        return { intent: 'question', response: text };
+      }
       return { intent: 'unclear', response: "Something went wrong parsing that. Try again." };
     }
 
