@@ -1,5 +1,6 @@
 // lib/ko/commandRouter.ts
-// KarlOps L — Intent classification, field extraction, and enrichment
+// KarlOps L — Intent classification and enrichment
+// v0.7.0 — Karl receives everything, Karl decides everything. No word lists. No state machine.
 
 import { createSupabaseAdmin } from '@/lib/supabase-server';
 import {
@@ -12,20 +13,25 @@ import {
   updateFieldLlmNotes,
 } from '@/lib/ko/buildKarlContext';
 
+// ─── TYPES ────────────────────────────────────────────────────────────────────
+
 export type IntentType =
-  | 'capture_task'
-  | 'capture_tasks'
-  | 'capture_completion'
-  | 'update_object'
-  | 'process_document'
-  | 'question'
-  | 'command'
-  | 'unclear';
+  | 'execute'           // Karl has enough info, execute immediately (quick capture, clear commands)
+  | 'pending'           // Karl proposes an action with enriched payload, waits for user
+  | 'modify_pending'    // User adjusted something about the pending action
+  | 'confirm_pending'   // User confirmed the pending action, execute it
+  | 'cancel_pending'    // User cancelled the pending action
+  | 'preview_pending'   // User asked what the pending action looks like
+  | 'open_form'         // User wants to see/edit in the full form UI
+  | 'process_document'  // Large text blob to process
+  | 'question'          // Karl answering conversationally, no action
+  | 'command'           // System command (open tag manager etc)
+  | 'unclear';          // Last resort
 
 export interface UpdateOperation {
-  field: string;               // DB field name e.g. 'bucket_key', 'title', 'tags', 'delegated_to'
-  value: string | string[];    // new value. For tags: the tag name string. For delegated_to: tag_id uuid
-  tag_op?: 'add' | 'remove';  // required when field === 'tags'
+  field: string;
+  value: string | string[];
+  tag_op?: 'add' | 'remove';
 }
 
 export interface RouterResult {
@@ -44,7 +50,6 @@ interface FieldMeta {
   update_behavior: string;
 }
 
-// Table name for each FC object type Karl can reference
 export const OBJECT_TABLE: Record<string, string> = {
   task:               'task',
   completion:         'completion',
@@ -54,7 +59,6 @@ export const OBJECT_TABLE: Record<string, string> = {
   contact:            'contact',
 };
 
-// PK column name per table
 export const OBJECT_PK: Record<string, string> = {
   task:               'task_id',
   completion:         'completion_id',
@@ -64,10 +68,12 @@ export const OBJECT_PK: Record<string, string> = {
   contact:            'contact_id',
 };
 
+// ─── HELPERS ──────────────────────────────────────────────────────────────────
+
 const ANALYSIS_TRIGGERS = [
   'analyze', 'analysis', 'review', 'summarize', 'summary',
   'make the case', 'what have i done', 'show me', 'evidence',
-  'how am i doing', 'what does it look like', 'this week', 'this month',
+  'how am i doing', 'this week', 'this month',
   'against my', 'pip', 'requirement', 'progress',
 ];
 
@@ -76,30 +82,18 @@ function isAnalysisRequest(input: string): boolean {
   return ANALYSIS_TRIGGERS.some(t => lower.includes(t));
 }
 
-// Large text paste detection — likely a document, transcript, or content blob
-// Threshold: 500+ chars with no clear single-task pattern
 function isDocumentInput(input: string): boolean {
   if (input.length < 500) return false;
   const lower = input.toLowerCase();
-  // Explicit document signals
   const docSignals = [
     'transcript', 'meeting notes', 'email thread', "here's the", 'here is the',
-    'paste', 'copied from', 'from the doc', 'from the meeting', 'summary',
+    'paste', 'copied from', 'from the doc', 'from the meeting',
     'attendees', 'agenda', 'action items', 'minutes',
   ];
   return docSignals.some(s => lower.includes(s)) || input.split('\n').length > 15;
 }
 
-// ── People tag resolution — fuzzy match for delegee ──────────────────────────
-// Resolves a free-text name to a People tag_id.
-// Resolution order:
-//   1. Exact match on tag name
-//   2. Case-insensitive match on tag name
-//   3. Partial match on tag name
-//   4. Partial match on tag description
-//   5. Contact name match (contacts auto-create People tags)
-//   6. Contact notes match
-// Returns { tag_id, name } if found, null if not.
+// ─── PEOPLE TAG RESOLUTION ────────────────────────────────────────────────────
 
 interface PeopleTag {
   tag_id: string;
@@ -107,159 +101,75 @@ interface PeopleTag {
   description: string | null;
 }
 
-async function resolveDelegatee(
-  user_id: string,
-  nameHint: string
-): Promise<{ tag_id: string; name: string } | null> {
+async function resolveDelegatee(user_id: string, nameHint: string): Promise<{ tag_id: string; name: string } | null> {
   if (!nameHint || nameHint.toLowerCase() === 'skip' || nameHint.toLowerCase() === 'other') {
     return resolveOtherTag(user_id);
   }
 
   const db = createSupabaseAdmin();
-
-  // Resolve People tag group first, then load tags
-  const { data: peopleGroup } = await db
-    .from('tag_group')
-    .select('tag_group_id')
-    .eq('user_id', user_id)
-    .eq('name', 'People')
-    .maybeSingle();
-
+  const { data: peopleGroup } = await db.from('tag_group').select('tag_group_id').eq('user_id', user_id).eq('name', 'People').maybeSingle();
   if (!peopleGroup) return null;
 
-  const { data: peopleTags } = await db
-    .from('tag')
-    .select('tag_id, name, description')
-    .eq('user_id', user_id)
-    .eq('tag_group_id', peopleGroup.tag_group_id)
-    .eq('is_archived', false);
-
+  const { data: peopleTags } = await db.from('tag').select('tag_id, name, description').eq('user_id', user_id).eq('tag_group_id', peopleGroup.tag_group_id).eq('is_archived', false);
   const tags: PeopleTag[] = peopleTags ?? [];
   const hint = nameHint.toLowerCase().trim();
 
-  // 1. Exact name match
   let match = tags.find(t => t.name === nameHint);
   if (match) return { tag_id: match.tag_id, name: match.name };
-
-  // 2. Case-insensitive name match
   match = tags.find(t => t.name.toLowerCase() === hint);
   if (match) return { tag_id: match.tag_id, name: match.name };
-
-  // 3. Partial name match
   match = tags.find(t => t.name.toLowerCase().includes(hint) || hint.includes(t.name.toLowerCase()));
   if (match) return { tag_id: match.tag_id, name: match.name };
-
-  // 4. Description match
   match = tags.find(t => t.description && t.description.toLowerCase().includes(hint));
   if (match) return { tag_id: match.tag_id, name: match.name };
 
-  // 5 & 6. Contact name/notes match — contacts auto-create People tags
-  const { data: contacts } = await db
-    .from('contact')
-    .select('name, notes, tag_id')
-    .eq('user_id', user_id)
-    .eq('is_archived', false);
-
+  const { data: contacts } = await db.from('contact').select('name, notes, tag_id').eq('user_id', user_id).eq('is_archived', false);
   for (const contact of contacts ?? []) {
     const nameMatch  = contact.name?.toLowerCase().includes(hint) || hint.includes(contact.name?.toLowerCase() ?? '');
     const notesMatch = contact.notes?.toLowerCase().includes(hint);
     if ((nameMatch || notesMatch) && contact.tag_id) {
-      // Resolve to the People tag created for this contact
       const contactTag = tags.find(t => t.tag_id === contact.tag_id);
       if (contactTag) return { tag_id: contactTag.tag_id, name: contactTag.name };
     }
   }
-
   return null;
 }
 
-async function resolveOtherTag(
-  user_id: string
-): Promise<{ tag_id: string; name: string } | null> {
+async function resolveOtherTag(user_id: string): Promise<{ tag_id: string; name: string } | null> {
   const db = createSupabaseAdmin();
-
-  // Find the "Other" People tag
-  const { data } = await db
-    .from('tag')
-    .select('tag_id, name, tag_group_id')
-    .eq('user_id', user_id)
-    .eq('name', 'Other')
-    .eq('is_archived', false)
-    .maybeSingle();
-
+  const { data } = await db.from('tag').select('tag_id, name').eq('user_id', user_id).eq('name', 'Other').eq('is_archived', false).maybeSingle();
   if (data) return { tag_id: data.tag_id, name: data.name };
 
-  // Fallback: find by People group if somehow name differs
-  const { data: peopleGroup } = await db
-    .from('tag_group')
-    .select('tag_group_id')
-    .eq('user_id', user_id)
-    .eq('name', 'People')
-    .maybeSingle();
-
+  const { data: peopleGroup } = await db.from('tag_group').select('tag_group_id').eq('user_id', user_id).eq('name', 'People').maybeSingle();
   if (!peopleGroup) return null;
-
-  const { data: otherTag } = await db
-    .from('tag')
-    .select('tag_id, name')
-    .eq('user_id', user_id)
-    .eq('tag_group_id', peopleGroup.tag_group_id)
-    .eq('name', 'Other')
-    .maybeSingle();
-
+  const { data: otherTag } = await db.from('tag').select('tag_id, name').eq('user_id', user_id).eq('tag_group_id', peopleGroup.tag_group_id).eq('name', 'Other').maybeSingle();
   return otherTag ? { tag_id: otherTag.tag_id, name: otherTag.name } : null;
 }
 
-// ── Create a new People tag for an unrecognised delegee ───────────────────────
-
-async function createPeopleTag(
-  user_id: string,
-  name: string
-): Promise<{ tag_id: string; name: string } | null> {
+async function createPeopleTag(user_id: string, name: string): Promise<{ tag_id: string; name: string } | null> {
   const db = createSupabaseAdmin();
-
-  const { data: peopleGroup } = await db
-    .from('tag_group')
-    .select('tag_group_id')
-    .eq('user_id', user_id)
-    .eq('name', 'People')
-    .maybeSingle();
-
+  const { data: peopleGroup } = await db.from('tag_group').select('tag_group_id').eq('user_id', user_id).eq('name', 'People').maybeSingle();
   if (!peopleGroup) return null;
-
-  const { data } = await db
-    .from('tag')
-    .insert({
-      user_id,
-      tag_group_id: peopleGroup.tag_group_id,
-      name:         name.trim(),
-      is_archived:  false,
-    })
-    .select('tag_id, name')
-    .single();
-
+  const { data } = await db.from('tag').insert({ user_id, tag_group_id: peopleGroup.tag_group_id, name: name.trim(), is_archived: false }).select('tag_id, name').single();
   return data ?? null;
 }
 
-// ── Tag suggestion for chat captures ─────────────────────────────────────────
+// ─── TAG SUGGESTION ───────────────────────────────────────────────────────────
 
-async function suggestTagsForCapture(
-  user_id: string,
-  context_text: string,
-  already_tagged: string[]
-): Promise<string[]> {
+async function suggestTagsForCapture(user_id: string, context_text: string, already_tagged: string[], rejected_tags: string[] = []): Promise<string[]> {
   const db = createSupabaseAdmin();
-
   try {
-    const [tagGroupRes, tagRes, situationRes] = await Promise.all([
+    const [tagGroupRes, tagRes, situationRes, obsRes] = await Promise.all([
       db.from('tag_group').select('tag_group_id, name').eq('user_id', user_id).eq('is_archived', false).order('display_order'),
       db.from('tag').select('name, description, tag_group_id').eq('user_id', user_id).eq('is_archived', false).order('name'),
       db.from('user_situation').select('brief').eq('user_id', user_id).eq('is_active', true).maybeSingle(),
+      db.from('karl_observation').select('content, observation_type').eq('user_id', user_id).eq('is_active', true).order('created_at', { ascending: false }).limit(10),
     ]);
 
     const tagGroups    = tagGroupRes.data ?? [];
     const existingTags = tagRes.data ?? [];
     const situation    = situationRes.data?.brief?.trim() ?? '';
+    const observations = (obsRes.data ?? []).map(o => `[${o.observation_type}] ${o.content}`).join('\n');
 
     if (existingTags.length === 0) return [];
 
@@ -270,14 +180,15 @@ async function suggestTagsForCapture(
       .map(t => `${t.name} [${groupMap[t.tag_group_id] ?? 'General'}]${t.description ? ` (${t.description})` : ''}`)
       .join(', ');
 
-    const alreadySelected = already_tagged.length ? already_tagged.join(', ') : 'none';
+    const rejectedNote = rejected_tags.length ? `\nNEVER suggest these (user rejected): ${rejected_tags.join(', ')}` : '';
 
     const systemPrompt = `You are Karl, suggesting tags for a KarlOps task being captured via chat.
 Suggest 1-3 existing tags that fit the content. Existing tags only — do not invent new ones.
 
 Existing tags: ${existingTagList}
-Already tagged (do not re-suggest): ${alreadySelected}
+Already tagged (do not re-suggest): ${already_tagged.join(', ') || 'none'}
 User situation: ${situation || 'Not provided.'}
+${observations ? `Karl observations:\n${observations}` : ''}${rejectedNote}
 
 Rules:
 - Suggest 1-3 tags maximum from the existing list only
@@ -287,12 +198,7 @@ Rules:
 
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': process.env.ANTHROPIC_API_KEY!,
-        'anthropic-version': '2023-06-01',
-        'anthropic-beta': 'prompt-caching-2024-07-31',
-      },
+      headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY!, 'anthropic-version': '2023-06-01', 'anthropic-beta': 'prompt-caching-2024-07-31' },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 200,
@@ -303,51 +209,19 @@ Rules:
 
     const data = await res.json();
     const usage = data.usage;
-    if (usage) console.log('[suggestTagsForCapture] tokens:', {
-      input: usage.input_tokens, output: usage.output_tokens,
-      cache_write: usage.cache_creation_input_tokens ?? 0,
-      cache_read: usage.cache_read_input_tokens ?? 0,
-    });
+    if (usage) console.log('[suggestTagsForCapture] tokens:', { input: usage.input_tokens, output: usage.output_tokens, cache_write: usage.cache_creation_input_tokens ?? 0, cache_read: usage.cache_read_input_tokens ?? 0 });
 
     const text = data.content?.[0]?.text ?? '';
     const parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
-
     const existingNames = new Set(existingTags.map(t => t.name));
-    return (parsed.suggested ?? []).filter((name: string) =>
-      existingNames.has(name) && !already_tagged.includes(name)
-    );
-
+    return (parsed.suggested ?? []).filter((name: string) => existingNames.has(name) && !already_tagged.includes(name) && !rejected_tags.includes(name));
   } catch (err) {
     console.error('[suggestTagsForCapture]', err);
     return [];
   }
 }
 
-// ── Extract tags the user explicitly rejected in the conversation ─────────────
-
-function extractRejectedTags(messages: { role: string; content: string }[]): string[] {
-  const rejected = new Set<string>();
-  const rejectPatterns = [
-    /don'?t (?:like|want|use|include)\s+#?([A-Za-z0-9/_\-]+)/gi,
-    /(?:remove|drop|not|skip|no)\s+#([A-Za-z0-9/_\-]+)/gi,
-    /(?:remove|drop|skip)\s+([A-Za-z0-9/_\-]+)\s+tag/gi,
-  ];
-
-  for (const msg of messages) {
-    if (msg.role !== 'user') continue;
-    for (const pattern of rejectPatterns) {
-      let match;
-      pattern.lastIndex = 0;
-      while ((match = pattern.exec(msg.content)) !== null) {
-        rejected.add(match[1]);
-      }
-    }
-  }
-
-  return Array.from(rejected);
-}
-
-// ── Build editable field summary for Karl's system prompt ─────────────────────
+// ─── FIELD SUMMARY BUILDERS ───────────────────────────────────────────────────
 
 function buildEditableFieldSummary(meta: FieldMeta[]): string {
   const byType: Record<string, string[]> = {};
@@ -356,9 +230,7 @@ function buildEditableFieldSummary(meta: FieldMeta[]): string {
     if (!byType[f.object_type]) byType[f.object_type] = [];
     byType[f.object_type].push(`${f.field} (${f.label})`);
   }
-  return Object.entries(byType)
-    .map(([type, fields]) => `- ${type}: ${fields.join(', ')}`)
-    .join('\n') || 'no editable fields found';
+  return Object.entries(byType).map(([type, fields]) => `- ${type}: ${fields.join(', ')}`).join('\n') || 'no editable fields found';
 }
 
 function buildObjectSummaries(meta: FieldMeta[]): string {
@@ -373,16 +245,55 @@ function buildObjectSummaries(meta: FieldMeta[]): string {
   }).join('\n');
 }
 
-// ── Main router ───────────────────────────────────────────────────────────────
+// ─── FORMAT PENDING FOR KARL ──────────────────────────────────────────────────
+// When a pending action exists, include it in Karl's system context so he
+// can reason about user input against it — modify, confirm, cancel, preview.
+
+function formatPendingForPrompt(pending: Record<string, any> | null): string {
+  if (!pending) return '';
+
+  const lines = ['## Current Pending Action', `Intent: ${pending.intent}`];
+
+  if (pending.intent === 'capture_task' || pending.intent === 'execute') {
+    const p = pending.payload ?? pending;
+    lines.push(`Title: ${p.title ?? '—'}`);
+    lines.push(`Bucket: ${p.bucket_key ?? 'capture'}`);
+    lines.push(`Tags: ${(p.tags ?? []).join(', ') || 'none'}`);
+    lines.push(`Context: ${p.context_id ?? 'none'}`);
+    lines.push(`Target date: ${p.target_date ?? 'none'}`);
+    if (p.notes) lines.push(`Notes: ${p.notes}`);
+    if (p.delegated_to) lines.push(`Delegated to: ${p.delegated_to}`);
+  } else if (pending.intent === 'capture_tasks') {
+    const tasks = pending.payload?.tasks ?? [];
+    lines.push(`Tasks (${tasks.length}):`);
+    tasks.forEach((t: any, i: number) => lines.push(`  ${i + 1}. ${t.title} [${t.bucket_key ?? 'capture'}]`));
+  } else if (pending.intent === 'update_object') {
+    const p = pending.payload ?? {};
+    lines.push(`Object: ${p.object_type} ${p.identifier}`);
+    const ops = (p.operations ?? []).map((op: any) => op.tag_op ? `${op.tag_op} tag ${op.value}` : `${op.field} → ${op.value}`).join(', ');
+    lines.push(`Operations: ${ops}`);
+  } else if (pending.intent === 'process_document') {
+    lines.push(`Action: ${pending.payload?.action}`);
+    if (pending.payload?.summary) lines.push(`Summary: ${pending.payload.summary}`);
+  }
+
+  lines.push('');
+  lines.push('The user may confirm, cancel, modify, preview, or ask questions about this pending action.');
+  lines.push('Use the pending payload to answer any "what will it look like" questions with exact field values.');
+
+  return lines.join('\n');
+}
+
+// ─── MAIN ROUTER ──────────────────────────────────────────────────────────────
 
 export async function routeCommand(
   user_id: string,
-  input: string
+  input: string,
+  pending: Record<string, any> | null = null
 ): Promise<RouterResult> {
   const db = createSupabaseAdmin();
 
   try {
-    // ── Load field metadata ────────────────────────────────────────────────
     const { data: allMeta } = await db
       .from('ko_field_metadata')
       .select('object_type, field, label, field_type, insert_behavior, update_behavior')
@@ -392,15 +303,11 @@ export async function routeCommand(
     const objectSummaries      = buildObjectSummaries(allMeta ?? []);
     const editableFieldSummary = buildEditableFieldSummary(allMeta ?? []);
 
-    // ── Build context bundle ───────────────────────────────────────────────
     const isDeep = isAnalysisRequest(input);
-    const bundle = isDeep
-      ? await buildKarlDeepContext(user_id)
-      : await buildKarlContext(user_id);
-
+    const bundle = isDeep ? await buildKarlDeepContext(user_id) : await buildKarlContext(user_id);
     const contextBlock = formatContextForPrompt(bundle);
+    const pendingBlock = formatPendingForPrompt(pending);
 
-    // ── Build Anthropic messages array ────────────────────────────────────
     const anthropicMessages: { role: 'user' | 'assistant'; content: string }[] = [
       ...bundle.recentMessages.map(m => ({
         role: (m.role === 'karl' ? 'assistant' : 'user') as 'user' | 'assistant',
@@ -412,182 +319,171 @@ export async function routeCommand(
       anthropicMessages.shift();
     }
 
-    // ── Extract rejected tags from recent conversation ─────────────────────
-    const rejectedTags = extractRejectedTags(bundle.recentMessages);
-    const rejectedTagsNote = rejectedTags.length > 0
-      ? `\n## Rejected Tags — NEVER suggest these\nThe user has explicitly rejected these tags in this conversation: ${rejectedTags.join(', ')}`
-      : '';
-
-    // ── Observations as behavior instructions ─────────────────────────────
     const observationInstructions = bundle.observations
-      ? `## Your Observations About This User\nYou have noticed these patterns. Use them actively to shape your responses — adjust your tone, suggestions, and defaults accordingly. Do not just acknowledge them; act on them.\n${bundle.observations}`
+      ? `## Your Observations About This User\nYou have noticed these patterns. Use them actively.\n${bundle.observations}`
       : '';
 
-    // ── System prompt ──────────────────────────────────────────────────────
+    // Extract rejected tags from recent conversation
+    const rejectedTags: string[] = [];
+    const rejectPattern = /don'?t (?:use|want|include)\s+#?([A-Za-z0-9/_\-]+)/gi;
+    for (const msg of bundle.recentMessages) {
+      if (msg.role !== 'user') continue;
+      let match;
+      rejectPattern.lastIndex = 0;
+      while ((match = rejectPattern.exec(msg.content)) !== null) {
+        rejectedTags.push(match[1]);
+      }
+    }
+    const rejectedTagsNote = rejectedTags.length > 0
+      ? `\n## Rejected Tags — NEVER suggest these\n${rejectedTags.join(', ')}`
+      : '';
+
     const systemPrompt = [
-      'You are Karl, an operational assistant inside KarlOps — a personal pressure system for getting things done. [v0.6.1]',
+      'You are Karl, an operational assistant inside KarlOps — a personal pressure system for getting things done. [v0.7.0]',
       '',
       contextBlock,
+      '',
+      pendingBlock,
       '',
       observationInstructions,
       '',
       '## Your Job',
-      'Classify user input, extract structured data, and enrich tasks with full metadata when provided.',
+      'Every user message comes to you. You decide what to do. No word lists. No state machine. Just reason.',
+      '',
+      '## Decision Flow — Follow This Every Time',
+      '1. Is this a KarlOps operation (write to DB, change state, capture something) or just a question/conversation?',
+      '   - If just conversation → intent: question. Answer directly.',
+      '2. If KarlOps operation — what is it? Capture, update, complete, delegate, process document?',
+      '3. Do I have all required data to execute?',
+      '   - Quick capture signal ("quick add", "quick task", "quick capture", "just add it") → intent: execute. Use defaults for everything missing. Do not ask.',
+      '   - Have enough data → intent: pending. Show enriched payload. Let user confirm or adjust.',
+      '   - Missing one critical thing (e.g. delegating without a person) → intent: question. Ask for that one thing only.',
+      '4. If pending action exists and user input relates to it:',
+      '   - User confirms ("yes", "do it", "go", "yep", "ok", "sure", "correct", "looks good") → intent: confirm_pending',
+      '   - User cancels ("no", "cancel", "stop", "nevermind", "nah") → intent: cancel_pending',
+      '   - User modifies ("change the bucket", "remove that tag", "different context", "no UI/UX tag") → intent: modify_pending with updated payload',
+      '   - User asks what it looks like ("show me", "what will it look like", "preview", "what does that look like", "describe it") → intent: preview_pending. Describe exact field values from pending payload.',
+      '   - User says "open it", "show me the form", "let me edit it" → intent: open_form',
+      '   - User types something new and unrelated → replace pending with new intent',
+      '',
+      '## CRITICAL — Modifying Pending',
+      'When user modifies a pending action (e.g. "remove the UI/UX tag", "change bucket to soon", "no technology tag"):',
+      '- Return intent: modify_pending',
+      '- Return the COMPLETE updated payload with the change applied',
+      '- Do NOT cancel the pending action',
+      '- Do NOT start a new capture',
+      '- Example: if pending has tags [KarlOps, Enhancements, UI/UX] and user says "remove UI/UX" → return modify_pending with tags [KarlOps, Enhancements]',
+      '',
+      '## CRITICAL — Preview',
+      'When user asks to preview or see the pending action:',
+      '- Return intent: preview_pending',
+      '- In response field, describe the EXACT pending payload values in plain English',
+      '- Format: "Here is what I have: Title — [title]. Bucket — [bucket]. Tags — [tags]. Notes — [notes if any]. Confirm to capture or tell me what to change."',
+      '- NEVER return unclear for preview requests',
+      '',
+      '## Enrichment — Always Do This for Captures',
+      'Before returning a pending or execute intent, infer everything possible from the input + context:',
+      '- Bucket: urgency signals ("urgent", "today", "on fire" → now; "soon", "next week" → soon; vague → capture)',
+      '- Tags: topic signals matched against available tags list. Use observations and recent patterns.',
+      '- Context: domain signals ("work", "job hunt", "personal") matched against available contexts',
+      '- Target date: any date mention → extract as YYYY-MM-DD',
+      '- Notes: anything beyond the core action → notes field',
+      '- Delegated to: "have X handle", "ask X" → delegation signal',
       '',
       '## Available Object Types',
       objectSummaries,
       '',
       '## Task Identifiers',
-      'Tasks and FC objects are identified as PrefixN (e.g. N1, S2, RW1, L1, D1, CP1, CM1, MT1, EX1, TM1, CT1).',
-      'Prefix key: N=now, S=soon, RW=realwork, L=later, D=delegate, CP=capture, CM=completion, MT=meeting, EX=extract, TM=template, CT=contact.',
-      'When the user references an object by identifier, use it to act on that specific object.',
+      'N=now, S=soon, RW=realwork, L=later, D=delegate, CP=capture, CM=completion, MT=meeting, EX=extract, TM=template, CT=contact.',
+      'Format: prefix+number e.g. N1, S2, RW1.',
       '',
-      '## Intent Classification',
-      '- capture_task: A single clear action item to add.',
-      '- capture_tasks: Multiple action items in one message.',
-      '- capture_completion: User is logging something they completed.',
-      '- update_object: User wants to change, move, rename, tag, delegate, or update an existing object.',
-      '  Use this for: "move N3 to soon", "change the title of RW2", "delegate D1 to Sarah", "add tag X to N2", "update the outcome on CM1", "rename TM1".',
-      '  Do NOT use this for task completion — see complete_task rule below.',
-      '- process_document: User has pasted a large block of text (transcript, email, notes, article) and wants Karl to do something with it.',
-      '  Use this when input is 500+ characters OR contains document-like structure (multiple paragraphs, attendee lists, action items, etc).',
-      '  Karl must identify: (1) what type of content this is, (2) what the user wants done with it, (3) which FC object fields the output maps to.',
-      '  If the user instruction is clear ("summarize and complete the meeting"), proceed. If ambiguous, propose the most logical action and ask to confirm.',
-      '- question: User is asking for information, analysis, or clarification.',
-      '  ALWAYS use question (never unclear) when the user asks anything meta about a pending action.',
-      '  Examples: "what are you going to change?", "would you have done that?", "what does that do?", "why did you pick that?" — all are question.',
+      '## complete_task — TWO STEP FLOW',
+      'When user wants to mark a task done:',
+      'STEP 1 — Return intent: question, ask for outcome. Include outcome_pending: true, identifier, object_type.',
+      'STEP 2 — After user provides outcome, return intent: pending with update_object operations.',
+      'EXCEPTION: "no outcome", "just mark it done" → skip to pending immediately with outcome="".',
       '',
-      '## PENDING PREVIEW RULE — CRITICAL',
-      'When the user asks to see or preview a pending action before confirming, Karl MUST describe the exact payload in plain English.',
-      'Trigger phrases (any of these = pending preview): "show me", "what will it look like", "preview", "what are you going to", "before you commit", "what will you capture", "what will you add", "let me see it", "what does it look like", "describe it", "what will the task look like".',
-      'Karl responds with the ACTUAL field values — not vague summaries. Format:',
-      '  "Here is what I will capture: Title — [exact title]. Bucket — [bucket label]. Tags — [tags]. Notes — [notes if any]. Say yes to confirm or no to cancel."',
-      'NEVER return unclear for preview requests. NEVER say "I did not quite get that."',
-      'If there is no pending action and user asks to preview, Karl explains there is nothing pending.',
-      '- command: Explicit system command.',
-      '  Tag manager: "manage tags", "open tags", "tag manager", "add a tag", "create a tag" → command_type: open_tag_manager',
-      '- unclear: LAST RESORT ONLY. Use only when you genuinely cannot determine intent and none of the above fit.',
-      '  Never use unclear for meta-questions about pending actions. Never use unclear for short affirmations or reactions.',
-      '',
-      '## complete_task — TWO STEP FLOW (CRITICAL)',
-      'When the user wants to mark a task done ("mark N1 done", "complete S2", "finish RW1"):',
-      'STEP 1 — You do NOT immediately return update_object.',
-      '  Instead return intent: question and ask for the outcome:',
-      '  "What was the result? Give me a line on what happened or how it was resolved."',
-      '  Include "outcome_pending": true and "identifier": "N1" and "object_type": "task" in your JSON so the workspace knows to keep context.',
-      'STEP 2 — When the user provides the outcome, THEN return:',
-      '  { "intent": "update_object", "object_type": "task", "identifier": "N1",',
-      '    "operations": [{ "field": "is_completed", "value": "true" }, { "field": "outcome", "value": "<their answer>" }],',
-      '    "response": "..." }',
-      'EXCEPTION: If the user explicitly says "no outcome" or "just mark it done" or "no comment", skip the question and go straight to update_object with outcome="".',
-      '',
-      '## update_object Rules',
-      'When the user wants to update an existing FC object:',
-      '- Identify the object type and identifier (e.g. N3 = task, TM1 = document_template)',
-      '- Return one or more operations in the `operations` array',
-      '- Each operation: { "field": "db_field_name", "value": "new_value" }',
-      '- For tag operations: { "field": "tags", "value": "Tag Name", "tag_op": "add" } or "remove"',
-      '- For delegate: set bucket_key=delegate AND set delegated_to with the person name hint.',
-      '  The system will resolve the name to a People tag UUID automatically.',
-      '  If the user says "skip" or "other" or "don\'t care" for delegated_to, use the value "Other".',
-      '',
-      '## Delegation Rules — IMPORTANT',
-      '- delegation_to is REQUIRED when bucket_key = delegate. Never set bucket_key=delegate without also setting delegated_to.',
-      '- delegated_to must always be a name or "Other" — never a UUID (resolution happens server-side).',
-      '- When the user says "delegate N1 to Sarah" — return two operations: bucket_key=delegate and delegated_to=Sarah.',
-      '- When the user says "delegate N1" with no person — ask "Who\'s handling this? Say \'skip\' if you don\'t need to track."',
-      '  Return intent: question with delegation_pending: true and identifier in payload.',
-      '- When user responds to delegation_pending with a name or "skip" — return update_object with both operations.',
+      '## Delegation Rules',
+      '- delegated_to required when bucket = delegate',
+      '- delegated_to is a name string (resolved server-side to People tag UUID)',
+      '- If no person provided, ask "Who is handling this?" before proceeding',
       '',
       '## Editable Fields Per Object Type',
       editableFieldSummary,
       '',
-      '## Primary Vocabulary (always recognised)',
-      '- "bucket X" or "put it in X" or "move to X" → bucket_key',
-      '  Valid bucket keys: now, soon, realwork, later, delegate, capture',
-      '  Aliases: "fire"/"on fire" → now, "up next" → soon, "real work" → realwork',
-      '- "code it to X" or "context X" → context_id (resolve X against Available Contexts, return the UUID)',
-      '- "tag it X" or "tagged X" → tags add operation',
-      '- "by DATE" or "due DATE" or "target DATE" → target_date (ISO format YYYY-MM-DD)',
-      '- "delegate to X" → bucket_key=delegate + delegated_to=X (name string, not UUID)',
-      '- "mark done" or "complete" or "finished" → complete_task two-step flow (see above)',
+      '## Field Knowledge — Reason From This',
+      'The Field Knowledge section in your context tells you what every field is and how this user uses it.',
+      'Use it to infer where content belongs when user gives loose instructions.',
+      '',
+      '## process_document',
+      'When input is 500+ chars or document-like (transcript, email, notes):',
+      '1. Identify content type: transcript | email | notes | article | other',
+      '2. Identify what user wants done with it',
+      '3. Map to correct FC object and field using Field Knowledge',
+      '4. Show user what you plan to do — return intent: pending with process_document payload',
+      '',
+      '## Vocabulary',
+      '- "bucket X" / "move to X" / "put in X" → bucket_key',
+      '- Valid buckets: now, soon, realwork, later, delegate, capture',
+      '- Aliases: "fire"/"on fire" → now, "up next" → soon, "real work" → realwork',
+      '- "code it to X" / "context X" → context_id (return UUID from Available Contexts)',
+      '- "tag it X" / "tagged X" → tags',
+      '- "by DATE" / "due DATE" → target_date (ISO YYYY-MM-DD)',
+      '- "delegate to X" → bucket=delegate + delegated_to=X',
       '',
       '## Tag Rules',
-      '- Only use tags from the Available Tags list in context.',
-      '- If the user names a tag that does not exist, say so clearly and omit it.',
-      '- NEVER suggest a tag the user has rejected in this conversation.',
+      '- Only use tags from Available Tags list',
+      '- Never suggest rejected tags',
       rejectedTagsNote,
       '',
-      '## Field Knowledge — Use This to Reason',
-      'The Field Knowledge section in your context tells you what every field is and how this user uses it.',
-      'When the user gives loose instructions ("complete the meeting", "summarize this", "add that to my notes"),',
-      'reason from field knowledge to determine the correct object type and field — do not ask unless genuinely ambiguous.',
-      'If you discover a better understanding of how a field is used, include a field_learning in your response.',
+      isDeep ? '## Observation Instruction\nInclude "observation" field — 1-2 sentences on a pattern noticed.\nobservation_type: pattern | preference | flag\n' : '',
       '',
-      '## process_document Rules',
-      'When processing a large text input:',
-      '1. Identify content type: transcript | email | notes | article | other',
-      '2. Identify user intent from their instruction or infer from content type',
-      '3. Map output to the correct FC object and field using Field Knowledge',
-      '4. Common mappings:',
-      '   - meeting transcript + "complete" or "summarize" → meeting.notes (summary) + is_completed = true',
-      '   - transcript + "extract tasks" → capture_tasks (list of extracted action items)',
-      '   - transcript + "document template" or template name → process via template flow',
-      '   - email thread + "what do I need to do" → capture_tasks',
-      '   - notes dump → capture_tasks or meeting.notes depending on context',
-      '5. Always show the user what you plan to do before doing it — this is a high-stakes operation',
-      '6. For meeting completion: identify which open meeting this relates to by title/date/attendees match',
+      '## Response Format — ONLY valid JSON, no markdown',
       '',
-      '## Enrichment Rules',
-      '- Always attempt to extract bucket, context_id, tags, and target_date from captures.',
-      '- Only use context_id UUIDs from the Available Contexts list.',
-      '- If bucket is not specified for a capture, use "capture".',
-      '- For task generation requests, generate the task titles yourself.',
+      '// Immediate execute (quick capture):',
+      '{ "intent": "execute", "action": "capture_task", "title": "title", "bucket_key": "capture", "context_id": null, "tags": [], "notes": null, "target_date": null, "delegated_to": null, "response": "Got it." }',
       '',
-      '## General Rules',
-      '- Be conservative on intent. Commentary = question.',
-      '- "I just did X", "I finished X", "I completed X" → capture_completion.',
-      '- Never capture philosophical statements as tasks.',
-      '- Pattern for analysis: "Based on what I see — [fact]. My read — [inference]."',
-      '- Never pretend inference is fact.',
-      '- CRITICAL: When you have enough info to capture or update, always return the action intent — never question or unclear.',
-      '- CRITICAL: Response field always uses FUTURE tense for captures/updates — "Here\'s what I\'ll do..." NOT "Done..."',
-      '- CRITICAL: Long text dumps (especially after being asked) → capture_task. Extract concise title, use text as context.',
+      '// Propose action (normal capture):',
+      '{ "intent": "pending", "action": "capture_task", "title": "title", "bucket_key": "realwork", "context_id": "uuid-or-null", "tags": ["Tag1"], "notes": "detail", "target_date": null, "delegated_to": null, "response": "Here is what I have — [summary]. Confirm or adjust.", "recognised_phrase": "phrase" }',
       '',
-      isDeep ? '## Observation Instruction\nInclude an "observation" field — 1-2 sentences capturing a pattern you noticed.\nobservation_type: pattern | preference | flag\n' : '',
+      '// Propose multiple captures:',
+      '{ "intent": "pending", "action": "capture_tasks", "tasks": [{ "title": "task", "bucket_key": "capture", "tags": [], "notes": null }], "response": "Found N tasks. Confirm to capture all." }',
       '',
-      '## Response Format — ONLY valid JSON, no markdown fences',
+      '// Modify pending:',
+      '{ "intent": "modify_pending", "action": "capture_task", "title": "title", "bucket_key": "realwork", "context_id": null, "tags": ["Tag1"], "notes": "detail", "target_date": null, "response": "Updated — removed UI/UX. Confirm?" }',
       '',
-      'Single capture:',
-      '{ "intent": "capture_task", "title": "concise title", "bucket_key": "soon", "context_id": "uuid-or-null", "tags": ["Tag1"], "target_date": "2026-04-20 or null", "delegated_to": "name-or-null", "response": "Karl\'s response", "recognised_phrase": "the key phrase" }',
+      '// Confirm pending:',
+      '{ "intent": "confirm_pending", "response": "On it." }',
       '',
-      'Multiple captures:',
-      '{ "intent": "capture_tasks", "tasks": [{ "title": "task one", "bucket_key": "soon", "context_id": "uuid-or-null", "tags": ["Tag1"], "target_date": null, "delegated_to": null }], "summary": "X tasks found", "response": "Karl\'s response", "recognised_phrase": "the key phrase" }',
+      '// Cancel pending:',
+      '{ "intent": "cancel_pending", "response": "Cancelled." }',
       '',
-      'Completion capture:',
-      '{ "intent": "capture_completion", "title": "what was completed", "outcome": "result", "response": "Karl\'s response" }',
+      '// Preview pending:',
+      '{ "intent": "preview_pending", "response": "Here is what I have: Title — [exact title]. Bucket — [label]. Tags — [tags]. Notes — [notes]. Confirm or tell me what to change." }',
       '',
-      'Complete task step 1 (asking for outcome):',
-      '{ "intent": "question", "outcome_pending": true, "identifier": "N1", "object_type": "task", "response": "What was the result? Give me a line on what happened." }',
+      '// Open form:',
+      '{ "intent": "open_form", "response": "Opening it up for you." }',
       '',
-      'Complete task step 2 (after outcome provided):',
-      '{ "intent": "update_object", "object_type": "task", "identifier": "N1", "operations": [{ "field": "is_completed", "value": "true" }, { "field": "outcome", "value": "user\'s outcome text" }], "response": "I\'ll mark that done and log the outcome." }',
+      '// Update existing object:',
+      '{ "intent": "pending", "action": "update_object", "object_type": "task", "identifier": "N3", "operations": [{ "field": "bucket_key", "value": "soon" }], "response": "I will move N3 to Up Next. Confirm?" }',
       '',
-      'Delegate — asking who:',
-      '{ "intent": "question", "delegation_pending": true, "identifier": "N1", "object_type": "task", "response": "Who\'s handling this? Say \'skip\' if you don\'t need to track." }',
+      '// Complete task step 1:',
+      '{ "intent": "question", "outcome_pending": true, "identifier": "N1", "object_type": "task", "response": "What was the result?" }',
       '',
-      'Delegate — with person (name resolved server-side):',
-      '{ "intent": "update_object", "object_type": "task", "identifier": "N1", "operations": [{ "field": "bucket_key", "value": "delegate" }, { "field": "delegated_to", "value": "Sarah" }], "response": "I\'ll move this to Delegate, assigned to Sarah." }',
+      '// Delegation — missing person:',
+      '{ "intent": "question", "delegation_pending": true, "identifier": "N1", "object_type": "task", "response": "Who is handling this?" }',
       '',
-      'Update object:',
-      '{ "intent": "update_object", "object_type": "task", "identifier": "N3", "operations": [{ "field": "bucket_key", "value": "soon" }], "response": "Karl\'s summary of what will change" }',
+      '// Process document:',
+      '{ "intent": "pending", "action": "process_document", "content_type": "transcript", "doc_action": "complete_meeting", "target_identifier": "MT1", "summary": "summary text", "extracted_tasks": [], "response": "Here is what I found and plan to do. Confirm?" }',
+      '',
+      '// Conversational:',
+      '{ "intent": "question", "response": "Karl response" }',
       '',
       isDeep
-        ? 'Question/analysis: { "intent": "question", "response": "Karl\'s response", "observation": "pattern note", "observation_type": "pattern" }'
-        : 'Question/command/unclear: { "intent": "question", "response": "Karl\'s response" }',
+        ? '// Analysis: { "intent": "question", "response": "Karl response", "observation": "pattern note", "observation_type": "pattern" }'
+        : '',
     ].filter(Boolean).join('\n');
 
-    // ── Call Anthropic ────────────────────────────────────────────────────
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -598,7 +494,7 @@ export async function routeCommand(
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: isDeep ? 1500 : isDocumentInput(input) ? 2000 : 800,
+        max_tokens: isDeep ? 1500 : isDocumentInput(input) ? 2000 : 1000,
         system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
         messages: anthropicMessages,
       }),
@@ -607,226 +503,155 @@ export async function routeCommand(
     const rawData = await res.json();
     const usage = rawData.usage;
     if (usage) console.log('[commandRouter] tokens:', {
-      input:       usage.input_tokens,
-      output:      usage.output_tokens,
+      input: usage.input_tokens, output: usage.output_tokens,
       cache_write: usage.cache_creation_input_tokens ?? 0,
-      cache_read:  usage.cache_read_input_tokens ?? 0,
+      cache_read: usage.cache_read_input_tokens ?? 0,
     });
 
     const text = rawData.content?.[0]?.text ?? '';
-
     let parsed: any;
     try {
-      const clean = text.replace(/```json|```/g, '').trim();
-      parsed = JSON.parse(clean);
+      parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
     } catch {
-      return { intent: 'unclear', response: "I didn't quite get that. Can you rephrase?" };
+      return { intent: 'unclear', response: "Something went wrong parsing that. Try again." };
     }
 
     const intent       = parsed.intent as IntentType;
     const karlResponse = parsed.response ?? "I'm not sure what to do with that.";
 
-    // ── Persist exchange ───────────────────────────────────────────────────
     await appendSessionMessage(user_id, 'user', input);
     await appendSessionMessage(user_id, 'karl', karlResponse);
 
-    // ── Write vocab (fire and forget) ─────────────────────────────────────
-    if (parsed.recognised_phrase && (intent === 'capture_task' || intent === 'capture_tasks')) {
-      upsertKarlVocab(user_id, parsed.recognised_phrase, intent, 'task').catch(err =>
-        console.error('[commandRouter] vocab write failed:', err)
-      );
+    if (parsed.recognised_phrase && (intent === 'pending' || intent === 'execute') && (parsed.action === 'capture_task' || parsed.action === 'capture_tasks')) {
+      upsertKarlVocab(user_id, parsed.recognised_phrase, intent, 'task').catch(() => {});
     }
 
-    // ── Write observation after analysis (fire and forget) ────────────────
     if (isDeep && parsed.observation) {
       const obsType = (['pattern', 'preference', 'flag'] as const).includes(parsed.observation_type)
         ? parsed.observation_type as 'pattern' | 'preference' | 'flag'
         : 'pattern';
-      writeKarlObservation(user_id, parsed.observation, obsType).catch(err =>
-        console.error('[commandRouter] observation write failed:', err)
-      );
+      writeKarlObservation(user_id, parsed.observation, obsType).catch(() => {});
     }
 
-    // ── capture_task — enrich with tag suggestions + resolve delegated_to ──
-    if (intent === 'capture_task') {
-      const karlTags: string[] = (parsed.tags ?? []).filter(
-        (t: string) => !rejectedTags.includes(t)
-      );
+    if (parsed.field_learning?.object_type && parsed.field_learning?.field && parsed.field_learning?.llm_notes) {
+      updateFieldLlmNotes(user_id, parsed.field_learning.object_type, parsed.field_learning.field, parsed.field_learning.llm_notes).catch(() => {});
+    }
 
-      const suggestedTags     = await suggestTagsForCapture(user_id, parsed.title, karlTags);
-      const filteredSuggested = suggestedTags.filter(t => !rejectedTags.includes(t));
-      const allTags           = Array.from(new Set([...karlTags, ...filteredSuggested])).slice(0, 5);
-
-      // Resolve delegated_to name → People tag_id
-      let delegatedToId: string | null = null;
-      let delegatedToName: string | null = null;
-      if (parsed.bucket_key === 'delegate' && parsed.delegated_to) {
-        const resolved = await resolveDelegatee(user_id, parsed.delegated_to);
-        if (resolved) {
-          delegatedToId   = resolved.tag_id;
-          delegatedToName = resolved.name;
-        } else {
-          // Create a new People tag for this person
-          const created = await createPeopleTag(user_id, parsed.delegated_to);
-          if (created) {
-            delegatedToId   = created.tag_id;
-            delegatedToName = created.name;
-          }
-        }
-      }
-
-      const tagMention = allTags.length > 0
-        ? ` Tagged: ${allTags.map(t => `#${t}`).join(' ')}.`
-        : ' No tags — will land in capture.';
-
-      const delegateMention = delegatedToName
-        ? ` Delegated to: ${delegatedToName}.`
-        : parsed.bucket_key === 'delegate' ? ' No delegee — assigning to Other.' : '';
-
-      // If delegate but no resolved delegee, fall back to Other
-      if (parsed.bucket_key === 'delegate' && !delegatedToId) {
-        const other = await resolveOtherTag(user_id);
-        if (other) { delegatedToId = other.tag_id; delegatedToName = other.name; }
-      }
-
-      const enrichedResponse = karlResponse.replace(/\.$/, '') + tagMention + delegateMention;
-      await appendSessionMessage(user_id, 'karl', enrichedResponse);
-
+    // ── execute — immediate capture, no confirm needed ─────────────────────
+    if (intent === 'execute') {
       return {
-        intent: 'capture_task',
+        intent: 'execute',
         payload: {
+          action:       parsed.action ?? 'capture_task',
           title:        parsed.title,
-          bucket_key:   parsed.bucket_key  ?? 'capture',
-          context_id:   parsed.context_id  ?? null,
-          tags:         allTags,
+          bucket_key:   parsed.bucket_key ?? 'capture',
+          context_id:   parsed.context_id ?? null,
+          tags:         parsed.tags ?? [],
+          notes:        parsed.notes ?? null,
           target_date:  parsed.target_date ?? null,
-          delegated_to: delegatedToId,
+          delegated_to: parsed.delegated_to ?? null,
         },
-        response: enrichedResponse,
+        response: karlResponse,
       };
     }
 
-    // ── capture_tasks — enrich each task ──────────────────────────────────
-    if (intent === 'capture_tasks') {
-      const tasks             = parsed.tasks ?? parsed.titles?.map((t: string) => ({ title: t })) ?? [];
-      const combinedTitles    = tasks.map((t: any) => t.title).join(', ');
-      const suggestedTags     = await suggestTagsForCapture(user_id, combinedTitles, []);
-      const filteredSuggested = suggestedTags.filter(t => !rejectedTags.includes(t));
+    // ── pending / modify_pending — enrich tags, resolve delegee ───────────
+    if (intent === 'pending' || intent === 'modify_pending') {
+      const action = parsed.action ?? 'capture_task';
 
-      const enrichedTasks = await Promise.all(tasks.map(async (task: any) => {
-        const taskTags = (task.tags ?? []).filter((t: string) => !rejectedTags.includes(t));
-        const merged   = Array.from(new Set([...taskTags, ...filteredSuggested])).slice(0, 5);
+      if (action === 'capture_task') {
+        const karlTags    = (parsed.tags ?? []).filter((t: string) => !rejectedTags.includes(t));
+        const suggested   = await suggestTagsForCapture(user_id, parsed.title ?? '', karlTags, rejectedTags);
+        const allTags     = Array.from(new Set([...karlTags, ...suggested])).slice(0, 5);
 
         let delegatedToId: string | null = null;
-        if (task.bucket_key === 'delegate') {
-          const nameHint = task.delegated_to ?? 'Other';
-          const resolved = await resolveDelegatee(user_id, nameHint);
-          if (resolved) {
-            delegatedToId = resolved.tag_id;
-          } else {
-            const created = await createPeopleTag(user_id, nameHint);
-            delegatedToId = created?.tag_id ?? null;
-          }
-          if (!delegatedToId) {
-            const other = await resolveOtherTag(user_id);
-            delegatedToId = other?.tag_id ?? null;
-          }
+        if (parsed.bucket_key === 'delegate' && parsed.delegated_to) {
+          const resolved = await resolveDelegatee(user_id, parsed.delegated_to);
+          delegatedToId  = resolved?.tag_id ?? (await createPeopleTag(user_id, parsed.delegated_to))?.tag_id ?? (await resolveOtherTag(user_id))?.tag_id ?? null;
         }
 
-        return { ...task, tags: merged, delegated_to: delegatedToId };
-      }));
+        const tagMention = allTags.length > 0 ? ` Tags: ${allTags.map((t: string) => `#${t}`).join(' ')}.` : ' No tags yet.';
+        const enrichedResponse = karlResponse.replace(/\.$/, '') + tagMention;
+        await appendSessionMessage(user_id, 'karl', enrichedResponse);
 
-      const tagMention = filteredSuggested.length > 0
-        ? ` Suggested tags: ${filteredSuggested.map(t => `#${t}`).join(' ')}.`
-        : '';
+        return {
+          intent,
+          payload: {
+            action, title: parsed.title, bucket_key: parsed.bucket_key ?? 'capture',
+            context_id: parsed.context_id ?? null, tags: allTags,
+            notes: parsed.notes ?? null, target_date: parsed.target_date ?? null,
+            delegated_to: delegatedToId,
+          },
+          response: enrichedResponse,
+        };
+      }
 
-      const enrichedResponse = karlResponse.replace(/\.$/, '') + tagMention;
+      if (action === 'capture_tasks') {
+        const tasks = parsed.tasks ?? [];
+        const combinedTitles = tasks.map((t: any) => t.title).join(', ');
+        const suggested = await suggestTagsForCapture(user_id, combinedTitles, [], rejectedTags);
+        const enrichedTasks = await Promise.all(tasks.map(async (task: any) => {
+          const taskTags = (task.tags ?? []).filter((t: string) => !rejectedTags.includes(t));
+          const merged   = Array.from(new Set([...taskTags, ...suggested])).slice(0, 5);
+          return { ...task, tags: merged };
+        }));
+        return {
+          intent,
+          payload: { action, tasks: enrichedTasks },
+          response: karlResponse,
+        };
+      }
 
-      return {
-        intent: 'capture_tasks',
-        payload: { tasks: enrichedTasks, summary: parsed.summary ?? `${enrichedTasks.length} tasks` },
-        response: enrichedResponse,
-      };
-    }
-
-    // ── capture_completion ─────────────────────────────────────────────────
-    if (intent === 'capture_completion') {
-      return {
-        intent: 'capture_completion',
-        payload: { title: parsed.title, outcome: parsed.outcome ?? '' },
-        response: karlResponse,
-      };
-    }
-
-    // ── update_object — resolve delegated_to name if present ──────────────
-    if (intent === 'update_object') {
-      const operations: UpdateOperation[] = parsed.operations ?? [];
-
-      // Find any delegated_to operation and resolve the name to a tag_id
-      const resolvedOps = await Promise.all(operations.map(async (op: UpdateOperation) => {
-        if (op.field === 'delegated_to' && typeof op.value === 'string') {
-          const resolved = await resolveDelegatee(user_id, op.value);
-          if (resolved) {
-            return { ...op, value: resolved.tag_id, _resolved_name: resolved.name };
+      if (action === 'update_object') {
+        // Resolve delegated_to names in operations
+        const operations = await Promise.all((parsed.operations ?? []).map(async (op: any) => {
+          if (op.field === 'delegated_to' && typeof op.value === 'string') {
+            const resolved = await resolveDelegatee(user_id, op.value)
+              ?? await createPeopleTag(user_id, op.value)
+              ?? await resolveOtherTag(user_id);
+            return resolved ? { ...op, value: resolved.tag_id, _resolved_name: resolved.name } : op;
           }
-          // Name not found — create a new People tag
-          const created = await createPeopleTag(user_id, op.value);
-          if (created) {
-            return { ...op, value: created.tag_id, _resolved_name: created.name };
-          }
-          // Last resort: Other
-          const other = await resolveOtherTag(user_id);
-          return other
-            ? { ...op, value: other.tag_id, _resolved_name: other.name }
-            : op;
-        }
-        return op;
-      }));
+          return op;
+        }));
+        return {
+          intent,
+          payload: { action, object_type: parsed.object_type, identifier: parsed.identifier, operations },
+          response: karlResponse,
+        };
+      }
 
-      return {
-        intent: 'update_object',
-        payload: {
-          object_type: parsed.object_type,
-          identifier:  parsed.identifier,
-          operations:  resolvedOps,
-        },
-        response: karlResponse,
-      };
+      if (action === 'process_document') {
+        return {
+          intent,
+          payload: {
+            action, content_type: parsed.content_type, doc_action: parsed.doc_action,
+            target_identifier: parsed.target_identifier ?? null,
+            summary: parsed.summary ?? null, extracted_tasks: parsed.extracted_tasks ?? [],
+          },
+          response: karlResponse,
+        };
+      }
+
+      return { intent, payload: parsed, response: karlResponse };
     }
+
+    // ── confirm_pending, cancel_pending, preview_pending, open_form ────────
+    if (intent === 'confirm_pending') return { intent: 'confirm_pending', response: karlResponse };
+    if (intent === 'cancel_pending')  return { intent: 'cancel_pending',  response: karlResponse };
+    if (intent === 'preview_pending') return { intent: 'preview_pending', response: karlResponse };
+    if (intent === 'open_form')       return { intent: 'open_form',       response: karlResponse };
 
     // ── command ────────────────────────────────────────────────────────────
     if (intent === 'command' && parsed.command_type === 'open_tag_manager') {
-      return {
-        intent: 'command',
-        payload: { command_type: 'open_tag_manager' },
-        response: parsed.response ?? 'Opening tag manager.',
-      };
+      return { intent: 'command', payload: { command_type: 'open_tag_manager' }, response: parsed.response ?? 'Opening tag manager.' };
     }
 
-    // ── question with outcome_pending ──────────────────────────────────────
+    // ── question variants ──────────────────────────────────────────────────
     if (intent === 'question' && parsed.outcome_pending) {
-      return {
-        intent: 'question',
-        payload: {
-          outcome_pending: true,
-          identifier:      parsed.identifier,
-          object_type:     parsed.object_type,
-        },
-        response: karlResponse,
-      };
+      return { intent: 'question', payload: { outcome_pending: true, identifier: parsed.identifier, object_type: parsed.object_type }, response: karlResponse };
     }
-
-    // ── question with delegation_pending ──────────────────────────────────
     if (intent === 'question' && parsed.delegation_pending) {
-      return {
-        intent: 'question',
-        payload: {
-          delegation_pending: true,
-          identifier:         parsed.identifier,
-          object_type:        parsed.object_type,
-        },
-        response: karlResponse,
-      };
+      return { intent: 'question', payload: { delegation_pending: true, identifier: parsed.identifier, object_type: parsed.object_type }, response: karlResponse };
     }
 
     return { intent, response: karlResponse };

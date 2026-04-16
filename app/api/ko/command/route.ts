@@ -1,5 +1,6 @@
 // app/api/ko/command/route.ts
-// KarlOps L — Command execution route
+// KarlOps L — Command execution route v0.7.0
+// Karl decides everything. Route just executes.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createSupabaseAdmin } from '@/lib/supabase-server';
@@ -17,8 +18,8 @@ async function getUser(req: NextRequest) {
 }
 
 const BUCKET_LABEL: Record<string, string> = {
-  now:      'On Fire (now)',
-  soon:     'Up Next (soon)',
+  now:      'On Fire',
+  soon:     'Up Next',
   realwork: 'Real Work',
   later:    'Later',
   delegate: 'Delegated',
@@ -26,17 +27,9 @@ const BUCKET_LABEL: Record<string, string> = {
 };
 
 const BUCKET_PREFIX_MAP: Record<string, string> = {
-  N:  'now',
-  S:  'soon',
-  RW: 'realwork',
-  L:  'later',
-  D:  'delegate',
-  CP: 'capture',
-  CM: 'completion',
-  MT: 'meeting',
-  EX: 'external_reference',
-  TM: 'document_template',
-  CT: 'contact',
+  N: 'now', S: 'soon', RW: 'realwork', L: 'later', D: 'delegate',
+  CP: 'capture', CM: 'completion', MT: 'meeting',
+  EX: 'external_reference', TM: 'document_template', CT: 'contact',
 };
 
 function parseIdentifier(identifier: string): { prefix: string; index: number } | null {
@@ -45,11 +38,7 @@ function parseIdentifier(identifier: string): { prefix: string; index: number } 
   return { prefix: match[1], index: parseInt(match[2], 10) };
 }
 
-async function resolveIdentifier(
-  user_id: string,
-  identifier: string,
-  object_type: string
-): Promise<string | null> {
+async function resolveIdentifier(user_id: string, identifier: string, object_type: string): Promise<string | null> {
   const db = createSupabaseAdmin();
   const parsed = parseIdentifier(identifier);
   if (!parsed) return null;
@@ -59,71 +48,40 @@ async function resolveIdentifier(
 
   if (object_type === 'task') {
     if (!bucketKey || !['now', 'soon', 'realwork', 'later', 'delegate', 'capture'].includes(bucketKey)) return null;
-
-    const { data: tasks } = await db
-      .from('task')
-      .select('task_id')
-      .eq('user_id', user_id)
-      .eq('bucket_key', bucketKey)
-      .eq('is_completed', false)
-      .eq('is_archived', false)
+    const { data: tasks } = await db.from('task').select('task_id')
+      .eq('user_id', user_id).eq('bucket_key', bucketKey)
+      .eq('is_completed', false).eq('is_archived', false)
       .order('sort_order', { ascending: true, nullsFirst: false })
       .order('created_at', { ascending: true });
-
-    const task = tasks?.[index - 1];
-    return task?.task_id ?? null;
+    return tasks?.[index - 1]?.task_id ?? null;
   }
 
   const table = OBJECT_TABLE[object_type];
   const pk    = OBJECT_PK[object_type];
   if (!table || !pk) return null;
-
-  const { data: rows } = await db
-    .from(table)
-    .select(pk)
-    .eq('user_id', user_id)
-    .order('created_at', { ascending: true });
-
-  const row = rows?.[index - 1];
-  return (row as any)?.[pk] ?? null;
+  const { data: rows } = await db.from(table).select(pk).eq('user_id', user_id).order('created_at', { ascending: true });
+  return (rows?.[index - 1] as any)?.[pk] ?? null;
 }
 
 async function resolveStatusId(user_id: string, label: string): Promise<string | null> {
   const db = createSupabaseAdmin();
-  const { data } = await db
-    .from('task_status')
-    .select('task_status_id, label')
-    .eq('user_id', user_id);
-
-  if (!data) return null;
-  const match = data.find(s => s.label.toLowerCase() === label.toLowerCase());
-  return match?.task_status_id ?? null;
+  const { data } = await db.from('task_status').select('task_status_id, label').eq('user_id', user_id);
+  return data?.find(s => s.label.toLowerCase() === label.toLowerCase())?.task_status_id ?? null;
 }
 
-async function executeOperation(
-  user_id: string,
-  object_type: string,
-  record_id: string,
-  op: { field: string; value: string | string[]; tag_op?: 'add' | 'remove' }
-): Promise<string> {
+async function executeOperation(user_id: string, object_type: string, record_id: string, op: { field: string; value: string | string[]; tag_op?: 'add' | 'remove' }): Promise<string> {
   const db    = createSupabaseAdmin();
   const table = OBJECT_TABLE[object_type];
   const pk    = OBJECT_PK[object_type];
-
   if (!table || !pk) throw new Error(`Unknown object type: ${object_type}`);
 
   if (op.field === 'tags') {
     const tagName = String(op.value);
     const { data: current } = await db.from(table).select('tags').eq(pk, record_id).single();
     const currentTags: string[] = (current as any)?.tags ?? [];
-
-    let newTags: string[];
-    if (op.tag_op === 'remove') {
-      newTags = currentTags.filter(t => t !== tagName);
-    } else {
-      newTags = currentTags.includes(tagName) ? currentTags : [...currentTags, tagName].slice(0, 5);
-    }
-
+    const newTags = op.tag_op === 'remove'
+      ? currentTags.filter(t => t !== tagName)
+      : currentTags.includes(tagName) ? currentTags : [...currentTags, tagName].slice(0, 5);
     const { error } = await db.from(table).update({ tags: newTags }).eq(pk, record_id).eq('user_id', user_id);
     if (error) throw new Error(error.message);
     return op.tag_op === 'remove' ? `removed tag #${tagName}` : `added tag #${tagName}`;
@@ -142,267 +100,171 @@ async function executeOperation(
   return `${op.field} → ${op.value}`;
 }
 
-// ── process_document execution ────────────────────────────────────────────────
-async function executeProcessDocument(
-  user_id: string,
-  payload: {
-    action: string;
-    target_identifier?: string | null;
-    summary?: string | null;
-    extracted_tasks?: any[];
-    field_learning?: { object_type: string; field: string; llm_notes: string } | null;
+// ── Execute a capture_task payload ────────────────────────────────────────────
+async function executeCaptureTask(user_id: string, payload: any): Promise<NextResponse> {
+  const result = await captureTask(user_id, payload);
+  if (!result.success) throw new Error(result.error);
+
+  const bucketLabel = BUCKET_LABEL[result.task?.bucket_key ?? 'capture'] ?? result.task?.bucket_key;
+  const tagNote     = result.task?.tags?.length ? ` · ${result.task.tags.map((t: string) => `#${t}`).join(' ')}` : '';
+
+  writeKarlObservation(user_id, `Captured: "${result.task?.title}" → ${bucketLabel}${tagNote}`, 'pattern').catch(() => {});
+
+  return NextResponse.json({
+    success: true,
+    intent:  'capture_task',
+    task:    result.task,
+    task_id: result.task_id,
+    response: `Captured — **${result.task?.title}** → ${bucketLabel}${tagNote}.`,
+    offer_preview: true,
+  });
+}
+
+// ── Execute capture_tasks payload ─────────────────────────────────────────────
+async function executeCaptureTasksBulk(user_id: string, tasks: any[]): Promise<NextResponse> {
+  const results = await Promise.all(tasks.map(t => captureTask(user_id, typeof t === 'string' ? { title: t } : t)));
+  const failed  = results.filter(r => !r.success);
+  const success = results.filter(r => r.success);
+  if (success.length === 0) throw new Error('All captures failed');
+
+  writeKarlObservation(user_id, `Bulk captured ${success.length} tasks`, 'pattern').catch(() => {});
+
+  return NextResponse.json({
+    success:  true,
+    intent:   'capture_tasks',
+    tasks:    success.map(r => r.task),
+    task_ids: success.map(r => r.task_id),
+    response: failed.length > 0
+      ? `Captured ${success.length} tasks. ${failed.length} failed.`
+      : `Captured ${success.length} task${success.length > 1 ? 's' : ''}.`,
+  });
+}
+
+// ── Execute update_object payload ─────────────────────────────────────────────
+async function executeUpdateObject(user_id: string, payload: any): Promise<NextResponse> {
+  const { object_type, identifier, operations } = payload;
+  const record_id = await resolveIdentifier(user_id, identifier, object_type);
+  if (!record_id) {
+    return NextResponse.json({ success: false, response: `Couldn't find ${identifier} — it may have moved. Try refreshing.` });
   }
-): Promise<{ response: string; refresh: boolean; tasks?: any[] }> {
+
+  // complete_task special case
+  const isComplete = operations.some((op: any) => op.field === 'is_completed' && op.value === 'true');
+  if (isComplete && object_type === 'task') {
+    const db = createSupabaseAdmin();
+    const { data: task } = await db.from('task').select('title').eq('task_id', record_id).eq('user_id', user_id).single();
+    if (!task) throw new Error(`Task ${identifier} not found`);
+
+    await db.from('task').update({ is_completed: true }).eq('task_id', record_id).eq('user_id', user_id);
+    const outcomeOp = operations.find((op: any) => op.field === 'outcome');
+    await captureCompletion(user_id, { title: task.title, outcome: outcomeOp?.value ?? '' });
+    writeKarlObservation(user_id, `Completed task via chat: "${task.title}" (${identifier})`, 'pattern').catch(() => {});
+
+    return NextResponse.json({ success: true, intent: 'update_object', response: `Done — **${task.title}** marked complete and logged.`, refresh: true });
+  }
+
+  const descriptions: string[] = [];
+  for (const op of operations) {
+    const desc = await executeOperation(user_id, object_type, record_id, op);
+    descriptions.push(desc);
+  }
+
+  writeKarlObservation(user_id, `Updated ${object_type} ${identifier}: ${descriptions.join(', ')}`, 'pattern').catch(() => {});
+
+  return NextResponse.json({ success: true, intent: 'update_object', response: `Updated **${identifier}** — ${descriptions.join(', ')}.`, refresh: true });
+}
+
+// ── Execute process_document payload ──────────────────────────────────────────
+async function executeProcessDocument(user_id: string, payload: any): Promise<NextResponse> {
   const db = createSupabaseAdmin();
   const results: string[] = [];
+  const capturedTasks: any[] = [];
 
-  // ── complete_meeting ───────────────────────────────────────────────────────
-  if (payload.action === 'complete_meeting' && payload.target_identifier) {
+  if (payload.doc_action === 'complete_meeting' && payload.target_identifier) {
     const meeting_id = await resolveIdentifier(user_id, payload.target_identifier, 'meeting');
-
     if (meeting_id && payload.summary) {
-      const { error } = await db
-        .from('meeting')
-        .update({ notes: payload.summary, is_completed: true })
-        .eq('meeting_id', meeting_id)
-        .eq('user_id', user_id);
-
-      if (error) throw new Error(error.message);
+      await db.from('meeting').update({ notes: payload.summary, is_completed: true }).eq('meeting_id', meeting_id).eq('user_id', user_id);
       results.push(`Meeting ${payload.target_identifier} completed with summary`);
     }
   }
 
-  // ── extract_tasks — capture all extracted tasks ────────────────────────────
-  const capturedTasks: any[] = [];
   if (payload.extracted_tasks?.length) {
     for (const t of payload.extracted_tasks) {
-      const result = await captureTask(user_id, {
-        title:      t.title,
-        bucket_key: t.bucket_key ?? 'capture',
-        tags:       t.tags ?? [],
-        notes:      t.notes ?? null,
-      });
+      const result = await captureTask(user_id, { title: t.title, bucket_key: t.bucket_key ?? 'capture', tags: t.tags ?? [], notes: t.notes ?? null });
       if (result.success) capturedTasks.push(result.task);
     }
-    if (capturedTasks.length) {
-      results.push(`${capturedTasks.length} task${capturedTasks.length > 1 ? 's' : ''} captured`);
-    }
+    if (capturedTasks.length) results.push(`${capturedTasks.length} task${capturedTasks.length > 1 ? 's' : ''} captured`);
   }
 
-  // ── update_notes — summary to a specific object field ─────────────────────
-  if (payload.action === 'update_notes' && payload.target_identifier && payload.summary) {
-    const object_type = payload.target_identifier.startsWith('MT') ? 'meeting'
-      : payload.target_identifier.startsWith('EX') ? 'external_reference'
-      : payload.target_identifier.startsWith('TM') ? 'document_template'
-      : 'task';
-
-    const record_id = await resolveIdentifier(user_id, payload.target_identifier, object_type);
-    if (record_id) {
-      const table = OBJECT_TABLE[object_type];
-      const pk    = OBJECT_PK[object_type];
-      await db.from(table).update({ notes: payload.summary }).eq(pk, record_id).eq('user_id', user_id);
-      results.push(`Notes updated on ${payload.target_identifier}`);
-    }
-  }
-
-  // ── field learning write-back ──────────────────────────────────────────────
   if (payload.field_learning?.object_type && payload.field_learning?.field && payload.field_learning?.llm_notes) {
-    updateFieldLlmNotes(
-      user_id,
-      payload.field_learning.object_type,
-      payload.field_learning.field,
-      payload.field_learning.llm_notes
-    ).catch(err => console.error('[executeProcessDocument] field learning failed:', err));
+    updateFieldLlmNotes(user_id, payload.field_learning.object_type, payload.field_learning.field, payload.field_learning.llm_notes).catch(() => {});
   }
 
-  writeKarlObservation(
-    user_id,
-    `User processed a document: action=${payload.action}, tasks=${capturedTasks.length}`,
-    'pattern'
-  ).catch(() => {});
+  writeKarlObservation(user_id, `Processed document: action=${payload.doc_action}, tasks=${capturedTasks.length}`, 'pattern').catch(() => {});
 
-  return {
+  return NextResponse.json({
+    success: true,
+    intent:  'process_document',
+    tasks:   capturedTasks,
     response: results.length ? results.join('. ') + '.' : 'Document processed.',
-    refresh:  capturedTasks.length > 0 || payload.action === 'complete_meeting',
-    tasks:    capturedTasks,
-  };
+    refresh:  capturedTasks.length > 0 || payload.doc_action === 'complete_meeting',
+  });
 }
+
+// ── Main POST handler ─────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
   const user = await getUser(req);
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const body = await req.json();
-  const { input, confirm, pending } = body;
+  // New: input + optional pending payload. No confirm flag.
+  const { input, pending } = body;
+
+  if (!input) return NextResponse.json({ error: 'No input provided' }, { status: 400 });
 
   try {
-    // ── Confirm a pending action ───────────────────────────────────────────
-    if (confirm && pending) {
+    // Route everything through Karl — he gets the input AND the pending payload
+    const result = await routeCommand(user.id, input, pending ?? null);
 
-      // ── Single task capture ──────────────────────────────────────────────
-      if (pending.intent === 'capture_task') {
-        const result = await captureTask(user.id, pending.payload);
-        if (!result.success) throw new Error(result.error);
-
-        const bucketLabel = BUCKET_LABEL[result.task?.bucket_key ?? 'capture'] ?? result.task?.bucket_key;
-        const tagNote = result.task?.tags?.length ? ` · tags: ${result.task.tags.join(', ')}` : '';
-
-        writeKarlObservation(
-          user.id,
-          `User captured task: "${result.task?.title}" → ${bucketLabel}${tagNote}`,
-          'pattern'
-        ).catch(err => console.error('[command/route] observation write failed:', err));
-
-        return NextResponse.json({
-          success: true,
-          intent: 'capture_task',
-          task: result.task,
-          response: `Captured — **${result.task?.title}** → ${bucketLabel}${tagNote}.`,
-        });
-      }
-
-      // ── Bulk task capture ────────────────────────────────────────────────
-      if (pending.intent === 'capture_tasks') {
-        const taskPayloads = pending.payload.tasks
-          ?? (pending.payload.titles ?? []).map((title: string) => ({ title }));
-
-        const results = await Promise.all(
-          taskPayloads.map((t: any) => captureTask(user.id, typeof t === 'string' ? { title: t } : t))
-        );
-
-        const failed  = results.filter(r => !r.success);
-        const success = results.filter(r => r.success);
-        if (success.length === 0) throw new Error('All captures failed');
-
-        const capturedTitles = success.map(r => `"${r.task?.title}"`).join(', ');
-        writeKarlObservation(
-          user.id,
-          `User bulk-captured ${success.length} task${success.length > 1 ? 's' : ''}: ${capturedTitles}`,
-          'pattern'
-        ).catch(err => console.error('[command/route] observation write failed:', err));
-
-        return NextResponse.json({
-          success: true,
-          intent: 'capture_tasks',
-          tasks: success.map(r => r.task),
-          response: failed.length > 0
-            ? `Captured ${success.length} task${success.length > 1 ? 's' : ''}. ${failed.length} failed.`
-            : `Captured ${success.length} task${success.length > 1 ? 's' : ''}.`,
-        });
-      }
-
-      // ── Standalone completion capture ────────────────────────────────────
-      if (pending.intent === 'capture_completion') {
-        const result = await captureCompletion(user.id, {
-          title:   pending.payload.title,
-          outcome: pending.payload.outcome ?? '',
-        });
-        if (!result.success) throw new Error(result.error);
-
-        writeKarlObservation(
-          user.id,
-          `User logged completion: "${result.completion?.title}"${pending.payload.outcome ? ` — outcome: "${pending.payload.outcome}"` : ''}`,
-          'pattern'
-        ).catch(err => console.error('[command/route] observation write failed:', err));
-
-        return NextResponse.json({
-          success: true,
-          intent: 'capture_completion',
-          completion: result.completion,
-          response: `Logged — **${result.completion?.title}** is in your evidence record.`,
-        });
-      }
-
-      // ── process_document confirm ─────────────────────────────────────────
-      if (pending.intent === 'process_document') {
-        const result = await executeProcessDocument(user.id, pending.payload);
-        return NextResponse.json({
-          success: true,
-          intent: 'process_document',
-          tasks: result.tasks,
-          response: result.response,
-          refresh: result.refresh,
-        });
-      }
-
-      // ── update_object ────────────────────────────────────────────────────
-      if (pending.intent === 'update_object') {
-        const { object_type, identifier, operations } = pending.payload;
-
-        const record_id = await resolveIdentifier(user.id, identifier, object_type);
-        if (!record_id) {
-          return NextResponse.json({
-            success: false,
-            response: `Couldn't resolve ${identifier} — it may have moved or been completed. Try refreshing.`,
-          });
-        }
-
-        // ── complete_task special case ─────────────────────────────────────
-        const isComplete = operations.some(
-          (op: any) => op.field === 'is_completed' && op.value === 'true'
-        );
-
-        if (isComplete && object_type === 'task') {
-          const db = createSupabaseAdmin();
-
-          const { data: task } = await db
-            .from('task')
-            .select('title')
-            .eq('task_id', record_id)
-            .eq('user_id', user.id)
-            .single();
-
-          if (!task) throw new Error(`Task ${identifier} not found`);
-
-          await db.from('task')
-            .update({ is_completed: true })
-            .eq('task_id', record_id)
-            .eq('user_id', user.id);
-
-          const outcomeOp = operations.find((op: any) => op.field === 'outcome');
-          await captureCompletion(user.id, {
-            title:   task.title,
-            outcome: outcomeOp?.value ?? '',
-          });
-
-          writeKarlObservation(
-            user.id,
-            `User completed task via chat: "${task.title}" (${identifier})`,
-            'pattern'
-          ).catch(err => console.error('[command/route] observation write failed:', err));
-
-          return NextResponse.json({
-            success: true,
-            intent: 'update_object',
-            response: `Done — **${task.title}** marked complete and logged.`,
-            refresh: true,
-          });
-        }
-
-        // ── Generic field/tag updates ──────────────────────────────────────
-        const descriptions: string[] = [];
-        for (const op of operations) {
-          const desc = await executeOperation(user.id, object_type, record_id, op);
-          descriptions.push(desc);
-        }
-
-        writeKarlObservation(
-          user.id,
-          `User updated ${object_type} ${identifier}: ${descriptions.join(', ')}`,
-          'pattern'
-        ).catch(err => console.error('[command/route] observation write failed:', err));
-
-        return NextResponse.json({
-          success: true,
-          intent: 'update_object',
-          response: `Updated **${identifier}** — ${descriptions.join(', ')}.`,
-          refresh: true,
-        });
+    // ── Karl says execute immediately (quick capture) ──────────────────────
+    if (result.intent === 'execute') {
+      const p = result.payload!;
+      if (p.action === 'capture_task') {
+        return await executeCaptureTask(user.id, p);
       }
     }
 
-    // ── Classify new input ─────────────────────────────────────────────────
-    const result = await routeCommand(user.id, input);
+    // ── Karl says confirm the pending action ───────────────────────────────
+    if (result.intent === 'confirm_pending' && pending) {
+      const action = pending.action ?? pending.intent;
+
+      if (action === 'capture_task') return await executeCaptureTask(user.id, pending);
+
+      if (action === 'capture_tasks') {
+        const tasks = pending.tasks ?? pending.payload?.tasks ?? [];
+        return await executeCaptureTasksBulk(user.id, tasks);
+      }
+
+      if (action === 'capture_completion') {
+        const compResult = await captureCompletion(user.id, { title: pending.title ?? pending.payload?.title, outcome: pending.outcome ?? pending.payload?.outcome ?? '' });
+        if (!compResult.success) throw new Error(compResult.error);
+        writeKarlObservation(user.id, `Logged completion: "${compResult.completion?.title}"`, 'pattern').catch(() => {});
+        return NextResponse.json({ success: true, intent: 'capture_completion', completion: compResult.completion, response: `Logged — **${compResult.completion?.title}**.` });
+      }
+
+      if (action === 'update_object') return await executeUpdateObject(user.id, pending);
+
+      if (action === 'process_document') return await executeProcessDocument(user.id, pending);
+    }
+
+    // ── Karl says cancel ───────────────────────────────────────────────────
+    if (result.intent === 'cancel_pending') {
+      return NextResponse.json({ success: true, intent: 'cancel_pending', response: result.response ?? 'Cancelled.' });
+    }
+
+    // ── All other intents — return Karl's response, workspace handles state ─
+    // pending, modify_pending, preview_pending, open_form, question, command, unclear
     return NextResponse.json({ success: true, ...result });
 
   } catch (err: any) {

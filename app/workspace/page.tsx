@@ -66,25 +66,6 @@ const BUCKET_ID: Record<string, string> = {
   capture:  'CP',
 };
 
-const CONFIRM_WORDS = ['yes', 'yeah', 'yep', 'yup', 'do it', 'confirm', 'ok', 'sure', 'go', 'capture it', 'add it', 'capture them', 'add them', 'all of them'];
-const DENY_WORDS    = ['no', 'nope', 'cancel', 'stop', 'nevermind', 'never mind', 'nah'];
-
-function isConfirmMatch(text: string): boolean {
-  const lower = text.toLowerCase().trim();
-  return CONFIRM_WORDS.some(w => {
-    const escaped = w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return new RegExp(`(^|\\s)${escaped}(\\s|$|[!.])`).test(lower);
-  });
-}
-
-function isDenyMatch(text: string): boolean {
-  const lower = text.toLowerCase().trim();
-  return DENY_WORDS.some(w => {
-    const escaped = w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return new RegExp(`(^|\\s)${escaped}(\\s|$|[!.])`).test(lower);
-  });
-}
-
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 
 function groupTasksByBucket(tasks: Task[]): Record<string, Task[]> {
@@ -326,6 +307,7 @@ export default function WorkspacePage() {
   const [templateCount, setTemplateCount]     = useState(0);
   const [contactCount, setContactCount]       = useState(0);
   const [selectedTask, setSelectedTask]       = useState<Task | null>(null);
+  const [pendingPreviewTaskId, setPendingPreviewTaskId] = useState<string | null>(null);
 
   // DelegateModal state — null = hidden
   const [delegateModal, setDelegateModal]     = useState<DelegateModalState | null>(null);
@@ -531,102 +513,99 @@ export default function WorkspacePage() {
     setThinking(true);
 
     try {
-      // ── Pending action in flight ─────────────────────────────────────────
-      if (pending) {
-        const isConfirm = isConfirmMatch(text);
-        const isDeny    = isDenyMatch(text);
+      // Always send to Karl — input + current pending payload
+      // Karl decides everything: confirm, cancel, modify, preview, open form, new action, conversation
+      const pendingForKarl = pending
+        ? { ...pending.payload, action: pending.intent, intent: pending.intent }
+        : null;
 
-        if (isConfirm) {
-          const res = await fetch('/api/ko/command', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
-            body: JSON.stringify({ confirm: true, pending }),
-          });
-          const data = await res.json();
-          setPending(null);
-          addMessage('assistant', data.response ?? 'Done.');
-          await refreshAfterUpdate();
-          return;
-        }
-
-        if (isDeny) {
-          setPending(null);
-          addMessage('assistant', 'Got it — cancelled.');
-          return;
-        }
-
-        // Not confirm or deny — send to Karl but keep pending alive
-        const res = await fetch('/api/ko/command', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
-          body: JSON.stringify({ input: text }),
-        });
-        const data = await res.json();
-
-        const isActionable = ['capture_task', 'capture_tasks', 'capture_completion', 'update_object'].includes(data.intent);
-        if (isActionable && data.payload) {
-          setPending({ intent: data.intent, payload: data.payload, summary: buildPendingSummary(data) });
-        }
-
-        if (data.intent === 'command' && data.payload?.command_type === 'open_tag_manager') {
-          setShowTagManager(true);
-        }
-
-        // ── delegation_pending — pop DelegateModal for the task ────────────
-        if (data.intent === 'question' && data.payload?.delegation_pending) {
-          const taskId = resolveIdentifierToTaskId(data.payload.identifier);
-          if (taskId) {
-            const task = tasks.find(t => t.id === taskId);
-            if (task) {
-              setDelegateModal({
-                taskId: task.id,
-                taskTitle: task.title,
-                preselectedTagId: data.payload.preselected_tag_id ?? null,
-                preselectedName:  data.payload.preselected_name  ?? null,
-                mode: 'update',
-              });
-            }
-          }
-        }
-
-        addMessage('assistant', data.response ?? "I'm not sure what to do with that.");
-        return;
-      }
-
-      // ── No pending — normal classification flow ───────────────────────────
       const res = await fetch('/api/ko/command', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
-        body: JSON.stringify({ input: text }),
+        body: JSON.stringify({ input: text, pending: pendingForKarl }),
       });
       const data = await res.json();
 
-      const isActionable = ['capture_task', 'capture_tasks', 'capture_completion', 'update_object'].includes(data.intent);
-      if (isActionable && data.payload) {
-        setPending({ intent: data.intent, payload: data.payload, summary: buildPendingSummary(data) });
-      } else {
+      // ── Karl executed immediately (quick capture) ────────────────────
+      if (data.intent === 'execute') {
         setPending(null);
+        addMessage('assistant', data.response ?? 'Done.');
+        await refreshAfterUpdate();
+        if (data.offer_preview && data.task_id) setPendingPreviewTaskId(data.task_id);
+        return;
       }
 
+      // ── Karl confirmed and executed the pending action ───────────────
+      if (data.intent === 'confirm_pending') {
+        setPending(null);
+        addMessage('assistant', data.response ?? 'Done.');
+        await refreshAfterUpdate();
+        if (data.offer_preview && data.task_id) setPendingPreviewTaskId(data.task_id);
+        return;
+      }
+
+      // ── Karl cancelled ───────────────────────────────────────────────
+      if (data.intent === 'cancel_pending') {
+        setPending(null);
+        addMessage('assistant', data.response ?? 'Cancelled.');
+        return;
+      }
+
+      // ── Karl modified pending — update payload, keep pending ─────────
+      if (data.intent === 'modify_pending') {
+        const summary = data.payload?.title ?? data.payload?.tasks?.length
+          ? `${data.payload.tasks?.length} tasks`
+          : 'modified action';
+        setPending({ intent: data.payload?.action ?? 'capture_task', payload: data.payload ?? {}, summary });
+        addMessage('assistant', data.response ?? 'Updated.');
+        return;
+      }
+
+      // ── Karl previewed — show response, keep pending alive ───────────
+      if (data.intent === 'preview_pending') {
+        addMessage('assistant', data.response ?? '...');
+        return;
+      }
+
+      // ── Karl wants to open the form ──────────────────────────────────
+      if (data.intent === 'open_form') {
+        addMessage('assistant', data.response ?? 'Opening it up.');
+        setShowTaskAdd(true);
+        return;
+      }
+
+      // ── Karl proposes a new pending action ───────────────────────────
+      if (data.intent === 'pending') {
+        const summary = data.payload?.title
+          ?? (data.payload?.tasks?.length ? `${data.payload.tasks.length} tasks` : 'pending action');
+        setPending({ intent: data.payload?.action ?? 'capture_task', payload: data.payload ?? {}, summary });
+        addMessage('assistant', data.response ?? '...');
+        return;
+      }
+
+      // ── System commands ──────────────────────────────────────────────
       if (data.intent === 'command' && data.payload?.command_type === 'open_tag_manager') {
         setShowTagManager(true);
+        addMessage('assistant', data.response ?? 'Opening tag manager.');
+        return;
       }
 
-      // ── delegation_pending — pop DelegateModal ────────────────────────────
+      // ── Delegation pending — pop DelegateModal ───────────────────────
       if (data.intent === 'question' && data.payload?.delegation_pending) {
         const taskId = resolveIdentifierToTaskId(data.payload.identifier);
         if (taskId) {
           const task = tasks.find(t => t.id === taskId);
           if (task) {
-            setDelegateModal({
-              taskId: task.id,
-              taskTitle: task.title,
-              preselectedTagId: data.payload.preselected_tag_id ?? null,
-              preselectedName:  data.payload.preselected_name  ?? null,
-              mode: 'update',
-            });
+            setDelegateModal({ taskId: task.id, taskTitle: task.title, preselectedTagId: data.payload.preselected_tag_id ?? null, preselectedName: data.payload.preselected_name ?? null, mode: 'update' });
           }
         }
+      }
+
+      // ── Conversational — don't clear pending unless Karl returned a
+      //    genuinely new actionable intent ─────────────────────────────
+      const isActionable = ['capture_task', 'capture_tasks', 'capture_completion', 'update_object', 'process_document'].includes(data.intent);
+      if (isActionable && data.payload) {
+        setPending({ intent: data.intent, payload: data.payload, summary: buildPendingSummary(data) });
       }
 
       addMessage('assistant', data.response ?? "I'm not sure what to do with that.");
@@ -636,46 +615,6 @@ export default function WorkspacePage() {
     } finally {
       setThinking(false);
     }
-  };
-
-  // ── Resolve identifier (e.g. "D1") to a task_id ───────────────────────────
-  // Identifiers are computed at display time from bucket position
-  const resolveIdentifierToTaskId = (identifier: string): string | null => {
-    if (!identifier) return null;
-    const upper = identifier.toUpperCase();
-
-    // Map prefix to bucket
-    const prefixMap: Record<string, string> = {
-      N: 'now', S: 'soon', RW: 'realwork', L: 'later',
-      D: 'delegate', CP: 'capture',
-    };
-
-    let bucketKey: string | null = null;
-    let indexStr = '';
-
-    // Try two-char prefix first (RW, CP)
-    for (const [prefix, bucket] of Object.entries(prefixMap)) {
-      if (upper.startsWith(prefix)) {
-        bucketKey = bucket;
-        indexStr  = upper.slice(prefix.length);
-        break;
-      }
-    }
-
-    if (!bucketKey || !indexStr) return null;
-    const idx = parseInt(indexStr, 10) - 1;
-    if (isNaN(idx) || idx < 0) return null;
-
-    const bucketTasks = tasks
-      .filter(t => t.bucket_key === bucketKey)
-      .sort((a, b) => {
-        if (a.sort_order !== null && b.sort_order !== null) return a.sort_order - b.sort_order;
-        if (a.sort_order !== null) return -1;
-        if (b.sort_order !== null) return 1;
-        return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
-      });
-
-    return bucketTasks[idx]?.id ?? null;
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -950,7 +889,23 @@ export default function WorkspacePage() {
             {pending && (
               <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: '0.75rem' }}>
                 <div style={{ padding: '0.5rem 0.75rem', background: '#0d1a0d', border: '1px solid #1a3a1a', borderRadius: '8px', fontSize: '0.75rem', color: '#4ade80' }}>
-                  Pending: <strong>{pending.summary}</strong> — say <em>yes</em> to confirm or <em>no</em> to cancel
+                  Pending: <strong>{pending.summary}</strong>
+                </div>
+              </div>
+            )}
+            {pendingPreviewTaskId && koUser && (
+              <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: '0.75rem' }}>
+                <div style={{ padding: '0.5rem 0.75rem', background: '#111', border: '1px solid #2a2a2a', borderRadius: '8px', fontSize: '0.75rem', color: '#888', display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+                  <span>Want to take a look?</span>
+                  <span
+                    onClick={() => {
+                      const t = tasks.find(t => t.id === pendingPreviewTaskId);
+                      if (t) { setSelectedTask(t); setPendingPreviewTaskId(null); }
+                      else { loadTasks(koUser.id).then(() => setPendingPreviewTaskId(null)); }
+                    }}
+                    style={{ color: '#fbbf24', cursor: 'pointer', textDecoration: 'underline' }}
+                  >open it</span>
+                  <span onClick={() => setPendingPreviewTaskId(null)} style={{ color: '#555', cursor: 'pointer' }}>✕</span>
                 </div>
               </div>
             )}
@@ -965,7 +920,7 @@ export default function WorkspacePage() {
                 value={input}
                 onChange={e => { setInput(e.target.value); e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px'; }}
                 onKeyDown={handleKeyDown}
-                placeholder={sessionReady ? (pending ? 'yes to confirm, no to cancel, or ask a question...' : 'Drop a task, ask something, or give an order...') : 'Starting up...'}
+                placeholder={sessionReady ? 'Drop a task, ask Karl anything, or give an order...' : 'Starting up...'}
                 disabled={!sessionReady || thinking}
                 rows={1}
                 style={{ flex: 1, background: '#111', border: '1px solid #222', borderRadius: '6px', color: '#e5e5e5', fontSize: '0.85rem', padding: '0.6rem 0.75rem', fontFamily: 'monospace', resize: 'none', outline: 'none', lineHeight: 1.5, minHeight: '36px', maxHeight: '120px', overflowY: 'auto', transition: 'border-color 0.15s' }}
