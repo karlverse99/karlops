@@ -617,6 +617,32 @@ export default function WorkspacePage() {
     }
   };
 
+  // ── Resolve identifier (e.g. "D1") to a task_id ───────────────────────────
+  const resolveIdentifierToTaskId = (identifier: string): string | null => {
+    if (!identifier) return null;
+    const upper = identifier.toUpperCase();
+    const prefixMap: Record<string, string> = {
+      N: 'now', S: 'soon', RW: 'realwork', L: 'later', D: 'delegate', CP: 'capture',
+    };
+    let bucketKey: string | null = null;
+    let indexStr = '';
+    for (const [prefix, bucket] of Object.entries(prefixMap)) {
+      if (upper.startsWith(prefix)) { bucketKey = bucket; indexStr = upper.slice(prefix.length); break; }
+    }
+    if (!bucketKey || !indexStr) return null;
+    const idx = parseInt(indexStr, 10) - 1;
+    if (isNaN(idx) || idx < 0) return null;
+    const bucketTasks = tasks
+      .filter(t => t.bucket_key === bucketKey)
+      .sort((a, b) => {
+        if (a.sort_order !== null && b.sort_order !== null) return a.sort_order - b.sort_order;
+        if (a.sort_order !== null) return -1;
+        if (b.sort_order !== null) return 1;
+        return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+      });
+    return bucketTasks[idx]?.id ?? null;
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSubmit(); }
   };
