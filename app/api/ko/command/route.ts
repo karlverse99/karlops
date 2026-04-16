@@ -255,7 +255,7 @@ export async function POST(req: NextRequest) {
   if (!input) return NextResponse.json({ error: 'No input provided' }, { status: 400 });
 
   try {
-    const result = await routeCommand(user.id, input, pending ?? null);
+    const result = await routeCommand(user.id, input, pending ?? null, context_filter ?? null);
 
     // ── Karl says execute immediately (quick capture) ──────────────────────
     if (result.intent === 'execute') {

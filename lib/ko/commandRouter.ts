@@ -301,7 +301,8 @@ const BUCKET_LABEL_MAP: Record<string, string> = {
 export async function routeCommand(
   user_id: string,
   input: string,
-  pending: Record<string, any> | null = null
+  pending: Record<string, any> | null = null,
+  context_filter: string | null = null
 ): Promise<RouterResult> {
   const db = createSupabaseAdmin();
 
@@ -316,7 +317,7 @@ export async function routeCommand(
     const editableFieldSummary = buildEditableFieldSummary(allMeta ?? []);
 
     const isDeep = isAnalysisRequest(input);
-    const bundle = isDeep ? await buildKarlDeepContext(user_id) : await buildKarlContext(user_id);
+    const bundle = isDeep ? await buildKarlDeepContext(user_id, context_filter) : await buildKarlContext(user_id, context_filter);
     const contextBlock = formatContextForPrompt(bundle);
     const pendingBlock = formatPendingForPrompt(pending);
 

@@ -66,7 +66,7 @@ async function buildFieldKnowledge(user_id: string): Promise<string> {
 }
 
 // ── Base context — every Karl call ────────────────────────────────────────────
-export async function buildKarlContext(user_id: string): Promise<KarlContextBundle> {
+export async function buildKarlContext(user_id: string, context_filter: string | null = null): Promise<KarlContextBundle> {
   const db = createSupabaseAdmin();
 
   const [
@@ -85,11 +85,16 @@ export async function buildKarlContext(user_id: string): Promise<KarlContextBund
       .select('messages')
       .eq('user_id', user_id).maybeSingle(),
     // FIX: include tags so Karl can see what's on each task
-    db.from('task')
-      .select('task_id, title, bucket_key, tags, sort_order')
-      .eq('user_id', user_id).eq('is_completed', false).eq('is_archived', false)
-      .order('sort_order', { ascending: true, nullsFirst: false })
-      .order('created_at', { ascending: true }),
+    // FIX: filter by context_filter so Karl's snapshot matches the UI view
+    (() => {
+      let q = db.from('task')
+        .select('task_id, title, bucket_key, tags, sort_order')
+        .eq('user_id', user_id).eq('is_completed', false).eq('is_archived', false)
+        .order('sort_order', { ascending: true, nullsFirst: false })
+        .order('created_at', { ascending: true });
+      if (context_filter) q = q.eq('context_id', context_filter);
+      return q;
+    })(),
     db.from('karl_observation')
       .select('content, observation_type')
       .eq('user_id', user_id).eq('is_active', true)
@@ -189,9 +194,9 @@ export async function buildKarlContext(user_id: string): Promise<KarlContextBund
 }
 
 // ── Deep context — analysis calls only ───────────────────────────────────────
-export async function buildKarlDeepContext(user_id: string): Promise<KarlDeepBundle> {
+export async function buildKarlDeepContext(user_id: string, context_filter: string | null = null): Promise<KarlDeepBundle> {
   const db = createSupabaseAdmin();
-  const base = await buildKarlContext(user_id);
+  const base = await buildKarlContext(user_id, context_filter);
 
   const { data: situation } = await db
     .from('user_situation').select('completion_window_days')
