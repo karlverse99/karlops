@@ -138,7 +138,7 @@ function formatFileSize(bytes: number): string {
 // Notes are preserved in the actual payload for execution.
 function buildPendingForKarl(pending: PendingAction | null): Record<string, any> | null {
   if (!pending) return null;
-  const p = { ...pending.payload, action: pending.intent, intent: pending.intent };
+const p: Record<string, any> = { ...pending.payload, action: pending.intent, intent: pending.intent };
   if (p.tasks?.length) {
     p.tasks = p.tasks.map((t: any) => {
       const { notes: _notes, ...rest } = t;
