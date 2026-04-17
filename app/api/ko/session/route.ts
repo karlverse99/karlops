@@ -27,11 +27,33 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: result.error }, { status: 500 });
     }
 
+    // Weighted random greeting from karl_greeting
+    let greeting: string | null = null;
+    try {
+      const { data: greetings } = await db
+        .from('karl_greeting')
+        .select('content, weight')
+        .eq('is_active', true);
+
+      if (greetings && greetings.length > 0) {
+        // Build weighted pool
+        const pool: string[] = [];
+        for (const g of greetings) {
+          const w = g.weight ?? 1;
+          for (let i = 0; i < w; i++) pool.push(g.content);
+        }
+        greeting = pool[Math.floor(Math.random() * pool.length)];
+      }
+    } catch (greetErr) {
+      console.error('[session] greeting fetch failed (non-fatal):', greetErr);
+    }
+
     return NextResponse.json({
       success: true,
       ko_user_id: result.ko_user_id,
       session_id: result.session_id,
       is_new_user: result.is_new_user,
+      greeting,
     });
   } catch (err: any) {
     console.error('[POST /api/ko/session]', err);

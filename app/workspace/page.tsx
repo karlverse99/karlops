@@ -357,13 +357,13 @@ export default function WorkspacePage() {
         await loadContactCount(session.user.id);
         setSessionReady(true);
 
-        setChat([{
-          role: 'assistant',
-          content: data.is_new_user
-            ? `Welcome. I'm Karl.\n\nDrop anything here — tasks, notes, things on your mind. I'll help you sort it.\n\nWhat's on the board right now?`
-            : `Back at it. What's changed?`,
-          timestamp: new Date(),
-        }]);
+setChat([{
+  role: 'assistant',
+  content: data.is_new_user
+    ? `Welcome. I'm Karl.\n\nDrop anything here — tasks, notes, things on your mind. I'll help you sort it.\n\nWhat's on the board right now?`
+    : (data.greeting ?? `Back at it. What's changed?`),
+  timestamp: new Date(),
+}]);
 
         await loadTasks(session.user.id);
 
