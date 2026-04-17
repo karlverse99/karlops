@@ -1,6 +1,6 @@
 // lib/ko/commandRouter.ts
 // KarlOps L — Intent classification and enrichment
-// v0.7.1 — prompt fixes: payload presentation, question vs pending, capture_tasks tag suggest, plain English confirmations
+// v0.7.2 — process_document payload fix: pass all fields through to executor
 
 import { createSupabaseAdmin } from '@/lib/supabase-server';
 import {
@@ -246,8 +246,6 @@ function buildObjectSummaries(meta: FieldMeta[]): string {
 }
 
 // ─── FORMAT PENDING FOR KARL ──────────────────────────────────────────────────
-// When a pending action exists, include it in Karl's system context so he
-// can reason about user input against it — modify, confirm, cancel, preview.
 
 function formatPendingForPrompt(pending: Record<string, any> | null): string {
   if (!pending) return '';
@@ -278,8 +276,13 @@ function formatPendingForPrompt(pending: Record<string, any> | null): string {
     const ops = (p.operations ?? []).map((op: any) => op.tag_op ? `${op.tag_op} tag ${op.value}` : `${op.field} → ${op.value}`).join(', ');
     lines.push(`Operations: ${ops}`);
   } else if (pending.intent === 'process_document') {
-    lines.push(`Action: ${pending.payload?.action}`);
-    if (pending.payload?.summary) lines.push(`Summary: ${pending.payload.summary}`);
+    const p = pending.payload ?? pending;
+    lines.push(`Action: ${p.action ?? p.doc_action}`);
+    lines.push(`Doc action: ${p.doc_action}`);
+    if (p.title) lines.push(`Title: ${p.title}`);
+    if (p.doc_type) lines.push(`Type: ${p.doc_type}`);
+    if (p.description) lines.push(`Description: ${p.description}`);
+    if (p.summary) lines.push(`Summary: ${p.summary}`);
   }
 
   lines.push('');
@@ -352,7 +355,7 @@ export async function routeCommand(
       : '';
 
     const systemPrompt = [
-      `You are Karl, an operational assistant inside KarlOps — a personal pressure system for getting things done. [v0.7.1]`,
+      `You are Karl, an operational assistant inside KarlOps — a personal pressure system for getting things done. [v0.7.2]`,
       `Today's date: ${new Date().toISOString().slice(0, 10)}. When a user gives a date without a year, infer the year from today. Use current year unless the date has already passed this year, in which case use next year.`,
       '',
       contextBlock,
@@ -385,7 +388,7 @@ export async function routeCommand(
       '   - Have enough data → intent: pending. Show enriched payload clearly. Let user confirm or adjust.',
       '   - Missing one critical thing (e.g. delegating without a person) → intent: question. Ask for that one thing only.',
       '4. If pending action exists and user input relates to it:',
-      '   - User confirms ("yes", "do it", "go", "yep", "ok", "sure", "correct", "looks good", "that is correct") → intent: confirm_pending',
+      '   - User confirms ("yes", "do it", "go", "yep", "ok", "sure", "correct", "looks good", "that is correct", "create it", "save it", "do this") → intent: confirm_pending',
       '   - User cancels ("no", "cancel", "stop", "nevermind", "nah") → intent: cancel_pending',
       '   - User modifies ("change the bucket", "remove that tag", "different context", "no UI/UX tag", "actually...") → intent: modify_pending with updated payload',
       '   - User asks what it looks like ("show me", "what will it look like", "preview", "what does that look like", "describe it") → intent: preview_pending',
@@ -519,8 +522,11 @@ export async function routeCommand(
       '// Delegation — missing person:',
       '{ "intent": "question", "delegation_pending": true, "identifier": "N1", "object_type": "task", "response": "Who is handling this?" }',
       '',
-      '// Process document:',
-      '{ "intent": "pending", "action": "process_document", "content_type": "transcript", "doc_action": "complete_meeting", "target_identifier": "MT1", "summary": "summary text", "extracted_tasks": [], "response": "Here is what I found:\\n[description of content]\\n\\nPlan:\\n[what I will do]\\n\\nConfirm?" }',
+      '// Process document — full payload required:',
+      '{ "intent": "pending", "action": "process_document", "content_type": "transcript", "doc_action": "complete_meeting", "target_identifier": "MT1", "summary": "summary text", "extracted_tasks": [], "response": "Here is what I found:\\n[description]\\n\\nPlan:\\n[what I will do]\\n\\nConfirm?" }',
+      '',
+      '// Process document — create template (ALL fields required):',
+      '{ "intent": "pending", "action": "process_document", "doc_action": "create_template", "title": "Template Name", "doc_type": "Script", "description": "One sentence description", "generation_instructions": "ACTUAL fill-in-the-blank template text with ___ for variable content", "data_sources": { "tasks": false, "meetings": false, "situation": false, "references": false, "completions": false }, "tags": ["Tag1"], "context_name": "Context name or null", "response": "Here is what I have:\\nTitle — [title]\\nType — [doc_type]\\nDescription — [description]\\n\\nI have built the fill-in-the-blank template from the document structure. Confirm to save, or tell me what to change." }',
       '',
       '// Conversational (question, analysis, help):',
       '{ "intent": "question", "response": "Karl response in plain English" }',
@@ -570,7 +576,6 @@ export async function routeCommand(
 
     if (!parsed) {
       console.error('[commandRouter] JSON parse failed. Raw response:', text);
-      // Karl returned pure prose -- rescue it rather than showing an error
       if (text && text.length > 10) {
         await appendSessionMessage(user_id, 'user', input);
         await appendSessionMessage(user_id, 'karl', text);
@@ -624,9 +629,6 @@ export async function routeCommand(
 
       if (action === 'capture_task') {
         const karlTags = (parsed.tags ?? []).filter((t: string) => !rejectedTags.includes(t));
-
-        // On modify_pending: trust Karl's tags exactly — user has explicitly set them.
-        // On pending: enrich with suggestions.
         const suggested = intent === 'modify_pending'
           ? []
           : await suggestTagsForCapture(user_id, parsed.title ?? '', karlTags, rejectedTags);
@@ -638,9 +640,7 @@ export async function routeCommand(
           delegatedToId  = resolved?.tag_id ?? (await createPeopleTag(user_id, parsed.delegated_to))?.tag_id ?? (await resolveOtherTag(user_id))?.tag_id ?? null;
         }
 
-        // Rebuild response with tags appended (preserves Karl's structured format)
         const tagMention = allTags.length > 0 ? `\nTags — ${allTags.map((t: string) => `#${t}`).join(' ')}` : '\nTags — none';
-        // If Karl already included tags in response, don't double-append
         const enrichedResponse = karlResponse.includes('Tags —')
           ? karlResponse
           : karlResponse.replace(/\nConfirm/, tagMention + '\n\nConfirm') || karlResponse + tagMention;
@@ -662,7 +662,6 @@ export async function routeCommand(
       if (action === 'capture_tasks') {
         const tasks = parsed.tasks ?? [];
         const combinedTitles = tasks.map((t: any) => t.title).join(', ');
-        // FIX: run tag suggest on capture_tasks, not just capture_task
         const suggested = intent === 'modify_pending'
           ? []
           : await suggestTagsForCapture(user_id, combinedTitles, [], rejectedTags);
@@ -679,7 +678,6 @@ export async function routeCommand(
       }
 
       if (action === 'update_object') {
-        // Resolve delegated_to names in operations
         const operations = await Promise.all((parsed.operations ?? []).map(async (op: any) => {
           if (op.field === 'delegated_to' && typeof op.value === 'string') {
             const resolved = await resolveDelegatee(user_id, op.value)
@@ -696,13 +694,25 @@ export async function routeCommand(
         };
       }
 
+      // ── process_document — pass ALL fields through, nothing stripped ───
       if (action === 'process_document') {
         return {
           intent,
           payload: {
-            action, content_type: parsed.content_type, doc_action: parsed.doc_action,
-            target_identifier: parsed.target_identifier ?? null,
-            summary: parsed.summary ?? null, extracted_tasks: parsed.extracted_tasks ?? [],
+            action,
+            content_type:            parsed.content_type ?? null,
+            doc_action:              parsed.doc_action ?? null,
+            target_identifier:       parsed.target_identifier ?? null,
+            summary:                 parsed.summary ?? null,
+            extracted_tasks:         parsed.extracted_tasks ?? [],
+            // template fields
+            title:                   parsed.title ?? null,
+            doc_type:                parsed.doc_type ?? null,
+            description:             parsed.description ?? null,
+            generation_instructions: parsed.generation_instructions ?? null,
+            data_sources:            parsed.data_sources ?? {},
+            tags:                    parsed.tags ?? [],
+            context_name:            parsed.context_name ?? null,
           },
           response: karlResponse,
         };
