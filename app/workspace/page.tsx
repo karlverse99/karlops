@@ -642,9 +642,16 @@ export default function WorkspacePage() {
 
     if (data.intent === 'open_form') {
       addMessage('assistant', data.response ?? 'Opening it up.');
-      // Route to appropriate modal based on payload.modal
-      const modal = data.payload?.modal ?? 'TaskAddModal';
-      if (modal === 'MeetingsModal')     setShowMeetings(true);
+      const modal      = data.payload?.modal ?? data.actions?.[0]?.modal ?? 'TaskAddModal';
+      const identifier = data.payload?.identifier ?? data.actions?.[0]?.identifier;
+      if (identifier) {
+        const taskId = resolveIdentifierToTaskId(identifier);
+        if (taskId) {
+          const task = tasks.find(t => t.id === taskId);
+          if (task) { setSelectedTask(task); return; }
+        }
+      }
+      if (modal === 'MeetingsModal')         setShowMeetings(true);
       else if (modal === 'ExtractsModal')    setShowExtracts(true);
       else if (modal === 'TemplatesModal')   setShowTemplates(true);
       else if (modal === 'ContactsModal')    setShowContacts(true);

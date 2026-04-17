@@ -96,7 +96,7 @@ export async function buildKarlContext(user_id: string, context_filter: string |
       .eq('user_id', user_id).maybeSingle(),
     (() => {
       let q = db.from('task')
-        .select('task_id, title, bucket_key, tags, notes, sort_order')
+        .select('task_id, title, bucket_key, tags, notes, sort_order, target_date, context_id, delegated_to')
         .eq('user_id', user_id).eq('is_completed', false).eq('is_archived', false)
         .order('sort_order', { ascending: true, nullsFirst: false })
         .order('created_at', { ascending: true });
@@ -118,27 +118,22 @@ export async function buildKarlContext(user_id: string, context_filter: string |
       .select('phrase, intent, object_type, use_count')
       .eq('user_id', user_id).eq('is_active', true)
       .order('use_count', { ascending: false }).limit(100),
-    // Meetings — open, most recent 15, with full notes
     db.from('meeting')
       .select('meeting_id, title, meeting_date, attendees, tags, notes, outcome')
       .eq('user_id', user_id).eq('is_completed', false)
       .order('meeting_date', { ascending: false }).limit(15),
-    // Completions — most recent 15, with outcome and description
     db.from('completion')
       .select('completion_id, title, completed_at, outcome, description, tags')
       .eq('user_id', user_id)
       .order('completed_at', { ascending: false }).limit(15),
-    // Extracts — most recent 15, with notes/content
     db.from('external_reference')
       .select('external_reference_id, title, notes, description, created_at')
       .eq('user_id', user_id)
       .order('created_at', { ascending: false }).limit(15),
-    // Templates — most recent 15, with prompt_template
     db.from('document_template')
       .select('document_template_id, name, doc_type, description, prompt_template, is_active')
       .eq('user_id', user_id).eq('is_active', true)
       .order('created_at', { ascending: false }).limit(15),
-    // Contacts — all active, with notes and contact details
     db.from('contact')
       .select('contact_id, name, email, primary_contact_method, contact_method_detail, notes')
       .eq('user_id', user_id).eq('is_archived', false)
@@ -150,21 +145,33 @@ export async function buildKarlContext(user_id: string, context_filter: string |
   const completionWin  = situation?.completion_window_days ?? 7;
   const situationBrief = situation?.brief?.trim() || '';
 
-  // Session history
   const allMessages: ChatMessage[] = sessionRes.data?.messages ?? [];
   const recentMessages = allMessages.slice(-historyDepth);
 
-  // ── Bucket snapshot — tasks with tags and notes ───────────────────────────
-  const byBucket: Record<string, { task_id: string; title: string; tags: string[]; notes: string | null }[]> = {};
+  // ── Bucket snapshot — tasks with tags, notes, target_date ─────────────────
+  const byBucket: Record<string, {
+    task_id: string;
+    title: string;
+    tags: string[];
+    notes: string | null;
+    target_date: string | null;
+    context_id: string | null;
+    delegated_to: string | null;
+  }[]> = {};
+
   for (const t of taskRes.data ?? []) {
     if (!byBucket[t.bucket_key]) byBucket[t.bucket_key] = [];
     byBucket[t.bucket_key].push({
-      task_id: t.task_id,
-      title:   t.title,
-      tags:    t.tags ?? [],
-      notes:   t.notes ?? null,
+      task_id:      t.task_id,
+      title:        t.title,
+      tags:         t.tags ?? [],
+      notes:        t.notes ?? null,
+      target_date:  t.target_date ?? null,
+      context_id:   t.context_id ?? null,
+      delegated_to: t.delegated_to ?? null,
     });
   }
+
   const bucketOrder = ['now', 'soon', 'realwork', 'later', 'delegate', 'capture'];
   const snapshotLines: string[] = [];
   for (const bucket of bucketOrder) {
@@ -176,8 +183,10 @@ export async function buildKarlContext(user_id: string, context_filter: string |
     } else {
       snapshotLines.push(`${bucket}:`);
       items.forEach((t, i) => {
-        const tagStr = t.tags.length ? ` [${t.tags.join(', ')}]` : '';
-        snapshotLines.push(`  ${prefix}${i + 1} ${t.title}${tagStr}`);
+        const tagStr  = t.tags.length ? ` [${t.tags.join(', ')}]` : '';
+        const dateStr = t.target_date ? ` · due ${t.target_date.slice(0, 10)}` : '';
+        const delStr  = t.delegated_to ? ` · delegated` : '';
+        snapshotLines.push(`  ${prefix}${i + 1} ${t.title}${tagStr}${dateStr}${delStr}`);
         if (t.notes) {
           snapshotLines.push(`    notes: ${trunc(t.notes, 300)}`);
         }
@@ -187,8 +196,6 @@ export async function buildKarlContext(user_id: string, context_filter: string |
   const bucketSnapshot = snapshotLines.join('\n') || 'no open tasks';
 
   // ── Recent completions — with CM identifiers ──────────────────────────────
-  // Build a CM index map from the full completions list (ordered by completed_at desc)
-  // so windowed recent completions can be displayed with correct CM identifiers.
   const allCompletions = completionRes.data ?? [];
   const cmIndexMap = new Map<string, number>();
   allCompletions.forEach((c, i) => cmIndexMap.set(c.completion_id, i + 1));
@@ -208,73 +215,53 @@ export async function buildKarlContext(user_id: string, context_filter: string |
       }).join('\n')
     : 'none in window';
 
-  // ── Meeting snapshot — MT identifiers with full notes ─────────────────────
+  // ── Meeting snapshot ──────────────────────────────────────────────────────
   const meetings = meetingRes.data ?? [];
   const meetingLines: string[] = [];
   meetings.forEach((m, i) => {
-    const date = m.meeting_date ? m.meeting_date.slice(0, 10) : 'no date';
+    const date        = m.meeting_date ? m.meeting_date.slice(0, 10) : 'no date';
     const attendeeStr = m.attendees?.length ? ` · attendees: ${m.attendees.join(', ')}` : '';
-    const tagStr = m.tags?.length ? ` · tags: ${m.tags.join(', ')}` : '';
+    const tagStr      = m.tags?.length ? ` · tags: ${m.tags.join(', ')}` : '';
     meetingLines.push(`MT${i + 1} ${m.title} · ${date}${attendeeStr}${tagStr}`);
-    if (m.outcome) {
-      meetingLines.push(`  outcome: ${trunc(m.outcome, 500)}`);
-    }
-    if (m.notes) {
-      meetingLines.push(`  notes: ${trunc(m.notes, 2000)}`);
-    }
+    if (m.outcome) meetingLines.push(`  outcome: ${trunc(m.outcome, 500)}`);
+    if (m.notes)   meetingLines.push(`  notes: ${trunc(m.notes, 2000)}`);
   });
   const meetingSnapshot = meetingLines.length ? meetingLines.join('\n') : 'no open meetings';
 
-  // ── FC object snapshots — CM, EX, TM, CT with full content ───────────────
+  // ── FC object snapshots ───────────────────────────────────────────────────
   const fcLines: string[] = [];
 
-  // Completions with CM identifiers and full content
   if (allCompletions.length) {
     fcLines.push('completions:');
     allCompletions.forEach((c, i) => {
-      const date = c.completed_at?.slice(0, 10) ?? '';
+      const date   = c.completed_at?.slice(0, 10) ?? '';
       const tagStr = c.tags?.length ? ` [${c.tags.join(', ')}]` : '';
       fcLines.push(`  CM${i + 1} ${c.title} · ${date}${tagStr}`);
-      if (c.outcome) {
-        fcLines.push(`    outcome: ${trunc(c.outcome, 500)}`);
-      }
-      if (c.description) {
-        fcLines.push(`    description: ${trunc(c.description, 300)}`);
-      }
+      if (c.outcome)     fcLines.push(`    outcome: ${trunc(c.outcome, 500)}`);
+      if (c.description) fcLines.push(`    description: ${trunc(c.description, 300)}`);
     });
   }
 
-  // Extracts
   const extracts = extractRes.data ?? [];
   if (extracts.length) {
     fcLines.push('extracts:');
     extracts.forEach((e, i) => {
       fcLines.push(`  EX${i + 1} ${e.title}`);
-      if (e.description) {
-        fcLines.push(`    description: ${trunc(e.description, 300)}`);
-      }
-      if (e.notes) {
-        fcLines.push(`    content: ${trunc(e.notes, 2000)}`);
-      }
+      if (e.description) fcLines.push(`    description: ${trunc(e.description, 300)}`);
+      if (e.notes)       fcLines.push(`    content: ${trunc(e.notes, 2000)}`);
     });
   }
 
-  // Templates
   const templates = templateRes.data ?? [];
   if (templates.length) {
     fcLines.push('templates:');
     templates.forEach((t, i) => {
       fcLines.push(`  TM${i + 1} ${t.name}${t.doc_type ? ` (${t.doc_type})` : ''}`);
-      if (t.description) {
-        fcLines.push(`    description: ${trunc(t.description, 200)}`);
-      }
-      if (t.prompt_template) {
-        fcLines.push(`    template: ${trunc(t.prompt_template, 2000)}`);
-      }
+      if (t.description)     fcLines.push(`    description: ${trunc(t.description, 200)}`);
+      if (t.prompt_template) fcLines.push(`    template: ${trunc(t.prompt_template, 2000)}`);
     });
   }
 
-  // Contacts
   const contacts = contactRes.data ?? [];
   if (contacts.length) {
     fcLines.push('contacts:');
@@ -284,35 +271,28 @@ export async function buildKarlContext(user_id: string, context_filter: string |
       if (c.primary_contact_method) {
         fcLines.push(`    contact via: ${c.primary_contact_method}${c.contact_method_detail ? ` (${c.contact_method_detail})` : ''}`);
       }
-      if (c.notes) {
-        fcLines.push(`    notes: ${trunc(c.notes, 300)}`);
-      }
+      if (c.notes) fcLines.push(`    notes: ${trunc(c.notes, 300)}`);
     });
   }
 
   const fcSnapshot = fcLines.join('\n') || 'no FC objects';
 
-  // Observations
   const observations = obsRes.data?.length
     ? obsRes.data.map(o => `[${o.observation_type}] ${o.content}`).join('\n')
     : '';
 
-  // Available tags
   const availableTags = tagRes.data?.length
     ? tagRes.data.map(t => t.name).join(', ')
     : 'none';
 
-  // Available contexts
   const availableContexts = contextRes.data?.length
     ? contextRes.data.map(c => `${c.name}|${c.context_id}`).join(', ')
     : 'none';
 
-  // Learned vocab
   const vocab = vocabRes.data?.length
     ? vocabRes.data.map(v => `"${v.phrase}" → ${v.intent} (${v.object_type})`).join('\n')
     : '';
 
-  // Field knowledge
   const fieldKnowledge = await buildFieldKnowledge(user_id);
 
   return {
@@ -385,24 +365,20 @@ export function formatContextForPrompt(bundle: KarlContextBundle): string {
     parts.push(`## User Situation\nNot yet configured. Encourage the user to write their situation brief.`);
   }
 
-  parts.push(`## Current Task Load\nTasks identified as BucketN (e.g. N1, S2, RW1). Tags in brackets. Notes indented below.\n${bundle.bucketSnapshot}`);
-
-  parts.push(`## Recent Completions\nCompletions are identified as CM1, CM2, etc. Always use CM identifiers when displaying or referencing completions.\n${bundle.recentCompletions}`);
-
-  parts.push(`## Open Meetings\nMeetings identified as MT1, MT2, etc. Full notes included — use them to answer questions about meeting content, suggest tasks, or complete meetings.\n${bundle.meetingSnapshot}`);
-
-  parts.push(`## Other FC Objects\nCompletions (CM), Extracts (EX), Templates (TM), Contacts (CT) with full content. Use identifiers when user refers to them.\n${bundle.fcSnapshot}`);
+  parts.push(`## Current Task Load\nTasks identified as BucketN (e.g. N1, S2, RW1). Tags in brackets. Target date shown as "due YYYY-MM-DD". Notes indented below.\n${bundle.bucketSnapshot}`);
+  parts.push(`## Recent Completions\nCompletions identified as CM1, CM2, etc.\n${bundle.recentCompletions}`);
+  parts.push(`## Open Meetings\nMeetings identified as MT1, MT2, etc. Full notes included.\n${bundle.meetingSnapshot}`);
+  parts.push(`## Other FC Objects\nCompletions (CM), Extracts (EX), Templates (TM), Contacts (CT) with full content.\n${bundle.fcSnapshot}`);
 
   if (bundle.observations) {
     parts.push(`## Karl's Observations\n${bundle.observations}`);
   }
 
-  parts.push(`## Available Tags\nExact tag names this user has created. Only use tags from this list.\n${bundle.availableTags}`);
-
-  parts.push(`## Available Contexts\nFormat: Name|context_id. Use the context_id UUID when returning context_id in JSON.\n${bundle.availableContexts}`);
+  parts.push(`## Available Tags\nOnly use tags from this list.\n${bundle.availableTags}`);
+  parts.push(`## Available Contexts\nFormat: Name|context_id. Use the UUID when returning context_id in JSON.\n${bundle.availableContexts}`);
 
   if (bundle.vocab) {
-    parts.push(`## Learned Vocabulary\nPhrases this user has used before and what they map to.\n${bundle.vocab}`);
+    parts.push(`## Learned Vocabulary\n${bundle.vocab}`);
   }
 
   if (bundle.fieldKnowledge) {
@@ -456,14 +432,12 @@ export async function updateFieldLlmNotes(
   llm_notes: string
 ): Promise<void> {
   const db = createSupabaseAdmin();
-
   const { error } = await db
     .from('ko_field_metadata')
     .update({ llm_notes })
     .eq('user_id', user_id)
     .eq('object_type', object_type)
     .eq('field', field);
-
   if (error) console.error('[updateFieldLlmNotes]', error);
   else console.log(`[updateFieldLlmNotes] updated ${object_type}.${field}`);
 }
@@ -477,19 +451,15 @@ export async function upsertKarlVocab(
 ): Promise<void> {
   const db = createSupabaseAdmin();
   const normalised = phrase.toLowerCase().trim();
-
   const { data: existing } = await db
     .from('karl_vocab').select('vocab_id, use_count')
     .eq('user_id', user_id).eq('phrase', normalised).maybeSingle();
-
   if (existing) {
     await db.from('karl_vocab')
       .update({ use_count: existing.use_count + 1, updated_at: new Date().toISOString() })
       .eq('vocab_id', existing.vocab_id);
   } else {
-    await db.from('karl_vocab').insert({
-      user_id, phrase: normalised, intent, object_type, use_count: 1,
-    });
+    await db.from('karl_vocab').insert({ user_id, phrase: normalised, intent, object_type, use_count: 1 });
   }
 }
 
@@ -500,22 +470,17 @@ export async function appendSessionMessage(
   content: string
 ): Promise<void> {
   const db = createSupabaseAdmin();
-
   const { data: session } = await db
     .from('ko_session').select('ko_session_id, messages')
     .eq('user_id', user_id).maybeSingle();
-
   if (!session) return;
-
   const { data: situation } = await db
     .from('user_situation').select('chat_history_depth')
     .eq('user_id', user_id).eq('is_active', true).maybeSingle();
-
   const maxDepth = situation?.chat_history_depth ?? 15;
   const messages: ChatMessage[] = session.messages ?? [];
   messages.push({ role, content, ts: new Date().toISOString() });
   const trimmed = messages.slice(-maxDepth * 2);
-
   await db.from('ko_session')
     .update({ messages: trimmed })
     .eq('ko_session_id', session.ko_session_id);
