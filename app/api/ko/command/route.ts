@@ -284,13 +284,9 @@ async function executeProcessDocument(user_id: string, payload: any, context_fil
     });
 
     if (meetingError) throw new Error(meetingError.message);
-
     writeKarlObservation(user_id, `Created meeting: "${payload.title}" on ${payload.meeting_date}`, 'pattern').catch(() => {});
-
     return NextResponse.json({
-      success:  true,
-      intent:   'process_document',
-      refresh:  true,
+      success: true, intent: 'process_document', refresh: true,
       response: `Meeting **${payload.title}** created. Find it in +meeting.`,
     });
   }
@@ -316,13 +312,9 @@ async function executeProcessDocument(user_id: string, payload: any, context_fil
     });
 
     if (tmplError) throw new Error(tmplError.message);
-
     writeKarlObservation(user_id, `Created template from document: "${payload.title}"`, 'pattern').catch(() => {});
-
     return NextResponse.json({
-      success:  true,
-      intent:   'process_document',
-      refresh:  true,
+      success: true, intent: 'process_document', refresh: true,
       response: `Template **${payload.title}** created. Find it in +template.`,
     });
   }
@@ -356,7 +348,6 @@ async function executeProcessDocument(user_id: string, payload: any, context_fil
   }
 
   writeKarlObservation(user_id, `Processed document: action=${payload.doc_action}, tasks=${capturedTasks.length}`, 'pattern').catch(() => {});
-
   return NextResponse.json({
     success: true, intent: 'process_document', tasks: capturedTasks,
     response: results.length ? results.join('. ') + '.' : 'Document processed.',
@@ -408,7 +399,6 @@ export async function POST(req: NextRequest) {
     const filePrompt = buildFilePrompt(extracted, userHint);
     const result = await routeCommand(user.id, filePrompt, pending ?? null, context_filter ?? null);
 
-    // Self-teaching: Karl records what user asked vs what he classified
     const classifiedAction = result.payload?.doc_action ?? result.payload?.action ?? result.intent;
     writeKarlObservation(
       user.id,
@@ -422,7 +412,6 @@ export async function POST(req: NextRequest) {
       result.response = (result.response ?? '') + `\n\n(Skipped: ${errors.join(', ')})`;
     }
 
-    // Explicit shape — never spread result directly
     return NextResponse.json({
       success:  true,
       intent:   result.intent,
@@ -443,16 +432,23 @@ export async function POST(req: NextRequest) {
     }
 
     if (result.intent === 'confirm_pending' && pending) {
-      // Flatten nested payload — workspace sends { ...pending.payload, action, intent }
+      // ── Flatten nested payload ─────────────────────────────────────────────
+      // workspace sends { ...pending.payload, action: pending.intent, intent: pending.intent }
+      // This means action label can be wrong (singular vs plural) — never trust it alone.
       const flat = pending.payload ? { ...pending.payload, ...pending } : pending;
       const action = flat.action ?? flat.intent;
 
-      if (action === 'capture_task')    return await executeCaptureTask(user.id, flat);
-
-      if (action === 'capture_tasks') {
-        const tasks = flat.tasks ?? flat.payload?.tasks ?? [];
+      // ── Tasks array present → always bulk, regardless of action label ──────
+      // This is the critical fix: capture_tasks pending gets action='capture_task'
+      // (singular) because pending.intent='capture_task' overwrites. Check tasks
+      // array first so we never misroute a bulk capture to the single executor.
+      const tasks = flat.tasks ?? flat.payload?.tasks ?? [];
+      if (tasks.length > 0) {
         return await executeCaptureTasksBulk(user.id, tasks);
       }
+
+      if (action === 'capture_task')    return await executeCaptureTask(user.id, flat);
+      if (action === 'capture_tasks')   return await executeCaptureTasksBulk(user.id, tasks);
 
       if (action === 'capture_completion') {
         const compResult = await captureCompletion(user.id, {
@@ -476,7 +472,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: true, intent: 'cancel_pending', response: result.response ?? 'Cancelled.' });
     }
 
-    // Explicit shape on all paths
     return NextResponse.json({
       success:  true,
       intent:   result.intent,
