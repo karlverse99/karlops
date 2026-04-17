@@ -1,5 +1,5 @@
 // app/api/ko/command/route.ts
-// KarlOps L — Command execution route v0.7.2
+// KarlOps L — Command execution route v0.7.3
 // Karl decides everything. Route just executes.
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -61,8 +61,6 @@ async function extractTextFromFile(base64: string, mimeType: string): Promise<st
   return buffer.toString('utf-8').trim();
 }
 
-// ── Resolve MIME type from extension fallback ─────────────────────────────────
-
 function resolveFileType(name: string, type: string): string {
   if (SUPPORTED_TYPES[type]) return type;
   const ext = '.' + (name.split('.').pop()?.toLowerCase() ?? '');
@@ -70,8 +68,6 @@ function resolveFileType(name: string, type: string): string {
 }
 
 // ── Build Karl's file prompt ──────────────────────────────────────────────────
-// User hint is a HARD INSTRUCTION placed first — Karl must honor it.
-// Document content follows and informs execution, not intent.
 
 function buildFilePrompt(files: Array<{ name: string; type: string; text: string }>, userHint: string): string {
   const fileBlocks = files.map((f, i) =>
@@ -85,10 +81,11 @@ function buildFilePrompt(files: Array<{ name: string; type: string; text: string
 The user has explicitly said: "${userHint}"
 You MUST use this to determine doc_action. Do NOT override based on document content.
 - "summarize" / "summary" / "what's in this" → doc_action: summarize
-- "extract tasks" / "pull tasks" / "what are the tasks" → capture_tasks intent
-- "make a template" / "create a template" / "turn into a template" → doc_action: create_template
-- "log as completion" / "mark done" / "i completed this" → capture_completion intent
+- "extract tasks" / "pull tasks" → capture_tasks intent
+- "make a template" / "create a template" → doc_action: create_template
+- "log as completion" / "mark done" → capture_completion intent
 - "complete the meeting" / "close out meeting" → doc_action: complete_meeting
+- "create a meeting" / "log a meeting" / "add a meeting" → doc_action: create_meeting
 The document content tells you HOW to execute. The user instruction tells you WHAT to do.`
     : `## NO USER INSTRUCTION PROVIDED
 The user dropped a file without saying what they want.
@@ -111,13 +108,21 @@ If doc_action is summarize, payload MUST include:
 - summary: comprehensive summary of the document(s)
 - description: one sentence overview
 
+If doc_action is create_meeting, payload MUST include:
+- title: meeting title
+- meeting_date: ISO datetime (YYYY-MM-DDTHH:MM:SS)
+- attendees: array of people names
+- notes: meeting notes/summary from the document
+- tags: relevant tags (max 5)
+- context_name: context name if identifiable
+
 If doc_action is create_template, payload MUST include:
 - title: template name
-- doc_type: short type classifier (e.g. "Complaint Letter", "Executive Summary", "Script")
-- description: one sentence — what this template is for
-- generation_instructions: the ACTUAL fill-in-the-blank template with ___ for variable content — preserve structure and headings from source
+- doc_type: short type classifier
+- description: one sentence
+- generation_instructions: ACTUAL fill-in-the-blank template with ___ for variable content
 - data_sources: { tasks: bool, meetings: bool, situation: bool, references: bool, completions: bool }
-- tags: relevant tags from user's existing tags (max 5)
+- tags: relevant tags (max 5)
 - context_name: context name if identifiable`;
 }
 
@@ -151,6 +156,13 @@ async function resolveStatusId(user_id: string, label: string): Promise<string |
   const db = createSupabaseAdmin();
   const { data } = await db.from('task_status').select('task_status_id, label').eq('user_id', user_id);
   return data?.find(s => s.label.toLowerCase() === label.toLowerCase())?.task_status_id ?? null;
+}
+
+async function resolveContextId(user_id: string, contextName: string): Promise<string | null> {
+  if (!contextName) return null;
+  const db = createSupabaseAdmin();
+  const { data } = await db.from('context').select('context_id').eq('user_id', user_id).ilike('name', contextName).single();
+  return data?.context_id ?? null;
 }
 
 async function executeOperation(user_id: string, object_type: string, record_id: string, op: { field: string; value: string | string[]; tag_op?: 'add' | 'remove' }): Promise<string> {
@@ -254,13 +266,41 @@ async function executeUpdateObject(user_id: string, payload: any, context_filter
 async function executeProcessDocument(user_id: string, payload: any, context_filter?: string | null): Promise<NextResponse> {
   const db = createSupabaseAdmin();
 
+  // ── create_meeting ─────────────────────────────────────────────────────────
+  if (payload.doc_action === 'create_meeting') {
+    const context_id = payload.context_name
+      ? await resolveContextId(user_id, payload.context_name)
+      : null;
+
+    const { error: meetingError } = await db.from('meeting').insert({
+      user_id,
+      title:        payload.title ?? 'Untitled Meeting',
+      meeting_date: payload.meeting_date ?? new Date().toISOString(),
+      attendees:    payload.attendees ?? [],
+      notes:        payload.notes ?? null,
+      tags:         payload.tags ?? [],
+      context_id,
+      is_completed: false,
+    });
+
+    if (meetingError) throw new Error(meetingError.message);
+
+    writeKarlObservation(user_id, `Created meeting: "${payload.title}" on ${payload.meeting_date}`, 'pattern').catch(() => {});
+
+    return NextResponse.json({
+      success:  true,
+      intent:   'process_document',
+      refresh:  true,
+      response: `Meeting **${payload.title}** created. Find it in +meeting.`,
+    });
+  }
+
   // ── create_template ────────────────────────────────────────────────────────
   if (payload.doc_action === 'create_template') {
-    let context_id: string | null = null;
-    if (payload.context_name) {
-      const { data: ctx } = await db.from('context').select('context_id').eq('user_id', user_id).ilike('name', payload.context_name).single();
-      context_id = ctx?.context_id ?? null;
-    }
+    const context_id = payload.context_name
+      ? await resolveContextId(user_id, payload.context_name)
+      : null;
+
     const { error: tmplError } = await db.from('document_template').insert({
       user_id,
       name:            payload.title ?? 'Untitled Template',
@@ -274,10 +314,15 @@ async function executeProcessDocument(user_id: string, payload: any, context_fil
       is_active:       true,
       is_system:       false,
     });
+
     if (tmplError) throw new Error(tmplError.message);
+
     writeKarlObservation(user_id, `Created template from document: "${payload.title}"`, 'pattern').catch(() => {});
+
     return NextResponse.json({
-      success: true, intent: 'process_document', refresh: true,
+      success:  true,
+      intent:   'process_document',
+      refresh:  true,
       response: `Template **${payload.title}** created. Find it in +template.`,
     });
   }
@@ -311,6 +356,7 @@ async function executeProcessDocument(user_id: string, payload: any, context_fil
   }
 
   writeKarlObservation(user_id, `Processed document: action=${payload.doc_action}, tasks=${capturedTasks.length}`, 'pattern').catch(() => {});
+
   return NextResponse.json({
     success: true, intent: 'process_document', tasks: capturedTasks,
     response: results.length ? results.join('. ') + '.' : 'Document processed.',
@@ -351,8 +397,7 @@ export async function POST(req: NextRequest) {
 
     if (extracted.length === 0) {
       return NextResponse.json({
-        success: true,
-        intent: 'question',
+        success: true, intent: 'question',
         response: errors.length
           ? `Couldn't read those files: ${errors.join(', ')}.`
           : `I opened the files but couldn't find any readable text.`,
@@ -363,16 +408,13 @@ export async function POST(req: NextRequest) {
     const filePrompt = buildFilePrompt(extracted, userHint);
     const result = await routeCommand(user.id, filePrompt, pending ?? null, context_filter ?? null);
 
-    // ── Self-teaching observation ─────────────────────────────────────────
-    // Karl records what user asked vs what he classified.
-    // This feeds back into context on future calls so Karl learns to honor
-    // explicit user instructions on file drops without being told twice.
+    // Self-teaching: Karl records what user asked vs what he classified
     const classifiedAction = result.payload?.doc_action ?? result.payload?.action ?? result.intent;
     writeKarlObservation(
       user.id,
       `File drop: user said "${userHint || 'nothing'}", Karl classified as "${classifiedAction}". ` +
       `Files: ${extracted.map(f => f.name).join(', ')}. ` +
-      `When user explicitly states an action (summarize, extract tasks, make template), Karl must honor it exactly.`,
+      `When user explicitly states an action (summarize, extract tasks, make template, create meeting), Karl must honor it exactly.`,
       'preference'
     ).catch(() => {});
 
@@ -380,9 +422,7 @@ export async function POST(req: NextRequest) {
       result.response = (result.response ?? '') + `\n\n(Skipped: ${errors.join(', ')})`;
     }
 
-    // ── CRITICAL: return explicit shape, never spread result ──────────────
-    // Spreading flattens payload fields to root, breaking client pending
-    // handling which expects fields nested under data.payload.
+    // Explicit shape — never spread result directly
     return NextResponse.json({
       success:  true,
       intent:   result.intent,
@@ -436,7 +476,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: true, intent: 'cancel_pending', response: result.response ?? 'Cancelled.' });
     }
 
-    // Explicit shape on normal path too — consistent, no surprise flattening
+    // Explicit shape on all paths
     return NextResponse.json({
       success:  true,
       intent:   result.intent,
