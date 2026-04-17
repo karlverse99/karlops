@@ -216,7 +216,7 @@ async function applyFieldOperation(
 async function executeInsert(user_id: string, action: KarlAction, context_filter?: string | null): Promise<{ response: string; refresh: boolean; task_id?: string; offer_preview?: boolean }> {
   const db          = createSupabaseAdmin();
   const object_type = action.object_type ?? 'task';
-  const fields      = { ...action.fields } ?? {};
+  const fields      = { ...(action.fields ?? {}) };
   const table       = OBJECT_TABLE[object_type];
   const pk          = OBJECT_PK[object_type];
 
