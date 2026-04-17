@@ -11,6 +11,8 @@ export interface KarlContextBundle {
   recentMessages: ChatMessage[];
   bucketSnapshot: string;
   recentCompletions: string;
+  meetingSnapshot: string;
+  fcSnapshot: string;
   observations: string;
   availableTags: string;
   availableContexts: string;
@@ -34,7 +36,7 @@ const BUCKET_PREFIX: Record<string, string> = {
 
 const MAX_OBSERVATIONS = 50;
 
-// ── Field knowledge — pulled once, included in every call ─────────────────────
+// ── Field knowledge ───────────────────────────────────────────────────────────
 async function buildFieldKnowledge(user_id: string): Promise<string> {
   const db = createSupabaseAdmin();
 
@@ -52,11 +54,9 @@ async function buildFieldKnowledge(user_id: string): Promise<string> {
   const byType: Record<string, string[]> = {};
   for (const f of fields) {
     if (!byType[f.object_type]) byType[f.object_type] = [];
-
     const parts = [`  ${f.field} (${f.label}, ${f.field_type})`];
     if (f.description) parts.push(`    what: ${f.description}`);
     if (f.llm_notes)   parts.push(`    how:  ${f.llm_notes}`);
-
     byType[f.object_type].push(parts.join('\n'));
   }
 
@@ -77,6 +77,11 @@ export async function buildKarlContext(user_id: string, context_filter: string |
     tagRes,
     contextRes,
     vocabRes,
+    meetingRes,
+    completionCountRes,
+    extractRes,
+    templateRes,
+    contactRes,
   ] = await Promise.all([
     db.from('user_situation')
       .select('brief, chat_history_depth, completion_window_days')
@@ -84,8 +89,6 @@ export async function buildKarlContext(user_id: string, context_filter: string |
     db.from('ko_session')
       .select('messages')
       .eq('user_id', user_id).maybeSingle(),
-    // FIX: include tags so Karl can see what's on each task
-    // FIX: filter by context_filter so Karl's snapshot matches the UI view
     (() => {
       let q = db.from('task')
         .select('task_id, title, bucket_key, tags, sort_order')
@@ -110,6 +113,31 @@ export async function buildKarlContext(user_id: string, context_filter: string |
       .select('phrase, intent, object_type, use_count')
       .eq('user_id', user_id).eq('is_active', true)
       .order('use_count', { ascending: false }).limit(100),
+    // Meetings — open, most recent 15
+    db.from('meeting')
+      .select('meeting_id, title, meeting_date, is_completed')
+      .eq('user_id', user_id).eq('is_completed', false)
+      .order('meeting_date', { ascending: false }).limit(15),
+    // Recent completions count (for CM identifiers)
+    db.from('completion')
+      .select('completion_id, title, completed_at')
+      .eq('user_id', user_id)
+      .order('completed_at', { ascending: false }).limit(15),
+    // Extracts
+    db.from('external_reference')
+      .select('external_reference_id, title, created_at')
+      .eq('user_id', user_id)
+      .order('created_at', { ascending: false }).limit(15),
+    // Templates
+    db.from('document_template')
+      .select('document_template_id, name, doc_type, is_active')
+      .eq('user_id', user_id).eq('is_active', true)
+      .order('created_at', { ascending: false }).limit(15),
+    // Contacts
+    db.from('contact')
+      .select('contact_id, name, role_tag_id')
+      .eq('user_id', user_id).eq('is_archived', false)
+      .order('name', { ascending: true }).limit(20),
   ]);
 
   const situation      = situationRes.data;
@@ -121,7 +149,7 @@ export async function buildKarlContext(user_id: string, context_filter: string |
   const allMessages: ChatMessage[] = sessionRes.data?.messages ?? [];
   const recentMessages = allMessages.slice(-historyDepth);
 
-  // Bucket snapshot — FIX: include tags on each task line
+  // Bucket snapshot
   const byBucket: Record<string, { task_id: string; title: string; tags: string[] }[]> = {};
   for (const t of taskRes.data ?? []) {
     if (!byBucket[t.bucket_key]) byBucket[t.bucket_key] = [];
@@ -145,17 +173,64 @@ export async function buildKarlContext(user_id: string, context_filter: string |
   }
   const bucketSnapshot = snapshotLines.join('\n') || 'no open tasks';
 
-  // Recent completions
+  // Recent completions (for base bundle — titles + date only)
   const windowStart = new Date();
   windowStart.setDate(windowStart.getDate() - completionWin);
-  const { data: completions } = await db
+  const { data: recentCompletionData } = await db
     .from('completion').select('title, completed_at')
     .eq('user_id', user_id).gte('completed_at', windowStart.toISOString())
     .order('completed_at', { ascending: false }).limit(20);
 
-  const recentCompletions = completions?.length
-    ? completions.map(c => `- ${c.title} (${c.completed_at?.slice(0, 10)})`).join('\n')
+  const recentCompletions = recentCompletionData?.length
+    ? recentCompletionData.map(c => `- ${c.title} (${c.completed_at?.slice(0, 10)})`).join('\n')
     : 'none in window';
+
+  // ── Meeting snapshot — MT identifiers ─────────────────────────────────────
+  const meetings = meetingRes.data ?? [];
+  const meetingSnapshot = meetings.length
+    ? meetings.map((m, i) => {
+        const date = m.meeting_date ? m.meeting_date.slice(0, 10) : 'no date';
+        return `  MT${i + 1} ${m.title} · ${date}`;
+      }).join('\n')
+    : 'no open meetings';
+
+  // ── FC object snapshots — CM, EX, TM, CT identifiers ─────────────────────
+  const fcLines: string[] = [];
+
+  const completions = completionCountRes.data ?? [];
+  if (completions.length) {
+    fcLines.push('completions:');
+    completions.forEach((c, i) => {
+      const date = c.completed_at?.slice(0, 10) ?? '';
+      fcLines.push(`  CM${i + 1} ${c.title} · ${date}`);
+    });
+  }
+
+  const extracts = extractRes.data ?? [];
+  if (extracts.length) {
+    fcLines.push('extracts:');
+    extracts.forEach((e, i) => {
+      fcLines.push(`  EX${i + 1} ${e.title}`);
+    });
+  }
+
+  const templates = templateRes.data ?? [];
+  if (templates.length) {
+    fcLines.push('templates:');
+    templates.forEach((t, i) => {
+      fcLines.push(`  TM${i + 1} ${t.name}${t.doc_type ? ` (${t.doc_type})` : ''}`);
+    });
+  }
+
+  const contacts = contactRes.data ?? [];
+  if (contacts.length) {
+    fcLines.push('contacts:');
+    contacts.forEach((c, i) => {
+      fcLines.push(`  CT${i + 1} ${c.name}`);
+    });
+  }
+
+  const fcSnapshot = fcLines.join('\n') || 'no FC objects';
 
   // Observations
   const observations = obsRes.data?.length
@@ -177,7 +252,7 @@ export async function buildKarlContext(user_id: string, context_filter: string |
     ? vocabRes.data.map(v => `"${v.phrase}" → ${v.intent} (${v.object_type})`).join('\n')
     : '';
 
-  // Field knowledge — descriptions + llm_notes
+  // Field knowledge
   const fieldKnowledge = await buildFieldKnowledge(user_id);
 
   return {
@@ -185,6 +260,8 @@ export async function buildKarlContext(user_id: string, context_filter: string |
     recentMessages,
     bucketSnapshot,
     recentCompletions,
+    meetingSnapshot,
+    fcSnapshot,
     observations,
     availableTags,
     availableContexts,
@@ -249,7 +326,12 @@ export function formatContextForPrompt(bundle: KarlContextBundle): string {
   }
 
   parts.push(`## Current Task Load\nTasks are identified as BucketN (e.g. N1, S2, RW1, L1, D1) for reference in commands.\nTags are shown in brackets after each task title.\n${bundle.bucketSnapshot}`);
+
   parts.push(`## Recent Completions\n${bundle.recentCompletions}`);
+
+  parts.push(`## Open Meetings\nMeetings are identified as MT1, MT2, etc. Use these identifiers when user refers to a meeting.\n${bundle.meetingSnapshot}`);
+
+  parts.push(`## Other FC Objects\nCompletions (CM), Extracts (EX), Templates (TM), Contacts (CT) — use these identifiers when user refers to them.\n${bundle.fcSnapshot}`);
 
   if (bundle.observations) {
     parts.push(`## Karl's Observations\n${bundle.observations}`);
@@ -260,11 +342,11 @@ export function formatContextForPrompt(bundle: KarlContextBundle): string {
   parts.push(`## Available Contexts\nFormat: Name|context_id. Use the context_id UUID when returning context_id in your JSON response.\n${bundle.availableContexts}`);
 
   if (bundle.vocab) {
-    parts.push(`## Learned Vocabulary\nPhrases this user has used before and what they map to. Use these to improve classification.\n${bundle.vocab}`);
+    parts.push(`## Learned Vocabulary\nPhrases this user has used before and what they map to.\n${bundle.vocab}`);
   }
 
   if (bundle.fieldKnowledge) {
-    parts.push(`## Field Knowledge\nFor every FC object field: what it is (what:) and how this user tends to use it (how:). Use this to reason about where content belongs when the user gives loose instructions.\n${bundle.fieldKnowledge}`);
+    parts.push(`## Field Knowledge\nFor every FC object field: what it is (what:) and how this user tends to use it (how:).\n${bundle.fieldKnowledge}`);
   }
 
   if ('fullCompletions' in bundle) {
@@ -326,7 +408,7 @@ export async function updateFieldLlmNotes(
   else console.log(`[updateFieldLlmNotes] updated ${object_type}.${field}`);
 }
 
-// ── Upsert karl_vocab — increment use_count if phrase exists ─────────────────
+// ── Upsert karl_vocab ─────────────────────────────────────────────────────────
 export async function upsertKarlVocab(
   user_id: string,
   phrase: string,
@@ -346,11 +428,7 @@ export async function upsertKarlVocab(
       .eq('vocab_id', existing.vocab_id);
   } else {
     await db.from('karl_vocab').insert({
-      user_id,
-      phrase: normalised,
-      intent,
-      object_type,
-      use_count: 1,
+      user_id, phrase: normalised, intent, object_type, use_count: 1,
     });
   }
 }
