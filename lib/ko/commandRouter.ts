@@ -1,6 +1,6 @@
 // lib/ko/commandRouter.ts
 // KarlOps L — Intent classification and enrichment
-// v0.7.2 — process_document payload fix: pass all fields through to executor
+// v0.7.3 — max_tokens bump for pending, hard JSON rule on confirms
 
 import { createSupabaseAdmin } from '@/lib/supabase-server';
 import {
@@ -16,17 +16,17 @@ import {
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
 export type IntentType =
-  | 'execute'           // Karl has enough info, execute immediately (quick capture, clear commands)
-  | 'pending'           // Karl proposes an action with enriched payload, waits for user
-  | 'modify_pending'    // User adjusted something about the pending action
-  | 'confirm_pending'   // User confirmed the pending action, execute it
-  | 'cancel_pending'    // User cancelled the pending action
-  | 'preview_pending'   // User asked what the pending action looks like
-  | 'open_form'         // User wants to see/edit in the full form UI
-  | 'process_document'  // Large text blob to process
-  | 'question'          // Karl answering conversationally, no action
-  | 'command'           // System command (open tag manager etc)
-  | 'unclear';          // Last resort
+  | 'execute'
+  | 'pending'
+  | 'modify_pending'
+  | 'confirm_pending'
+  | 'cancel_pending'
+  | 'preview_pending'
+  | 'open_form'
+  | 'process_document'
+  | 'question'
+  | 'command'
+  | 'unclear';
 
 export interface UpdateOperation {
   field: string;
@@ -264,12 +264,14 @@ function formatPendingForPrompt(pending: Record<string, any> | null): string {
     lines.push(`Tags: ${(p.tags ?? []).join(', ') || 'none'}`);
     lines.push(`Context: ${p.context_id ?? 'none'}`);
     lines.push(`Target date: ${p.target_date ?? 'none'}`);
-    if (p.notes) lines.push(`Notes: ${p.notes}`);
+    // Notes intentionally omitted — keeps pending context lean for confirms
     if (p.delegated_to) lines.push(`Delegated to: ${p.delegated_to}`);
   } else if (pending.intent === 'capture_tasks') {
-    const tasks = pending.payload?.tasks ?? [];
+    // Show titles only — no notes. Notes are stripped client-side too.
+    // This prevents Karl from re-emitting a massive payload on confirm.
+    const tasks = pending.payload?.tasks ?? pending.tasks ?? [];
     lines.push(`Tasks (${tasks.length}):`);
-    tasks.forEach((t: any, i: number) => lines.push(`  ${i + 1}. ${t.title} [${BUCKET_LABEL[t.bucket_key] ?? t.bucket_key ?? 'Capture'}]`));
+    tasks.forEach((t: any, i: number) => lines.push(`  ${i + 1}. ${t.title} → ${BUCKET_LABEL[t.bucket_key] ?? t.bucket_key ?? 'Capture'}`));
   } else if (pending.intent === 'update_object') {
     const p = pending.payload ?? {};
     lines.push(`Object: ${p.object_type} ${p.identifier}`);
@@ -282,22 +284,22 @@ function formatPendingForPrompt(pending: Record<string, any> | null): string {
     if (p.title) lines.push(`Title: ${p.title}`);
     if (p.doc_type) lines.push(`Type: ${p.doc_type}`);
     if (p.description) lines.push(`Description: ${p.description}`);
-    if (p.summary) lines.push(`Summary: ${p.summary}`);
+    if (p.meeting_date) lines.push(`Date: ${p.meeting_date}`);
+    if (p.attendees?.length) lines.push(`Attendees: ${p.attendees.join(', ')}`);
+    if (p.tags?.length) lines.push(`Tags: ${p.tags.join(', ')}`);
+    if (p.context_name) lines.push(`Context: ${p.context_name}`);
   }
 
   lines.push('');
-  lines.push('The user may confirm, cancel, modify, preview, or ask questions about this pending action.');
-  lines.push('Use the pending payload to answer any "what will it look like" questions with exact field values.');
+  lines.push('## CRITICAL — RESPOND WITH JSON ONLY');
+  lines.push('The user is responding to this pending action. Your response MUST be valid JSON.');
+  lines.push('If user confirms → { "intent": "confirm_pending", "response": "plain English" }');
+  lines.push('If user cancels → { "intent": "cancel_pending", "response": "Cancelled." }');
+  lines.push('If user modifies → { "intent": "modify_pending", ... updated payload ... }');
+  lines.push('DO NOT re-emit the full task list. DO NOT wrap in code fences. Return ONLY the JSON object.');
 
   return lines.join('\n');
 }
-
-// ─── BUCKET LABEL HELPER ──────────────────────────────────────────────────────
-
-const BUCKET_LABEL_MAP: Record<string, string> = {
-  now: 'On Fire', soon: 'Up Next', realwork: 'Real Work',
-  later: 'Later', delegate: 'Delegated', capture: 'Capture',
-};
 
 // ─── MAIN ROUTER ──────────────────────────────────────────────────────────────
 
@@ -319,8 +321,9 @@ export async function routeCommand(
     const objectSummaries      = buildObjectSummaries(allMeta ?? []);
     const editableFieldSummary = buildEditableFieldSummary(allMeta ?? []);
 
-    const isDeep = isAnalysisRequest(input);
-    const bundle = isDeep ? await buildKarlDeepContext(user_id, context_filter) : await buildKarlContext(user_id, context_filter);
+    const isDeep    = isAnalysisRequest(input);
+    const hasPending = !!pending;
+    const bundle    = isDeep ? await buildKarlDeepContext(user_id, context_filter) : await buildKarlContext(user_id, context_filter);
     const contextBlock = formatContextForPrompt(bundle);
     const pendingBlock = formatPendingForPrompt(pending);
 
@@ -339,7 +342,6 @@ export async function routeCommand(
       ? `## Your Observations About This User\nYou have noticed these patterns. Use them actively.\n${bundle.observations}`
       : '';
 
-    // Extract rejected tags from recent conversation
     const rejectedTags: string[] = [];
     const rejectPattern = /don'?t (?:use|want|include)\s+#?([A-Za-z0-9/_\-]+)/gi;
     for (const msg of bundle.recentMessages) {
@@ -355,8 +357,15 @@ export async function routeCommand(
       : '';
 
     const systemPrompt = [
-      `You are Karl, an operational assistant inside KarlOps — a personal pressure system for getting things done. [v0.7.2]`,
+      `You are Karl, an operational assistant inside KarlOps — a personal pressure system for getting things done. [v0.7.3]`,
       `Today's date: ${new Date().toISOString().slice(0, 10)}. When a user gives a date without a year, infer the year from today. Use current year unless the date has already passed this year, in which case use next year.`,
+      '',
+      // Hard JSON rule injected at the top when pending exists
+      hasPending ? '## ABSOLUTE RULE — RETURN VALID JSON ONLY' : '',
+      hasPending ? 'There is a pending action. The user is responding to it.' : '',
+      hasPending ? 'You MUST return a JSON object. NO prose. NO code fences. NO markdown.' : '',
+      hasPending ? 'A simple "yes" or "confirm" from the user → { "intent": "confirm_pending", "response": "On it." }' : '',
+      hasPending ? 'DO NOT re-emit the task list or payload. Just confirm.' : '',
       '',
       contextBlock,
       '',
@@ -388,56 +397,33 @@ export async function routeCommand(
       '   - Have enough data → intent: pending. Show enriched payload clearly. Let user confirm or adjust.',
       '   - Missing one critical thing (e.g. delegating without a person) → intent: question. Ask for that one thing only.',
       '4. If pending action exists and user input relates to it:',
-      '   - User confirms ("yes", "do it", "go", "yep", "ok", "sure", "correct", "looks good", "that is correct", "create it", "save it", "do this") → intent: confirm_pending',
+      '   - User confirms ("yes", "do it", "go", "yep", "ok", "sure", "correct", "looks good", "confirm", "create it", "save it", "add these", "add them") → intent: confirm_pending',
       '   - User cancels ("no", "cancel", "stop", "nevermind", "nah") → intent: cancel_pending',
-      '   - User modifies ("change the bucket", "remove that tag", "different context", "no UI/UX tag", "actually...") → intent: modify_pending with updated payload',
-      '   - User asks what it looks like ("show me", "what will it look like", "preview", "what does that look like", "describe it") → intent: preview_pending',
-      '   - User says "open it", "show me the form", "let me edit it" → intent: open_form',
+      '   - User modifies ("change the bucket", "remove that tag", "different context", "actually...") → intent: modify_pending with updated payload',
+      '   - User asks what it looks like ("show me", "preview", "what does that look like") → intent: preview_pending',
+      '   - User says "open it", "show me the form" → intent: open_form',
       '   - User types something new and unrelated → replace pending with new intent',
       '',
       '## CRITICAL — Question vs Pending',
-      'If the user asks a question about a task (e.g. "what is S1?", "what is in my now bucket?"), ALWAYS return intent: question.',
-      'NEVER return intent: pending for a question. Karl answering a question does not create or modify any record.',
-      'A question never requires confirmation. Just answer it.',
+      'NEVER return intent: pending for a question. A question never requires confirmation. Just answer it.',
       '',
       '## CRITICAL — Modifying Pending',
-      'When user modifies a pending action (e.g. "remove the UI/UX tag", "change bucket to soon", "no technology tag"):',
-      '- Return intent: modify_pending',
-      '- Return the COMPLETE updated payload with the change applied',
-      '- Do NOT cancel the pending action',
-      '- Do NOT start a new capture',
-      '- Example: if pending has tags [KarlOps, Enhancements, UI/UX] and user says "remove UI/UX" → return modify_pending with tags [KarlOps, Enhancements]',
+      'Return intent: modify_pending with COMPLETE updated payload. Do NOT cancel. Do NOT restart.',
       '',
       '## CRITICAL — Pending Payload Presentation',
-      'When returning intent: pending for a capture or update, the response field MUST show the full payload clearly:',
-      'Format:',
-      '"Here is what I have:\\nTitle — [exact title]\\nBucket — [bucket label e.g. Up Next, On Fire, Real Work]\\nTags — [tag list or none]\\nNotes — [notes if any]\\n\\nConfirm or tell me what to change."',
-      'Never bury the payload in a sentence. Always use this labeled format.',
+      'When returning intent: pending, response MUST use labeled format:',
+      '"Here is what I have:\\nTitle — [title]\\nBucket — [label]\\nTags — [tags]\\n\\nConfirm or tell me what to change."',
       'Use human bucket labels (On Fire, Up Next, Real Work, Later, Delegated, Capture) — never raw keys.',
       '',
-      '## CRITICAL — Preview',
-      'When user asks to preview or see the pending action:',
-      '- Return intent: preview_pending',
-      '- In response field, describe the EXACT pending payload values using the same labeled format as above',
-      '- NEVER return unclear for preview requests',
+      '## CRITICAL — Confirm Response',
+      'When user confirms, return ONLY: { "intent": "confirm_pending", "response": "plain English confirmation" }',
+      'DO NOT include the task list. DO NOT re-emit the payload. Just confirm.',
       '',
       '## CRITICAL — Execution Confirmations (Plain English Only)',
-      'After an action is confirmed and executed, Karl\'s response must be plain English. No field names, no technical syntax.',
-      'WRONG: "Updated S3 — notes → append:I like a do the cha-cha"',
-      'WRONG: "Updated S6 — is_completed → true"',
-      'RIGHT: "Added to S3 notes."',
-      'RIGHT: "Marked S6 complete and logged."',
-      'RIGHT: "Moved N4 to Up Next."',
-      'RIGHT: "Added #Alex to RW4."',
+      'After action executes: plain English only. No field names, no technical syntax.',
       '',
       '## Enrichment — Always Do This for Captures',
-      'Before returning a pending or execute intent, infer everything possible from the input + context:',
-      '- Bucket: urgency signals ("urgent", "today", "on fire" → now; "soon", "next week" → soon; vague → capture)',
-      '- Tags: topic signals matched against available tags list. Use observations and recent patterns.',
-      '- Context: domain signals ("work", "job hunt", "personal") matched against available contexts',
-      '- Target date: any date mention → extract as YYYY-MM-DD',
-      '- Notes: anything beyond the core action → notes field',
-      '- Delegated to: "have X handle", "ask X" → delegation signal',
+      'Infer bucket, tags, context, target date, notes, delegated_to from input + context.',
       '',
       '## Available Object Types',
       objectSummaries,
@@ -447,68 +433,54 @@ export async function routeCommand(
       'Format: prefix+number e.g. N1, S2, RW1.',
       '',
       '## complete_task — TWO STEP FLOW',
-      'When user wants to mark a task done:',
-      'STEP 1 — Return intent: question, ask for outcome. Include outcome_pending: true, identifier, object_type.',
-      'STEP 2 — After user provides outcome, return intent: pending with update_object operations.',
-      'EXCEPTION: "no outcome", "just mark it done" → skip to pending immediately with outcome="".',
+      'STEP 1 — ask for outcome. STEP 2 — pending with update_object.',
+      'EXCEPTION: "no outcome" / "just mark it done" → skip to pending with outcome="".',
       '',
       '## Delegation Rules',
-      '- delegated_to required when bucket = delegate',
-      '- delegated_to is a name string (resolved server-side to People tag UUID)',
-      '- If no person provided, ask "Who is handling this?" before proceeding',
+      'delegated_to required when bucket = delegate. Ask if person not provided.',
       '',
       '## Editable Fields Per Object Type',
       editableFieldSummary,
       '',
       '## Field Knowledge — Reason From This',
-      'The Field Knowledge section in your context tells you what every field is and how this user uses it.',
-      'Use it to infer where content belongs when user gives loose instructions.',
+      'The Field Knowledge section tells you what every field is and how this user uses it.',
       '',
       '## process_document',
-      'When input is 500+ chars or document-like (transcript, email, notes):',
-      '1. Identify content type: transcript | email | notes | article | other',
-      '2. Identify what user wants done with it',
-      '3. Map to correct FC object and field using Field Knowledge',
-      '4. Show user what you plan to do — return intent: pending with process_document payload',
+      'When input is 500+ chars or document-like: identify content type, identify what user wants, return pending.',
       '',
       '## Vocabulary',
-      '- "bucket X" / "move to X" / "put in X" → bucket_key',
-      '- Valid buckets: now, soon, realwork, later, delegate, capture',
-      '- Aliases: "fire"/"on fire" → now, "up next" → soon, "real work" → realwork',
-      '- "code it to X" / "context X" → context_id (return UUID from Available Contexts)',
-      '- "tag it X" / "tagged X" → tags',
+      '- bucket aliases: "fire"/"on fire" → now, "up next" → soon, "real work" → realwork',
+      '- "code it to X" / "context X" → context_id',
       '- "by DATE" / "due DATE" → target_date (ISO YYYY-MM-DD)',
       '- "delegate to X" → bucket=delegate + delegated_to=X',
       '',
-      '## Tag Rules',
-      '- Only use tags from Available Tags list',
-      '- Never suggest rejected tags',
+      '## Tag Rules — Only use tags from Available Tags list',
       rejectedTagsNote,
       '',
-      isDeep ? '## Observation Instruction\nInclude "observation" field — 1-2 sentences on a pattern noticed.\nobservation_type: pattern | preference | flag\n' : '',
+      isDeep ? '## Observation Instruction\nInclude "observation" field — 1-2 sentences on pattern noticed.\nobservation_type: pattern | preference | flag\n' : '',
       '',
       '## Response Format — ONLY valid JSON, no markdown, no code fences',
       '',
       '// Immediate execute (quick capture):',
       '{ "intent": "execute", "action": "capture_task", "title": "title", "bucket_key": "capture", "context_id": null, "tags": [], "notes": null, "target_date": null, "delegated_to": null, "response": "Got it." }',
       '',
-      '// Propose action (normal capture) — ALWAYS use labeled format in response:',
-      '{ "intent": "pending", "action": "capture_task", "title": "title", "bucket_key": "realwork", "context_id": "uuid-or-null", "tags": ["Tag1"], "notes": "detail", "target_date": null, "delegated_to": null, "response": "Here is what I have:\\nTitle — [exact title]\\nBucket — [bucket label]\\nTags — [tags or none]\\nNotes — [notes if any]\\n\\nConfirm or tell me what to change.", "recognised_phrase": "phrase" }',
+      '// Propose capture:',
+      '{ "intent": "pending", "action": "capture_task", "title": "title", "bucket_key": "realwork", "context_id": "uuid-or-null", "tags": ["Tag1"], "notes": "detail", "target_date": null, "delegated_to": null, "response": "Here is what I have:\\nTitle — [title]\\nBucket — [label]\\nTags — [tags]\\nNotes — [notes]\\n\\nConfirm or tell me what to change.", "recognised_phrase": "phrase" }',
       '',
       '// Propose multiple captures:',
-      '{ "intent": "pending", "action": "capture_tasks", "tasks": [{ "title": "task", "bucket_key": "capture", "tags": [], "notes": null }], "response": "Found N tasks:\\n1. [title] — [bucket label]\\n2. [title] — [bucket label]\\n\\nConfirm to capture all, or tell me what to adjust." }',
+      '{ "intent": "pending", "action": "capture_tasks", "tasks": [{ "title": "task", "bucket_key": "capture", "tags": [], "notes": null }], "response": "Found N tasks:\\n1. [title] — [bucket]\\n\\nConfirm to capture all, or tell me what to adjust." }',
       '',
       '// Modify pending:',
-      '{ "intent": "modify_pending", "action": "capture_task", "title": "title", "bucket_key": "realwork", "context_id": null, "tags": ["Tag1"], "notes": "detail", "target_date": null, "response": "Updated:\\nTitle — [title]\\nBucket — [bucket label]\\nTags — [tags]\\n\\nConfirm?" }',
+      '{ "intent": "modify_pending", "action": "capture_task", "title": "title", "bucket_key": "realwork", "context_id": null, "tags": ["Tag1"], "notes": "detail", "target_date": null, "response": "Updated. Confirm?" }',
       '',
-      '// Confirm pending:',
+      '// Confirm pending — SHORT, no payload re-emission:',
       '{ "intent": "confirm_pending", "response": "On it." }',
       '',
       '// Cancel pending:',
       '{ "intent": "cancel_pending", "response": "Cancelled." }',
       '',
       '// Preview pending:',
-      '{ "intent": "preview_pending", "response": "Here is what I have:\\nTitle — [exact title]\\nBucket — [bucket label]\\nTags — [tags or none]\\nNotes — [notes if any]\\n\\nConfirm or tell me what to change." }',
+      '{ "intent": "preview_pending", "response": "Here is what I have:\\nTitle — [title]\\nBucket — [label]\\nTags — [tags]\\n\\nConfirm or tell me what to change." }',
       '',
       '// Open form:',
       '{ "intent": "open_form", "response": "Opening it up for you." }',
@@ -522,19 +494,26 @@ export async function routeCommand(
       '// Delegation — missing person:',
       '{ "intent": "question", "delegation_pending": true, "identifier": "N1", "object_type": "task", "response": "Who is handling this?" }',
       '',
-      '// Process document — full payload required:',
+      '// Process document:',
       '{ "intent": "pending", "action": "process_document", "content_type": "transcript", "doc_action": "complete_meeting", "target_identifier": "MT1", "summary": "summary text", "extracted_tasks": [], "response": "Here is what I found:\\n[description]\\n\\nPlan:\\n[what I will do]\\n\\nConfirm?" }',
       '',
-      '// Process document — create template (ALL fields required):',
-      '{ "intent": "pending", "action": "process_document", "doc_action": "create_template", "title": "Template Name", "doc_type": "Script", "description": "One sentence description", "generation_instructions": "ACTUAL fill-in-the-blank template text with ___ for variable content", "data_sources": { "tasks": false, "meetings": false, "situation": false, "references": false, "completions": false }, "tags": ["Tag1"], "context_name": "Context name or null", "response": "Here is what I have:\\nTitle — [title]\\nType — [doc_type]\\nDescription — [description]\\n\\nI have built the fill-in-the-blank template from the document structure. Confirm to save, or tell me what to change." }',
+      '// Process document — create template:',
+      '{ "intent": "pending", "action": "process_document", "doc_action": "create_template", "title": "Template Name", "doc_type": "Script", "description": "One sentence", "generation_instructions": "fill-in-the-blank template with ___", "data_sources": { "tasks": false, "meetings": false, "situation": false, "references": false, "completions": false }, "tags": ["Tag1"], "context_name": "Context or null", "response": "Here is what I have:\\nTitle — [title]\\n\\nConfirm to save." }',
       '',
-      '// Conversational (question, analysis, help):',
+      '// Conversational:',
       '{ "intent": "question", "response": "Karl response in plain English" }',
       '',
-      isDeep
-        ? '// Analysis: { "intent": "question", "response": "Karl response", "observation": "pattern note", "observation_type": "pattern" }'
-        : '',
+      isDeep ? '// Analysis: { "intent": "question", "response": "Karl response", "observation": "pattern note", "observation_type": "pattern" }' : '',
     ].filter(Boolean).join('\n');
+
+    // ── Token budget ───────────────────────────────────────────────────────────
+    // Bump to 3000 when pending exists — confirms with large payloads (e.g. 11 tasks
+    // with notes) were hitting 1000 token ceiling and truncating mid-JSON, causing
+    // Karl to return prose instead of a valid confirm_pending response.
+    const maxTokens = isDeep ? 1500
+      : hasPending ? 3000
+      : isDocumentInput(input) ? 2000
+      : 1000;
 
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -546,7 +525,7 @@ export async function routeCommand(
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: isDeep ? 1500 : isDocumentInput(input) ? 2000 : 1000,
+        max_tokens: maxTokens,
         system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
         messages: anthropicMessages,
       }),
@@ -563,14 +542,12 @@ export async function routeCommand(
     const text = rawData.content?.[0]?.text ?? '';
     let parsed: any;
 
-    // Try 1: clean code fences and parse directly
     try {
       parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
     } catch {
-      // Try 2: Karl sometimes returns prose before the JSON block, extract it
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
-        try { parsed = JSON.parse(jsonMatch[0]); } catch { /* malformed, fall through */ }
+        try { parsed = JSON.parse(jsonMatch[0]); } catch { /* fall through */ }
       }
     }
 
@@ -581,7 +558,7 @@ export async function routeCommand(
         await appendSessionMessage(user_id, 'karl', text);
         return { intent: 'question', response: text };
       }
-      return { intent: 'unclear', response: "Something went wrong parsing that. Try again." };
+      return { intent: 'unclear', response: 'Something went wrong parsing that. Try again.' };
     }
 
     const intent       = parsed.intent as IntentType;
@@ -605,25 +582,22 @@ export async function routeCommand(
       updateFieldLlmNotes(user_id, parsed.field_learning.object_type, parsed.field_learning.field, parsed.field_learning.llm_notes).catch(() => {});
     }
 
-    // ── execute — immediate capture, no confirm needed ─────────────────────
+    // ── execute ────────────────────────────────────────────────────────────
     if (intent === 'execute') {
       return {
         intent: 'execute',
         payload: {
-          action:       parsed.action ?? 'capture_task',
-          title:        parsed.title,
-          bucket_key:   parsed.bucket_key ?? 'capture',
-          context_id:   parsed.context_id ?? null,
-          tags:         parsed.tags ?? [],
-          notes:        parsed.notes ?? null,
-          target_date:  parsed.target_date ?? null,
+          action: parsed.action ?? 'capture_task',
+          title: parsed.title, bucket_key: parsed.bucket_key ?? 'capture',
+          context_id: parsed.context_id ?? null, tags: parsed.tags ?? [],
+          notes: parsed.notes ?? null, target_date: parsed.target_date ?? null,
           delegated_to: parsed.delegated_to ?? null,
         },
         response: karlResponse,
       };
     }
 
-    // ── pending / modify_pending — enrich tags, resolve delegee ───────────
+    // ── pending / modify_pending ───────────────────────────────────────────
     if (intent === 'pending' || intent === 'modify_pending') {
       const action = parsed.action ?? 'capture_task';
 
@@ -637,7 +611,7 @@ export async function routeCommand(
         let delegatedToId: string | null = null;
         if (parsed.bucket_key === 'delegate' && parsed.delegated_to) {
           const resolved = await resolveDelegatee(user_id, parsed.delegated_to);
-          delegatedToId  = resolved?.tag_id ?? (await createPeopleTag(user_id, parsed.delegated_to))?.tag_id ?? (await resolveOtherTag(user_id))?.tag_id ?? null;
+          delegatedToId = resolved?.tag_id ?? (await createPeopleTag(user_id, parsed.delegated_to))?.tag_id ?? (await resolveOtherTag(user_id))?.tag_id ?? null;
         }
 
         const tagMention = allTags.length > 0 ? `\nTags — ${allTags.map((t: string) => `#${t}`).join(' ')}` : '\nTags — none';
@@ -667,7 +641,7 @@ export async function routeCommand(
           : await suggestTagsForCapture(user_id, combinedTitles, [], rejectedTags);
         const enrichedTasks = await Promise.all(tasks.map(async (task: any) => {
           const taskTags = (task.tags ?? []).filter((t: string) => !rejectedTags.includes(t));
-          const merged   = Array.from(new Set([...taskTags, ...suggested])).slice(0, 5);
+          const merged = Array.from(new Set([...taskTags, ...suggested])).slice(0, 5);
           return { ...task, tags: merged };
         }));
         return {
@@ -694,7 +668,7 @@ export async function routeCommand(
         };
       }
 
-      // ── process_document — pass ALL fields through, nothing stripped ───
+      // ── process_document — pass ALL fields through ─────────────────────
       if (action === 'process_document') {
         return {
           intent,
@@ -705,14 +679,16 @@ export async function routeCommand(
             target_identifier:       parsed.target_identifier ?? null,
             summary:                 parsed.summary ?? null,
             extracted_tasks:         parsed.extracted_tasks ?? [],
-            // template fields
             title:                   parsed.title ?? null,
+            meeting_date:            parsed.meeting_date ?? null,
+            attendees:               parsed.attendees ?? [],
+            notes:                   parsed.notes ?? null,
+            context_name:            parsed.context_name ?? null,
+            tags:                    parsed.tags ?? [],
             doc_type:                parsed.doc_type ?? null,
             description:             parsed.description ?? null,
             generation_instructions: parsed.generation_instructions ?? null,
             data_sources:            parsed.data_sources ?? {},
-            tags:                    parsed.tags ?? [],
-            context_name:            parsed.context_name ?? null,
           },
           response: karlResponse,
         };
@@ -721,7 +697,7 @@ export async function routeCommand(
       return { intent, payload: parsed, response: karlResponse };
     }
 
-    // ── confirm_pending, cancel_pending, preview_pending, open_form ────────
+    // ── confirm / cancel / preview / open_form ─────────────────────────────
     if (intent === 'confirm_pending') return { intent: 'confirm_pending', response: karlResponse };
     if (intent === 'cancel_pending')  return { intent: 'cancel_pending',  response: karlResponse };
     if (intent === 'preview_pending') return { intent: 'preview_pending', response: karlResponse };

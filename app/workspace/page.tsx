@@ -37,7 +37,6 @@ interface TaskStatus { task_status_id: string; name: string; label: string; }
 interface PendingAction { intent: string; payload: Record<string, any>; summary: string; }
 interface QueuedFile { name: string; type: string; data: string; size: number; }
 
-// Delegate modal state — used for both drag-drop and chat delegation_pending
 interface DelegateModalState {
   taskId: string;
   taskTitle: string;
@@ -131,6 +130,22 @@ function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)}KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+// ── Build the pending payload sent to Karl ────────────────────────────────────
+// Strip notes from tasks to keep the confirm context lean.
+// Karl doesn't need to re-read notes on confirm — he just needs to confirm.
+// Notes are preserved in the actual payload for execution.
+function buildPendingForKarl(pending: PendingAction | null): Record<string, any> | null {
+  if (!pending) return null;
+  const p = { ...pending.payload, action: pending.intent, intent: pending.intent };
+  if (p.tasks?.length) {
+    p.tasks = p.tasks.map((t: any) => {
+      const { notes: _notes, ...rest } = t;
+      return rest;
+    });
+  }
+  return p;
 }
 
 // ─── COMPONENTS: TaskPill ────────────────────────────────────────────────────
@@ -534,7 +549,6 @@ export default function WorkspacePage() {
   // ─── Unified command response handler ─────────────────────────────────────
 
   const handleCommandResponse = async (data: any) => {
-    // Karl executed immediately (quick capture)
     if (data.intent === 'execute' || data.intent === 'capture_task') {
       setPending(null);
       addMessage('assistant', data.response ?? 'Done.');
@@ -542,8 +556,6 @@ export default function WorkspacePage() {
       if (data.offer_preview && data.task_id) setPendingPreviewTaskId(data.task_id);
       return;
     }
-
-    // Karl confirmed and executed the pending action
     if (data.intent === 'confirm_pending') {
       setPending(null);
       addMessage('assistant', data.response ?? 'Done.');
@@ -551,8 +563,6 @@ export default function WorkspacePage() {
       if (data.offer_preview && data.task_id) setPendingPreviewTaskId(data.task_id);
       return;
     }
-
-    // Successful write — route returned refresh:true
     if (data.success && data.refresh) {
       setPending(null);
       addMessage('assistant', data.response ?? 'Done.');
@@ -560,15 +570,11 @@ export default function WorkspacePage() {
       if (data.offer_preview && data.task_id) setPendingPreviewTaskId(data.task_id);
       return;
     }
-
-    // Karl cancelled
     if (data.intent === 'cancel_pending') {
       setPending(null);
       addMessage('assistant', data.response ?? 'Cancelled.');
       return;
     }
-
-    // Karl modified pending — update payload, keep pending alive
     if (data.intent === 'modify_pending') {
       const summary = data.payload?.title
         ?? (data.payload?.tasks?.length ? `${data.payload.tasks.length} tasks` : 'modified action');
@@ -576,21 +582,15 @@ export default function WorkspacePage() {
       addMessage('assistant', data.response ?? 'Updated.');
       return;
     }
-
-    // Karl previewed — show response, keep pending alive
     if (data.intent === 'preview_pending') {
       addMessage('assistant', data.response ?? '...');
       return;
     }
-
-    // Karl wants to open the form
     if (data.intent === 'open_form') {
       addMessage('assistant', data.response ?? 'Opening it up.');
       setShowTaskAdd(true);
       return;
     }
-
-    // Karl proposes a new pending action
     if (data.intent === 'pending') {
       const summary = data.payload?.title
         ?? (data.payload?.tasks?.length ? `${data.payload.tasks.length} tasks` : 'pending action');
@@ -598,15 +598,11 @@ export default function WorkspacePage() {
       addMessage('assistant', data.response ?? '...');
       return;
     }
-
-    // System commands
     if (data.intent === 'command' && data.payload?.command_type === 'open_tag_manager') {
       setShowTagManager(true);
       addMessage('assistant', data.response ?? 'Opening tag manager.');
       return;
     }
-
-    // Delegation pending — pop DelegateModal
     if (data.intent === 'question' && data.payload?.delegation_pending) {
       const taskId = resolveIdentifierToTaskId(data.payload.identifier);
       if (taskId) {
@@ -624,14 +620,10 @@ export default function WorkspacePage() {
       addMessage('assistant', data.response ?? 'Who is handling this?');
       return;
     }
-
-    // Question / conversational — never touch pending
     if (data.intent === 'question' || data.intent === 'unclear') {
       addMessage('assistant', data.response ?? "I'm not sure what to do with that.");
       return;
     }
-
-    // Fallback — any other actionable intent with payload
     const isActionable = ['capture_task', 'capture_tasks', 'capture_completion', 'update_object', 'process_document'].includes(data.intent);
     if (isActionable && data.payload) {
       setPending({ intent: data.intent, payload: data.payload, summary: buildPendingSummary(data) });
@@ -645,11 +637,10 @@ export default function WorkspacePage() {
     const text = input.trim();
     if ((!text && queuedFiles.length === 0) || !sessionReady) return;
 
-    const pendingForKarl = pending
-      ? { ...pending.payload, action: pending.intent, intent: pending.intent }
-      : null;
+    // Build pending for Karl — strips notes from tasks to keep confirm context lean
+    const pendingForKarl = buildPendingForKarl(pending);
 
-    // ── File path: queued files + user hint ──────────────────────────────────
+    // ── File path ────────────────────────────────────────────────────────────
     if (queuedFiles.length > 0) {
       const filesToSend = [...queuedFiles];
       setQueuedFiles([]);
@@ -697,13 +688,11 @@ export default function WorkspacePage() {
     }
   };
 
-  // ─── File drop handler — queues files, waits for user hint ────────────────
+  // ─── File drop handler ────────────────────────────────────────────────────
 
   const handleFileDrop = async (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     setDragOverChat(false);
-
-    // Ignore task drags from the left panel
     if (draggedTask.current) return;
 
     const droppedFiles = Array.from(e.dataTransfer.files);
@@ -746,7 +735,7 @@ export default function WorkspacePage() {
     }
   };
 
-  // ── Resolve identifier (e.g. "S1") to a task_id ───────────────────────────
+  // ── Resolve identifier to task_id ─────────────────────────────────────────
 
   const resolveIdentifierToTaskId = (identifier: string): string | null => {
     if (!identifier) return null;
@@ -786,8 +775,6 @@ export default function WorkspacePage() {
     draggedTask.current = task;
   };
 
-  // ── Drop handler — intercepts delegate bucket, opens DelegateModal ─────────
-
   const handleDrop = async (targetBucketKey: string) => {
     const task = draggedTask.current;
     draggedTask.current = null;
@@ -813,11 +800,8 @@ export default function WorkspacePage() {
     }
   };
 
-  // ── DelegateModal confirm — write bucket + delegated_to to DB ─────────────
-
   const handleDelegateConfirm = async (tagId: string, tagName: string) => {
     if (!delegateModal || !koUser) return;
-
     const { taskId, mode } = delegateModal;
     setDelegateModal(null);
 
@@ -841,8 +825,6 @@ export default function WorkspacePage() {
       addMessage('assistant', `Delegated to **${tagName}**. Task moved to Delegated bucket.`);
     }
   };
-
-  // ─── Reorder within bucket ────────────────────────────────────────────────
 
   const handleReorder = async (dropTargetId: string, dropIndex: number, bucketTasks: Task[]) => {
     const draggedId = draggedTask.current?.id;
@@ -1017,7 +999,6 @@ export default function WorkspacePage() {
         <div
           style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative', outline: dragOverChat ? '1px dashed #4ade80' : '1px solid transparent', transition: 'outline 0.15s' }}
           onDragOver={e => {
-            // Only trigger for file drags, not task drags from the left panel
             if (!draggedTask.current && e.dataTransfer.types.includes('Files')) {
               e.preventDefault();
               setDragOverChat(true);
@@ -1081,7 +1062,7 @@ export default function WorkspacePage() {
             <div ref={chatBottomRef} />
           </div>
 
-          {/* FILE QUEUE PILLS — shown above input when files are queued */}
+          {/* FILE QUEUE PILLS */}
           {hasFiles && (
             <div style={{ padding: '0.5rem 1.25rem 0', display: 'flex', flexWrap: 'wrap', gap: '0.4rem', borderTop: '1px solid #1a1a1a', background: '#0d0d0d' }}>
               {queuedFiles.map((f, i) => (
