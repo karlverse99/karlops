@@ -34,7 +34,27 @@ interface ChatMessage { role: 'user' | 'assistant'; content: string; timestamp: 
 interface BucketDef { key: string; label: string; icon: string; color: string; accent: string; }
 interface Context { context_id: string; name: string; }
 interface TaskStatus { task_status_id: string; name: string; label: string; }
-interface PendingAction { intent: string; payload: Record<string, any>; summary: string; }
+
+// v0.8.0 — actions[] replaces flat payload
+interface KarlAction {
+  action: string;
+  object_type?: string;
+  modal?: string;
+  fields?: Record<string, any>;
+  tasks?: any[];
+  operations?: any[];
+  identifier?: string;
+  target_identifier?: string;
+  run_mode?: 'preview' | 'save';
+}
+
+interface PendingAction {
+  intent: string;
+  actions: KarlAction[];   // v0.8.0 — always actions array
+  payload?: Record<string, any>; // kept for legacy compat
+  summary: string;
+}
+
 interface QueuedFile { name: string; type: string; data: string; size: number; }
 
 interface DelegateModalState {
@@ -90,19 +110,20 @@ function groupTasksByBucket(tasks: Task[]): Record<string, Task[]> {
   return grouped;
 }
 
-function buildPendingSummary(data: any): string {
-  const p = data.payload ?? {};
-  const action = p.action ?? data.intent ?? '';
-  if (action === 'capture_completion') return `completion: ${p.title ?? '...'}`;
-  if (action === 'update_object') {
-    const ops = (p.operations ?? [])
-      .map((op: any) => op.tag_op ? `${op.tag_op} tag ${op.value}` : `${op.field}=${op.value}`)
-      .join(', ');
-    return `update ${p.identifier}: ${ops}`;
+function buildPendingSummary(actions: KarlAction[]): string {
+  if (!actions?.length) return 'pending action';
+  if (actions.length === 1) {
+    const a = actions[0];
+    if (a.action === 'capture_tasks') return `${a.tasks?.length ?? '?'} tasks`;
+    if (a.fields?.title) return a.fields.title;
+    if (a.identifier) return `${a.action} ${a.identifier}`;
+    return `${a.action} ${a.object_type ?? ''}`.trim();
   }
-  if (action === 'capture_tasks') return `${p.tasks?.length ?? '?'} tasks`;
-  if (action === 'process_document') return p.title ?? `process document: ${p.doc_action ?? p.content_type ?? '...'}`;
-  return p.title ?? p.summary ?? 'pending action';
+  return actions.map(a =>
+    a.action === 'capture_tasks' ? `${a.tasks?.length ?? '?'} tasks`
+    : a.fields?.title ? a.fields.title
+    : `${a.action} ${a.object_type ?? ''}`.trim()
+  ).join(' + ');
 }
 
 function renderMarkdown(text: string): React.ReactNode[] {
@@ -132,20 +153,32 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-// ── Build the pending payload sent to Karl ────────────────────────────────────
-// Strip notes from tasks to keep the confirm context lean.
-// Karl doesn't need to re-read notes on confirm — he just needs to confirm.
-// Notes are preserved in the actual payload for execution.
+// ── Build the pending payload sent to Karl on confirm ─────────────────────────
+// v0.8.0 — sends actions[] directly. Strips notes from tasks to keep lean.
 function buildPendingForKarl(pending: PendingAction | null): Record<string, any> | null {
   if (!pending) return null;
-const p: Record<string, any> = { ...pending.payload, action: pending.intent, intent: pending.intent };
-  if (p.tasks?.length) {
-    p.tasks = p.tasks.map((t: any) => {
-      const { notes: _notes, ...rest } = t;
-      return rest;
+
+  // New shape — actions array
+  if (pending.actions?.length) {
+    const actions = pending.actions.map(a => {
+      if (a.tasks?.length) {
+        return { ...a, tasks: a.tasks.map((t: any) => { const { notes: _n, ...rest } = t; return rest; }) };
+      }
+      return a;
     });
+    return { actions, intent: pending.intent };
   }
-  return p;
+
+  // Legacy fallback — old flat payload shape
+  if (pending.payload) {
+    const p: Record<string, any> = { ...pending.payload, action: pending.intent, intent: pending.intent };
+    if (p.tasks?.length) {
+      p.tasks = p.tasks.map((t: any) => { const { notes: _n, ...rest } = t; return rest; });
+    }
+    return p;
+  }
+
+  return null;
 }
 
 // ─── COMPONENTS: TaskPill ────────────────────────────────────────────────────
@@ -547,62 +580,85 @@ export default function WorkspacePage() {
   };
 
   // ─── Unified command response handler ─────────────────────────────────────
+  // v0.8.0 — handles actions[] shape from route. Backwards compat for payload shape.
 
   const handleCommandResponse = async (data: any) => {
-    if (data.intent === 'execute' || data.intent === 'capture_task') {
+
+    // ── Executed (execute intent or confirm that hit DB) ───────────────────
+    if (
+      data.intent === 'execute' ||
+      data.intent === 'executed' ||
+      data.intent === 'capture_task' ||
+      data.intent === 'confirm_pending' ||
+      (data.success && data.refresh)
+    ) {
       setPending(null);
       addMessage('assistant', data.response ?? 'Done.');
       await refreshAfterUpdate();
       if (data.offer_preview && data.task_id) setPendingPreviewTaskId(data.task_id);
       return;
     }
-    if (data.intent === 'confirm_pending') {
-      setPending(null);
-      addMessage('assistant', data.response ?? 'Done.');
-      await refreshAfterUpdate();
-      if (data.offer_preview && data.task_id) setPendingPreviewTaskId(data.task_id);
-      return;
-    }
-    if (data.success && data.refresh) {
-      setPending(null);
-      addMessage('assistant', data.response ?? 'Done.');
-      await refreshAfterUpdate();
-      if (data.offer_preview && data.task_id) setPendingPreviewTaskId(data.task_id);
-      return;
-    }
+
     if (data.intent === 'cancel_pending') {
       setPending(null);
       addMessage('assistant', data.response ?? 'Cancelled.');
       return;
     }
+
+    // ── Pending — v0.8.0 actions[] shape ──────────────────────────────────
+    if (data.intent === 'pending') {
+      const actions: KarlAction[] = data.actions ?? [];
+      // Fallback: old payload shape
+      if (!actions.length && data.payload) {
+        const p = data.payload;
+        const action = p.action ?? 'insert';
+        if (p.tasks?.length) {
+          actions.push({ action: 'capture_tasks', object_type: 'task', tasks: p.tasks });
+        } else {
+          actions.push({ action, object_type: p.object_type ?? 'task', fields: p, identifier: p.identifier, operations: p.operations });
+        }
+      }
+      setPending({ intent: 'pending', actions, summary: buildPendingSummary(actions) });
+      addMessage('assistant', data.response ?? '...');
+      return;
+    }
+
+    // ── Modify pending ─────────────────────────────────────────────────────
     if (data.intent === 'modify_pending') {
-      const summary = data.payload?.title
-        ?? (data.payload?.tasks?.length ? `${data.payload.tasks.length} tasks` : 'modified action');
-      setPending({ intent: data.payload?.action ?? 'capture_task', payload: data.payload ?? {}, summary });
+      const actions: KarlAction[] = data.actions ?? [];
+      if (!actions.length && data.payload) {
+        const p = data.payload;
+        actions.push({ action: p.action ?? 'insert', object_type: p.object_type ?? 'task', fields: p, identifier: p.identifier, operations: p.operations, tasks: p.tasks });
+      }
+      setPending({ intent: 'modify_pending', actions, summary: buildPendingSummary(actions) });
       addMessage('assistant', data.response ?? 'Updated.');
       return;
     }
+
     if (data.intent === 'preview_pending') {
       addMessage('assistant', data.response ?? '...');
       return;
     }
+
     if (data.intent === 'open_form') {
       addMessage('assistant', data.response ?? 'Opening it up.');
-      setShowTaskAdd(true);
+      // Route to appropriate modal based on payload.modal
+      const modal = data.payload?.modal ?? 'TaskAddModal';
+      if (modal === 'MeetingsModal')     setShowMeetings(true);
+      else if (modal === 'ExtractsModal')    setShowExtracts(true);
+      else if (modal === 'TemplatesModal')   setShowTemplates(true);
+      else if (modal === 'ContactsModal')    setShowContacts(true);
+      else if (modal === 'CompletionsModal') setShowCompletions(true);
+      else setShowTaskAdd(true);
       return;
     }
-    if (data.intent === 'pending') {
-      const summary = data.payload?.title
-        ?? (data.payload?.tasks?.length ? `${data.payload.tasks.length} tasks` : 'pending action');
-      setPending({ intent: data.payload?.action ?? 'capture_task', payload: data.payload ?? {}, summary });
-      addMessage('assistant', data.response ?? '...');
-      return;
-    }
+
     if (data.intent === 'command' && data.payload?.command_type === 'open_tag_manager') {
       setShowTagManager(true);
       addMessage('assistant', data.response ?? 'Opening tag manager.');
       return;
     }
+
     if (data.intent === 'question' && data.payload?.delegation_pending) {
       const taskId = resolveIdentifierToTaskId(data.payload.identifier);
       if (taskId) {
@@ -620,14 +676,8 @@ export default function WorkspacePage() {
       addMessage('assistant', data.response ?? 'Who is handling this?');
       return;
     }
-    if (data.intent === 'question' || data.intent === 'unclear') {
-      addMessage('assistant', data.response ?? "I'm not sure what to do with that.");
-      return;
-    }
-    const isActionable = ['capture_task', 'capture_tasks', 'capture_completion', 'update_object', 'process_document'].includes(data.intent);
-    if (isActionable && data.payload) {
-      setPending({ intent: data.intent, payload: data.payload, summary: buildPendingSummary(data) });
-    }
+
+    // ── Question / unclear / fallthrough ──────────────────────────────────
     addMessage('assistant', data.response ?? "I'm not sure what to do with that.");
   };
 
@@ -637,7 +687,6 @@ export default function WorkspacePage() {
     const text = input.trim();
     if ((!text && queuedFiles.length === 0) || !sessionReady) return;
 
-    // Build pending for Karl — strips notes from tasks to keep confirm context lean
     const pendingForKarl = buildPendingForKarl(pending);
 
     // ── File path ────────────────────────────────────────────────────────────
@@ -1039,7 +1088,7 @@ export default function WorkspacePage() {
             {pending && (
               <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: '0.75rem' }}>
                 <div style={{ padding: '0.5rem 0.75rem', background: '#0d1a0d', border: '1px solid #1a3a1a', borderRadius: '8px', fontSize: '0.75rem', color: '#4ade80' }}>
-                  Pending: <strong>{pending.summary ?? pending.payload?.title ?? 'action'}</strong>
+                  Pending: <strong>{pending.summary}</strong>
                 </div>
               </div>
             )}
