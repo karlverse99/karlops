@@ -118,12 +118,12 @@ export async function buildKarlContext(user_id: string, context_filter: string |
       .select('phrase, intent, object_type, use_count')
       .eq('user_id', user_id).eq('is_active', true)
       .order('use_count', { ascending: false }).limit(100),
-    // Meetings — open, most recent 15, with notes
+    // Meetings — open, most recent 15, with full notes
     db.from('meeting')
       .select('meeting_id, title, meeting_date, attendees, tags, notes, outcome')
       .eq('user_id', user_id).eq('is_completed', false)
       .order('meeting_date', { ascending: false }).limit(15),
-    // Completions — most recent 15, with outcome
+    // Completions — most recent 15, with outcome and description
     db.from('completion')
       .select('completion_id, title, completed_at, outcome, description, tags')
       .eq('user_id', user_id)
@@ -186,16 +186,26 @@ export async function buildKarlContext(user_id: string, context_filter: string |
   }
   const bucketSnapshot = snapshotLines.join('\n') || 'no open tasks';
 
-  // Recent completions (windowed — for base bundle summary)
+  // ── Recent completions — with CM identifiers ──────────────────────────────
+  // Build a CM index map from the full completions list (ordered by completed_at desc)
+  // so windowed recent completions can be displayed with correct CM identifiers.
+  const allCompletions = completionRes.data ?? [];
+  const cmIndexMap = new Map<string, number>();
+  allCompletions.forEach((c, i) => cmIndexMap.set(c.completion_id, i + 1));
+
   const windowStart = new Date();
   windowStart.setDate(windowStart.getDate() - completionWin);
   const { data: recentCompletionData } = await db
-    .from('completion').select('title, completed_at')
+    .from('completion').select('completion_id, title, completed_at')
     .eq('user_id', user_id).gte('completed_at', windowStart.toISOString())
     .order('completed_at', { ascending: false }).limit(20);
 
   const recentCompletions = recentCompletionData?.length
-    ? recentCompletionData.map(c => `- ${c.title} (${c.completed_at?.slice(0, 10)})`).join('\n')
+    ? recentCompletionData.map(c => {
+        const cmNum = cmIndexMap.get(c.completion_id);
+        const prefix = cmNum ? `CM${cmNum}` : 'CM?';
+        return `${prefix} ${c.title} (${c.completed_at?.slice(0, 10)})`;
+      }).join('\n')
     : 'none in window';
 
   // ── Meeting snapshot — MT identifiers with full notes ─────────────────────
@@ -218,11 +228,10 @@ export async function buildKarlContext(user_id: string, context_filter: string |
   // ── FC object snapshots — CM, EX, TM, CT with full content ───────────────
   const fcLines: string[] = [];
 
-  // Completions
-  const completions = completionRes.data ?? [];
-  if (completions.length) {
+  // Completions with CM identifiers and full content
+  if (allCompletions.length) {
     fcLines.push('completions:');
-    completions.forEach((c, i) => {
+    allCompletions.forEach((c, i) => {
       const date = c.completed_at?.slice(0, 10) ?? '';
       const tagStr = c.tags?.length ? ` [${c.tags.join(', ')}]` : '';
       fcLines.push(`  CM${i + 1} ${c.title} · ${date}${tagStr}`);
@@ -378,7 +387,7 @@ export function formatContextForPrompt(bundle: KarlContextBundle): string {
 
   parts.push(`## Current Task Load\nTasks identified as BucketN (e.g. N1, S2, RW1). Tags in brackets. Notes indented below.\n${bundle.bucketSnapshot}`);
 
-  parts.push(`## Recent Completions\n${bundle.recentCompletions}`);
+  parts.push(`## Recent Completions\nCompletions are identified as CM1, CM2, etc. Always use CM identifiers when displaying or referencing completions.\n${bundle.recentCompletions}`);
 
   parts.push(`## Open Meetings\nMeetings identified as MT1, MT2, etc. Full notes included — use them to answer questions about meeting content, suggest tasks, or complete meetings.\n${bundle.meetingSnapshot}`);
 
