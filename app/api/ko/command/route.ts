@@ -32,6 +32,59 @@ const BUCKET_PREFIX_MAP: Record<string, string> = {
   EX: 'external_reference', TM: 'document_template', CT: 'contact',
 };
 
+const MAX_FILE_BYTES = 5 * 1024 * 1024; // 5MB
+
+const SUPPORTED_TYPES: Record<string, string> = {
+  'application/pdf': 'pdf',
+  'text/plain': 'text',
+  'text/markdown': 'text',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+};
+
+// ── File text extraction ──────────────────────────────────────────────────────
+
+async function extractTextFromFile(base64: string, mimeType: string): Promise<string> {
+  const buffer = Buffer.from(base64, 'base64');
+
+  if (mimeType === 'application/pdf') {
+    const pdfParse = (await import('pdf-parse')).default;
+    const result = await pdfParse(buffer);
+    return result.text?.trim() ?? '';
+  }
+
+  if (mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+    const mammoth = await import('mammoth');
+    const result = await mammoth.extractRawText({ buffer });
+    return result.value?.trim() ?? '';
+  }
+
+  // text/plain, text/markdown
+  return buffer.toString('utf-8').trim();
+}
+
+// ── Build Karl's file prompt ──────────────────────────────────────────────────
+
+function buildFilePrompt(fileName: string, mimeType: string, extractedText: string, userHint: string): string {
+  const truncated = extractedText.length > 12000
+    ? extractedText.slice(0, 12000) + '\n\n[... document truncated ...]'
+    : extractedText;
+
+  return `The user has dropped a file for analysis.
+Filename: ${fileName}
+Type: ${mimeType}
+User context: ${userHint || 'none provided'}
+
+Document content:
+---
+${truncated}
+---
+
+Based on the document content and user context, classify what to do and respond with the appropriate intent.
+Common actions: extract tasks (capture_tasks), summarize and store (process_document with doc_action=summarize), create a template (process_document with doc_action=create_template), log as completion (capture_completion), complete a meeting (process_document with doc_action=complete_meeting).
+If no user context was provided, ask what they'd like to do with it — respond as question intent.
+If user context was provided, propose the action — respond as pending intent with full payload.`;
+}
+
 function parseIdentifier(identifier: string): { prefix: string; index: number } | null {
   const match = identifier.toUpperCase().match(/^([A-Z]+)(\d+)$/);
   if (!match) return null;
@@ -53,7 +106,6 @@ async function resolveIdentifier(user_id: string, identifier: string, object_typ
       .eq('is_completed', false).eq('is_archived', false)
       .order('sort_order', { ascending: true, nullsFirst: false })
       .order('created_at', { ascending: true });
-    // Match the UI's context filter so identifier positions align with what user sees
     if (context_filter) query = query.eq('context_id', context_filter);
     const { data: tasks } = await query;
     return tasks?.[index - 1]?.task_id ?? null;
@@ -87,7 +139,6 @@ async function executeOperation(user_id: string, object_type: string, record_id:
       : currentTags.includes(tagName) ? currentTags : [...currentTags, tagName].slice(0, 5);
     const { error } = await db.from(table).update({ tags: newTags }).eq(pk, record_id).eq('user_id', user_id);
     if (error) throw new Error(error.message);
-    // Plain English — no field syntax
     return op.tag_op === 'remove' ? `removed #${tagName}` : `added #${tagName}`;
   }
 
@@ -116,11 +167,9 @@ async function executeOperation(user_id: string, object_type: string, record_id:
 
   const { error } = await db.from(table).update({ [op.field]: op.value }).eq(pk, record_id).eq('user_id', user_id);
   if (error) throw new Error(error.message);
-  // Generic plain English fallback
   return `${op.field} updated`;
 }
 
-// ── Execute a capture_task payload ────────────────────────────────────────────
 async function executeCaptureTask(user_id: string, payload: any): Promise<NextResponse> {
   const result = await captureTask(user_id, payload);
   if (!result.success) throw new Error(result.error);
@@ -135,13 +184,12 @@ async function executeCaptureTask(user_id: string, payload: any): Promise<NextRe
     intent:  'capture_task',
     task:    result.task,
     task_id: result.task_id,
-    refresh: true, // FIX: always refresh after capture so bucket view and counts update
+    refresh: true,
     response: `Captured — **${result.task?.title}** → ${bucketLabel}${tagNote}.`,
     offer_preview: true,
   });
 }
 
-// ── Execute capture_tasks payload ─────────────────────────────────────────────
 async function executeCaptureTasksBulk(user_id: string, tasks: any[]): Promise<NextResponse> {
   const results = await Promise.all(tasks.map(t => captureTask(user_id, typeof t === 'string' ? { title: t } : t)));
   const failed  = results.filter(r => !r.success);
@@ -162,7 +210,6 @@ async function executeCaptureTasksBulk(user_id: string, tasks: any[]): Promise<N
   });
 }
 
-// ── Execute update_object payload ─────────────────────────────────────────────
 async function executeUpdateObject(user_id: string, payload: any, context_filter?: string | null): Promise<NextResponse> {
   const { object_type, identifier, operations } = payload;
   const record_id = await resolveIdentifier(user_id, identifier, object_type, context_filter);
@@ -170,7 +217,6 @@ async function executeUpdateObject(user_id: string, payload: any, context_filter
     return NextResponse.json({ success: false, response: `Couldn't find ${identifier} — it may have moved. Try refreshing.` });
   }
 
-  // complete_task special case
   const isComplete = operations.some((op: any) => op.field === 'is_completed' && op.value === 'true');
   if (isComplete && object_type === 'task') {
     const db = createSupabaseAdmin();
@@ -206,7 +252,6 @@ async function executeUpdateObject(user_id: string, payload: any, context_filter
   });
 }
 
-// ── Execute process_document payload ──────────────────────────────────────────
 async function executeProcessDocument(user_id: string, payload: any, context_filter?: string | null): Promise<NextResponse> {
   const db = createSupabaseAdmin();
   const results: string[] = [];
@@ -250,22 +295,73 @@ export async function POST(req: NextRequest) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const body = await req.json();
-  const { input, pending, context_filter } = body;
+  const { input, pending, context_filter, file } = body;
 
+  // ── File drop path ─────────────────────────────────────────────────────────
+  if (file) {
+    const { name, type, data, size } = file;
+
+    // Size check (client should catch this too, but double-check server side)
+    if (size > MAX_FILE_BYTES) {
+      return NextResponse.json({
+        success: true,
+        intent: 'question',
+        response: `That file is over 5MB — too large to process. Try a smaller file or paste the text directly.`,
+      });
+    }
+
+    // Type check
+    const fileKind = SUPPORTED_TYPES[type];
+    if (!fileKind) {
+      return NextResponse.json({
+        success: true,
+        intent: 'question',
+        response: `I can't read that file type (${type}). Drop a PDF, Word doc, or plain text file.`,
+      });
+    }
+
+    // Extract text
+    let extractedText = '';
+    try {
+      extractedText = await extractTextFromFile(data, type);
+    } catch (extractErr: any) {
+      console.error('[command] file extraction failed:', extractErr);
+      return NextResponse.json({
+        success: true,
+        intent: 'question',
+        response: `I had trouble reading that file. It may be corrupted, scanned-only, or password protected.`,
+      });
+    }
+
+    if (!extractedText) {
+      return NextResponse.json({
+        success: true,
+        intent: 'question',
+        response: `I opened the file but couldn't find any readable text. It may be a scanned image PDF.`,
+      });
+    }
+
+    // Build file-specific prompt and send to Karl via routeCommand
+    const filePrompt = buildFilePrompt(name, type, extractedText, input ?? '');
+    const result = await routeCommand(user.id, filePrompt, pending ?? null, context_filter ?? null);
+
+    writeKarlObservation(user.id, `File dropped: ${name} (${fileKind}), hint: "${input || 'none'}"`, 'pattern').catch(() => {});
+
+    // If Karl proposes pending — return it for workspace to handle normally
+    return NextResponse.json({ success: true, ...result });
+  }
+
+  // ── Normal text path ───────────────────────────────────────────────────────
   if (!input) return NextResponse.json({ error: 'No input provided' }, { status: 400 });
 
   try {
     const result = await routeCommand(user.id, input, pending ?? null, context_filter ?? null);
 
-    // ── Karl says execute immediately (quick capture) ──────────────────────
     if (result.intent === 'execute') {
       const p = result.payload!;
-      if (p.action === 'capture_task') {
-        return await executeCaptureTask(user.id, p);
-      }
+      if (p.action === 'capture_task') return await executeCaptureTask(user.id, p);
     }
 
-    // ── Karl says confirm the pending action ───────────────────────────────
     if (result.intent === 'confirm_pending' && pending) {
       const action = pending.action ?? pending.intent;
 
@@ -290,16 +386,13 @@ export async function POST(req: NextRequest) {
       }
 
       if (action === 'update_object') return await executeUpdateObject(user.id, pending, context_filter);
-
       if (action === 'process_document') return await executeProcessDocument(user.id, pending, context_filter);
     }
 
-    // ── Karl says cancel ───────────────────────────────────────────────────
     if (result.intent === 'cancel_pending') {
       return NextResponse.json({ success: true, intent: 'cancel_pending', response: result.response ?? 'Cancelled.' });
     }
 
-    // ── All other intents — return Karl's response, workspace handles state ─
     return NextResponse.json({ success: true, ...result });
 
   } catch (err: any) {

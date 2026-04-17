@@ -36,7 +36,6 @@ interface Context { context_id: string; name: string; }
 interface TaskStatus { task_status_id: string; name: string; label: string; }
 interface PendingAction { intent: string; payload: Record<string, any>; summary: string; }
 
-// Delegate modal state — used for both drag-drop and chat delegation_pending
 interface DelegateModalState {
   taskId: string;
   taskTitle: string;
@@ -64,6 +63,13 @@ const BUCKET_ID: Record<string, string> = {
   delegate: 'D',
   capture:  'CP',
 };
+
+const SUPPORTED_FILE_TYPES = [
+  'application/pdf',
+  'text/plain',
+  'text/markdown',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+];
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 
@@ -310,8 +316,8 @@ export default function WorkspacePage() {
   const [contactCount, setContactCount]       = useState(0);
   const [selectedTask, setSelectedTask]       = useState<Task | null>(null);
   const [pendingPreviewTaskId, setPendingPreviewTaskId] = useState<string | null>(null);
-
   const [delegateModal, setDelegateModal]     = useState<DelegateModalState | null>(null);
+  const [dragOverChat, setDragOverChat]       = useState(false);
 
   const draggedTask                            = useRef<Task | null>(null);
   const chatBottomRef                          = useRef<HTMLDivElement>(null);
@@ -357,13 +363,13 @@ export default function WorkspacePage() {
         await loadContactCount(session.user.id);
         setSessionReady(true);
 
-setChat([{
-  role: 'assistant',
-  content: data.is_new_user
-    ? `Welcome. I'm Karl.\n\nDrop anything here — tasks, notes, things on your mind. I'll help you sort it.\n\nWhat's on the board right now?`
-    : (data.greeting ?? `Back at it. What's changed?`),
-  timestamp: new Date(),
-}]);
+        setChat([{
+          role: 'assistant',
+          content: data.is_new_user
+            ? `Welcome. I'm Karl.\n\nDrop anything here — tasks, notes, things on your mind. I'll help you sort it.\n\nWhat's on the board right now?`
+            : (data.greeting ?? `Back at it. What's changed?`),
+          timestamp: new Date(),
+        }]);
 
         await loadTasks(session.user.id);
 
@@ -524,8 +530,6 @@ setChat([{
       });
       const data = await res.json();
 
-      // ── Karl executed immediately (quick capture) ────────────────────
-      // Route returns 'capture_task' as intent after writing on execute path
       if (data.intent === 'execute' || data.intent === 'capture_task') {
         setPending(null);
         addMessage('assistant', data.response ?? 'Done.');
@@ -534,7 +538,6 @@ setChat([{
         return;
       }
 
-      // ── Karl confirmed and executed the pending action ───────────────
       if (data.intent === 'confirm_pending') {
         setPending(null);
         addMessage('assistant', data.response ?? 'Done.');
@@ -543,8 +546,6 @@ setChat([{
         return;
       }
 
-      // ── Successful write — route returned refresh:true ───────────────
-      // Covers update_object, capture_tasks, capture_completion, process_document
       if (data.success && data.refresh) {
         setPending(null);
         addMessage('assistant', data.response ?? 'Done.');
@@ -553,14 +554,12 @@ setChat([{
         return;
       }
 
-      // ── Karl cancelled ───────────────────────────────────────────────
       if (data.intent === 'cancel_pending') {
         setPending(null);
         addMessage('assistant', data.response ?? 'Cancelled.');
         return;
       }
 
-      // ── Karl modified pending — update payload, keep pending ─────────
       if (data.intent === 'modify_pending') {
         const summary = data.payload?.title
           ?? (data.payload?.tasks?.length ? `${data.payload.tasks.length} tasks` : 'modified action');
@@ -569,20 +568,17 @@ setChat([{
         return;
       }
 
-      // ── Karl previewed — show response, keep pending alive ───────────
       if (data.intent === 'preview_pending') {
         addMessage('assistant', data.response ?? '...');
         return;
       }
 
-      // ── Karl wants to open the form ──────────────────────────────────
       if (data.intent === 'open_form') {
         addMessage('assistant', data.response ?? 'Opening it up.');
         setShowTaskAdd(true);
         return;
       }
 
-      // ── Karl proposes a new pending action ───────────────────────────
       if (data.intent === 'pending') {
         const summary = data.payload?.title
           ?? (data.payload?.tasks?.length ? `${data.payload.tasks.length} tasks` : 'pending action');
@@ -591,14 +587,12 @@ setChat([{
         return;
       }
 
-      // ── System commands ──────────────────────────────────────────────
       if (data.intent === 'command' && data.payload?.command_type === 'open_tag_manager') {
         setShowTagManager(true);
         addMessage('assistant', data.response ?? 'Opening tag manager.');
         return;
       }
 
-      // ── Delegation pending — pop DelegateModal ───────────────────────
       if (data.intent === 'question' && data.payload?.delegation_pending) {
         const taskId = resolveIdentifierToTaskId(data.payload.identifier);
         if (taskId) {
@@ -617,14 +611,11 @@ setChat([{
         return;
       }
 
-      // ── Question / conversational ────────────────────────────────────
-      // Karl answered a question. Never touch pending — it stays exactly as it was.
       if (data.intent === 'question' || data.intent === 'unclear') {
         addMessage('assistant', data.response ?? "I'm not sure what to do with that.");
         return;
       }
 
-      // ── Fallback — any other actionable intent with payload ──────────
       const isActionable = ['capture_task', 'capture_tasks', 'capture_completion', 'update_object', 'process_document'].includes(data.intent);
       if (isActionable && data.payload) {
         setPending({ intent: data.intent, payload: data.payload, summary: buildPendingSummary(data) });
@@ -640,7 +631,85 @@ setChat([{
     }
   };
 
-  // ── Resolve identifier (e.g. "S1") to a task_id ───────────────────────────
+  // ─── File drop handler ─────────────────────────────────────────────────────
+
+  const handleFileDrop = async (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setDragOverChat(false);
+
+    // Ignore task drags — they have no files
+    if (draggedTask.current) return;
+
+    const file = e.dataTransfer.files?.[0];
+    if (!file || !sessionReady) return;
+
+    if (file.size > 5 * 1024 * 1024) {
+      addMessage('assistant', 'That file is over 5MB — too large to process. Try a smaller file or paste the text directly.');
+      return;
+    }
+
+    if (!SUPPORTED_FILE_TYPES.includes(file.type)) {
+      addMessage('assistant', `I can't read that file type. Drop a PDF, Word doc, or plain text file.`);
+      return;
+    }
+
+    // Read as base64
+    const base64 = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve((reader.result as string).split(',')[1]);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+
+    const hint = input.trim();
+    addMessage('user', hint ? `[${file.name}] — ${hint}` : `[${file.name}]`);
+    setInput('');
+    setThinking(true);
+
+    try {
+      const pendingForKarl = pending
+        ? { ...pending.payload, action: pending.intent, intent: pending.intent }
+        : null;
+
+      const res = await fetch('/api/ko/command', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
+        body: JSON.stringify({
+          input: hint,
+          pending: pendingForKarl,
+          context_filter: contextFilter,
+          file: { name: file.name, type: file.type, data: base64, size: file.size },
+        }),
+      });
+      const data = await res.json();
+
+      if (data.intent === 'pending') {
+        const summary = data.payload?.title
+          ?? (data.payload?.tasks?.length ? `${data.payload.tasks.length} tasks` : 'pending action');
+        setPending({ intent: data.payload?.action ?? 'process_document', payload: data.payload ?? {}, summary });
+        addMessage('assistant', data.response ?? '...');
+        return;
+      }
+
+      if (data.success && data.refresh) {
+        setPending(null);
+        addMessage('assistant', data.response ?? 'Done.');
+        await refreshAfterUpdate();
+        return;
+      }
+
+      addMessage('assistant', data.response ?? "Got the file. What would you like to do with it?");
+
+    } catch (err: any) {
+      console.error('[handleFileDrop]', err);
+      addMessage('assistant', 'Something went wrong reading that file. Try again.');
+    } finally {
+      setThinking(false);
+    }
+  };
+
+  // ─── Resolve identifier to task_id ────────────────────────────────────────
+
   const resolveIdentifierToTaskId = (identifier: string): string | null => {
     if (!identifier) return null;
     const upper = identifier.toUpperCase();
@@ -679,7 +748,6 @@ setChat([{
     draggedTask.current = task;
   };
 
-  // ── Drop handler — intercepts delegate bucket, opens DelegateModal ─────────
   const handleDrop = async (targetBucketKey: string) => {
     const task = draggedTask.current;
     draggedTask.current = null;
@@ -705,7 +773,6 @@ setChat([{
     }
   };
 
-  // ── DelegateModal confirm — write bucket + delegated_to to DB ─────────────
   const handleDelegateConfirm = async (tagId: string, tagName: string) => {
     if (!delegateModal || !koUser) return;
 
@@ -902,8 +969,33 @@ setChat([{
           onMouseLeave={e => (e.currentTarget.style.background = '#1a1a1a')}
         />
 
-        {/* RIGHT: CHAT */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        {/* RIGHT: CHAT — file drop target */}
+        <div
+          style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative', outline: dragOverChat ? '1px dashed #4ade80' : '1px solid transparent', borderRadius: dragOverChat ? '4px' : '0', transition: 'outline 0.15s' }}
+          onDragOver={e => {
+            // Only trigger for file drags, not task drags
+            if (!draggedTask.current && e.dataTransfer.types.includes('Files')) {
+              e.preventDefault();
+              setDragOverChat(true);
+            }
+          }}
+          onDragLeave={e => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOverChat(false);
+          }}
+          onDrop={handleFileDrop}
+        >
+          {/* Drop overlay */}
+          {dragOverChat && (
+            <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.75)', zIndex: 10, borderRadius: '4px', pointerEvents: 'none' }}>
+              <div style={{ color: '#4ade80', fontFamily: 'monospace', textAlign: 'center' }}>
+                <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>⬇</div>
+                <div style={{ fontSize: '0.9rem' }}>Drop file for Karl to analyze</div>
+                <div style={{ fontSize: '0.7rem', color: '#555', marginTop: '0.35rem' }}>PDF · DOCX · TXT · MD</div>
+              </div>
+            </div>
+          )}
+
+          {/* CHAT MESSAGES */}
           <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem 1.25rem 0.5rem', scrollbarWidth: 'thin', scrollbarColor: '#222 transparent' }}>
             {chat.map((msg, i) => <ChatBubble key={i} msg={msg} />)}
             {thinking && (
@@ -952,7 +1044,7 @@ setChat([{
                 value={input}
                 onChange={e => { setInput(e.target.value); e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px'; }}
                 onKeyDown={handleKeyDown}
-                placeholder={sessionReady ? 'Drop a task, ask Karl anything, or give an order...' : 'Starting up...'}
+                placeholder={sessionReady ? 'Drop a task, ask Karl anything, or drag a file here...' : 'Starting up...'}
                 disabled={!sessionReady || thinking}
                 rows={1}
                 style={{ flex: 1, background: '#111', border: '1px solid #222', borderRadius: '6px', color: '#e5e5e5', fontSize: '0.85rem', padding: '0.6rem 0.75rem', fontFamily: 'monospace', resize: 'none', outline: 'none', lineHeight: 1.5, minHeight: '36px', maxHeight: '120px', overflowY: 'auto', transition: 'border-color 0.15s' }}
@@ -965,7 +1057,7 @@ setChat([{
                 style={{ background: input.trim() && sessionReady && !thinking ? '#1a2a1a' : '#111', border: `1px solid ${input.trim() && sessionReady && !thinking ? '#2a4a2a' : '#1a1a1a'}`, color: input.trim() && sessionReady && !thinking ? '#4ade80' : '#555', borderRadius: '6px', padding: '0.5rem 1rem', fontSize: '0.8rem', fontFamily: 'monospace', cursor: input.trim() && sessionReady && !thinking ? 'pointer' : 'not-allowed', flexShrink: 0, height: '36px', transition: 'all 0.15s' }}
               >send</button>
             </div>
-            <div style={{ color: '#555', fontSize: '0.65rem', marginTop: '0.4rem' }}>↵ send · shift+↵ newline</div>
+            <div style={{ color: '#555', fontSize: '0.65rem', marginTop: '0.4rem' }}>↵ send · shift+↵ newline · drag file to analyze</div>
           </div>
         </div>
       </div>
