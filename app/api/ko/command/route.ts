@@ -235,7 +235,7 @@ async function executeInsert(user_id: string, action: KarlAction, context_filter
 
   // Task — use captureTask for defaults + observation
   if (object_type === 'task') {
-    const result = await captureTask(user_id, fields);
+    const result = await captureTask(user_id, fields as any);
     if (!result.success) throw new Error(result.error);
     const bucketLabel = BUCKET_LABEL[result.task?.bucket_key ?? 'capture'] ?? result.task?.bucket_key;
     const tagNote     = result.task?.tags?.length ? ` · ${result.task.tags.map((t: string) => `#${t}`).join(' ')}` : '';
