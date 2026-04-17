@@ -36,6 +36,11 @@ const BUCKET_PREFIX: Record<string, string> = {
 
 const MAX_OBSERVATIONS = 50;
 
+function trunc(text: string | null | undefined, max: number): string {
+  if (!text) return '';
+  return text.length > max ? text.slice(0, max) + ' [...]' : text;
+}
+
 // ── Field knowledge ───────────────────────────────────────────────────────────
 async function buildFieldKnowledge(user_id: string): Promise<string> {
   const db = createSupabaseAdmin();
@@ -78,7 +83,7 @@ export async function buildKarlContext(user_id: string, context_filter: string |
     contextRes,
     vocabRes,
     meetingRes,
-    completionCountRes,
+    completionRes,
     extractRes,
     templateRes,
     contactRes,
@@ -91,7 +96,7 @@ export async function buildKarlContext(user_id: string, context_filter: string |
       .eq('user_id', user_id).maybeSingle(),
     (() => {
       let q = db.from('task')
-        .select('task_id, title, bucket_key, tags, sort_order')
+        .select('task_id, title, bucket_key, tags, notes, sort_order')
         .eq('user_id', user_id).eq('is_completed', false).eq('is_archived', false)
         .order('sort_order', { ascending: true, nullsFirst: false })
         .order('created_at', { ascending: true });
@@ -113,29 +118,29 @@ export async function buildKarlContext(user_id: string, context_filter: string |
       .select('phrase, intent, object_type, use_count')
       .eq('user_id', user_id).eq('is_active', true)
       .order('use_count', { ascending: false }).limit(100),
-    // Meetings — open, most recent 15
+    // Meetings — open, most recent 15, with notes
     db.from('meeting')
-      .select('meeting_id, title, meeting_date, is_completed')
+      .select('meeting_id, title, meeting_date, attendees, tags, notes, outcome')
       .eq('user_id', user_id).eq('is_completed', false)
       .order('meeting_date', { ascending: false }).limit(15),
-    // Recent completions count (for CM identifiers)
+    // Completions — most recent 15, with outcome
     db.from('completion')
-      .select('completion_id, title, completed_at')
+      .select('completion_id, title, completed_at, outcome, description, tags')
       .eq('user_id', user_id)
       .order('completed_at', { ascending: false }).limit(15),
-    // Extracts
+    // Extracts — most recent 15, with notes/content
     db.from('external_reference')
-      .select('external_reference_id, title, created_at')
+      .select('external_reference_id, title, notes, description, created_at')
       .eq('user_id', user_id)
       .order('created_at', { ascending: false }).limit(15),
-    // Templates
+    // Templates — most recent 15, with prompt_template
     db.from('document_template')
-      .select('document_template_id, name, doc_type, is_active')
+      .select('document_template_id, name, doc_type, description, prompt_template, is_active')
       .eq('user_id', user_id).eq('is_active', true)
       .order('created_at', { ascending: false }).limit(15),
-    // Contacts
+    // Contacts — all active, with notes and contact details
     db.from('contact')
-      .select('contact_id, name, role_tag_id')
+      .select('contact_id, name, email, primary_contact_method, contact_method_detail, notes')
       .eq('user_id', user_id).eq('is_archived', false)
       .order('name', { ascending: true }).limit(20),
   ]);
@@ -149,11 +154,16 @@ export async function buildKarlContext(user_id: string, context_filter: string |
   const allMessages: ChatMessage[] = sessionRes.data?.messages ?? [];
   const recentMessages = allMessages.slice(-historyDepth);
 
-  // Bucket snapshot
-  const byBucket: Record<string, { task_id: string; title: string; tags: string[] }[]> = {};
+  // ── Bucket snapshot — tasks with tags and notes ───────────────────────────
+  const byBucket: Record<string, { task_id: string; title: string; tags: string[]; notes: string | null }[]> = {};
   for (const t of taskRes.data ?? []) {
     if (!byBucket[t.bucket_key]) byBucket[t.bucket_key] = [];
-    byBucket[t.bucket_key].push({ task_id: t.task_id, title: t.title, tags: t.tags ?? [] });
+    byBucket[t.bucket_key].push({
+      task_id: t.task_id,
+      title:   t.title,
+      tags:    t.tags ?? [],
+      notes:   t.notes ?? null,
+    });
   }
   const bucketOrder = ['now', 'soon', 'realwork', 'later', 'delegate', 'capture'];
   const snapshotLines: string[] = [];
@@ -168,12 +178,15 @@ export async function buildKarlContext(user_id: string, context_filter: string |
       items.forEach((t, i) => {
         const tagStr = t.tags.length ? ` [${t.tags.join(', ')}]` : '';
         snapshotLines.push(`  ${prefix}${i + 1} ${t.title}${tagStr}`);
+        if (t.notes) {
+          snapshotLines.push(`    notes: ${trunc(t.notes, 300)}`);
+        }
       });
     }
   }
   const bucketSnapshot = snapshotLines.join('\n') || 'no open tasks';
 
-  // Recent completions (for base bundle — titles + date only)
+  // Recent completions (windowed — for base bundle summary)
   const windowStart = new Date();
   windowStart.setDate(windowStart.getDate() - completionWin);
   const { data: recentCompletionData } = await db
@@ -185,48 +198,86 @@ export async function buildKarlContext(user_id: string, context_filter: string |
     ? recentCompletionData.map(c => `- ${c.title} (${c.completed_at?.slice(0, 10)})`).join('\n')
     : 'none in window';
 
-  // ── Meeting snapshot — MT identifiers ─────────────────────────────────────
+  // ── Meeting snapshot — MT identifiers with full notes ─────────────────────
   const meetings = meetingRes.data ?? [];
-  const meetingSnapshot = meetings.length
-    ? meetings.map((m, i) => {
-        const date = m.meeting_date ? m.meeting_date.slice(0, 10) : 'no date';
-        return `  MT${i + 1} ${m.title} · ${date}`;
-      }).join('\n')
-    : 'no open meetings';
+  const meetingLines: string[] = [];
+  meetings.forEach((m, i) => {
+    const date = m.meeting_date ? m.meeting_date.slice(0, 10) : 'no date';
+    const attendeeStr = m.attendees?.length ? ` · attendees: ${m.attendees.join(', ')}` : '';
+    const tagStr = m.tags?.length ? ` · tags: ${m.tags.join(', ')}` : '';
+    meetingLines.push(`MT${i + 1} ${m.title} · ${date}${attendeeStr}${tagStr}`);
+    if (m.outcome) {
+      meetingLines.push(`  outcome: ${trunc(m.outcome, 500)}`);
+    }
+    if (m.notes) {
+      meetingLines.push(`  notes: ${trunc(m.notes, 2000)}`);
+    }
+  });
+  const meetingSnapshot = meetingLines.length ? meetingLines.join('\n') : 'no open meetings';
 
-  // ── FC object snapshots — CM, EX, TM, CT identifiers ─────────────────────
+  // ── FC object snapshots — CM, EX, TM, CT with full content ───────────────
   const fcLines: string[] = [];
 
-  const completions = completionCountRes.data ?? [];
+  // Completions
+  const completions = completionRes.data ?? [];
   if (completions.length) {
     fcLines.push('completions:');
     completions.forEach((c, i) => {
       const date = c.completed_at?.slice(0, 10) ?? '';
-      fcLines.push(`  CM${i + 1} ${c.title} · ${date}`);
+      const tagStr = c.tags?.length ? ` [${c.tags.join(', ')}]` : '';
+      fcLines.push(`  CM${i + 1} ${c.title} · ${date}${tagStr}`);
+      if (c.outcome) {
+        fcLines.push(`    outcome: ${trunc(c.outcome, 500)}`);
+      }
+      if (c.description) {
+        fcLines.push(`    description: ${trunc(c.description, 300)}`);
+      }
     });
   }
 
+  // Extracts
   const extracts = extractRes.data ?? [];
   if (extracts.length) {
     fcLines.push('extracts:');
     extracts.forEach((e, i) => {
       fcLines.push(`  EX${i + 1} ${e.title}`);
+      if (e.description) {
+        fcLines.push(`    description: ${trunc(e.description, 300)}`);
+      }
+      if (e.notes) {
+        fcLines.push(`    content: ${trunc(e.notes, 2000)}`);
+      }
     });
   }
 
+  // Templates
   const templates = templateRes.data ?? [];
   if (templates.length) {
     fcLines.push('templates:');
     templates.forEach((t, i) => {
       fcLines.push(`  TM${i + 1} ${t.name}${t.doc_type ? ` (${t.doc_type})` : ''}`);
+      if (t.description) {
+        fcLines.push(`    description: ${trunc(t.description, 200)}`);
+      }
+      if (t.prompt_template) {
+        fcLines.push(`    template: ${trunc(t.prompt_template, 2000)}`);
+      }
     });
   }
 
+  // Contacts
   const contacts = contactRes.data ?? [];
   if (contacts.length) {
     fcLines.push('contacts:');
     contacts.forEach((c, i) => {
       fcLines.push(`  CT${i + 1} ${c.name}`);
+      if (c.email) fcLines.push(`    email: ${c.email}`);
+      if (c.primary_contact_method) {
+        fcLines.push(`    contact via: ${c.primary_contact_method}${c.contact_method_detail ? ` (${c.contact_method_detail})` : ''}`);
+      }
+      if (c.notes) {
+        fcLines.push(`    notes: ${trunc(c.notes, 300)}`);
+      }
     });
   }
 
@@ -325,13 +376,13 @@ export function formatContextForPrompt(bundle: KarlContextBundle): string {
     parts.push(`## User Situation\nNot yet configured. Encourage the user to write their situation brief.`);
   }
 
-  parts.push(`## Current Task Load\nTasks are identified as BucketN (e.g. N1, S2, RW1, L1, D1) for reference in commands.\nTags are shown in brackets after each task title.\n${bundle.bucketSnapshot}`);
+  parts.push(`## Current Task Load\nTasks identified as BucketN (e.g. N1, S2, RW1). Tags in brackets. Notes indented below.\n${bundle.bucketSnapshot}`);
 
   parts.push(`## Recent Completions\n${bundle.recentCompletions}`);
 
-  parts.push(`## Open Meetings\nMeetings are identified as MT1, MT2, etc. Use these identifiers when user refers to a meeting.\n${bundle.meetingSnapshot}`);
+  parts.push(`## Open Meetings\nMeetings identified as MT1, MT2, etc. Full notes included — use them to answer questions about meeting content, suggest tasks, or complete meetings.\n${bundle.meetingSnapshot}`);
 
-  parts.push(`## Other FC Objects\nCompletions (CM), Extracts (EX), Templates (TM), Contacts (CT) — use these identifiers when user refers to them.\n${bundle.fcSnapshot}`);
+  parts.push(`## Other FC Objects\nCompletions (CM), Extracts (EX), Templates (TM), Contacts (CT) with full content. Use identifiers when user refers to them.\n${bundle.fcSnapshot}`);
 
   if (bundle.observations) {
     parts.push(`## Karl's Observations\n${bundle.observations}`);
@@ -339,7 +390,7 @@ export function formatContextForPrompt(bundle: KarlContextBundle): string {
 
   parts.push(`## Available Tags\nExact tag names this user has created. Only use tags from this list.\n${bundle.availableTags}`);
 
-  parts.push(`## Available Contexts\nFormat: Name|context_id. Use the context_id UUID when returning context_id in your JSON response.\n${bundle.availableContexts}`);
+  parts.push(`## Available Contexts\nFormat: Name|context_id. Use the context_id UUID when returning context_id in JSON.\n${bundle.availableContexts}`);
 
   if (bundle.vocab) {
     parts.push(`## Learned Vocabulary\nPhrases this user has used before and what they map to.\n${bundle.vocab}`);
