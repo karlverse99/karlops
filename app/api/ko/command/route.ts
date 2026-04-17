@@ -70,6 +70,8 @@ function resolveFileType(name: string, type: string): string {
 }
 
 // ── Build Karl's file prompt ──────────────────────────────────────────────────
+// User hint is a HARD INSTRUCTION placed first — Karl must honor it.
+// Document content follows and informs execution, not intent.
 
 function buildFilePrompt(files: Array<{ name: string; type: string; text: string }>, userHint: string): string {
   const fileBlocks = files.map((f, i) =>
@@ -78,25 +80,45 @@ function buildFilePrompt(files: Array<{ name: string; type: string; text: string
       : `--- ${f.name} (${f.type}) ---\n${f.text.length > 12000 ? f.text.slice(0, 12000) + '\n[truncated]' : f.text}`
   ).join('\n\n');
 
-  return `The user has dropped ${files.length === 1 ? 'a file' : `${files.length} files`} for analysis.
-User context: ${userHint || 'none provided'}
+  const hintBlock = userHint
+    ? `## CRITICAL — USER INSTRUCTION (MUST FOLLOW EXACTLY)
+The user has explicitly said: "${userHint}"
+You MUST use this to determine doc_action. Do NOT override based on document content.
+- "summarize" / "summary" / "what's in this" → doc_action: summarize
+- "extract tasks" / "pull tasks" / "what are the tasks" → capture_tasks intent
+- "make a template" / "create a template" / "turn into a template" → doc_action: create_template
+- "log as completion" / "mark done" / "i completed this" → capture_completion intent
+- "complete the meeting" / "close out meeting" → doc_action: complete_meeting
+The document content tells you HOW to execute. The user instruction tells you WHAT to do.`
+    : `## NO USER INSTRUCTION PROVIDED
+The user dropped a file without saying what they want.
+Do NOT guess a doc_action. Respond as question intent and ask what they'd like to do.`;
+
+  return `${hintBlock}
+
+Files dropped: ${files.map(f => f.name).join(', ')}
 
 Document content:
 ${fileBlocks}
 
-Based on the document content and user context, classify what to do and respond with the appropriate intent.
-Common actions: extract tasks (capture_tasks), summarize and store (process_document with doc_action=summarize), create a template (process_document with doc_action=create_template), log as completion (capture_completion), complete a meeting (process_document with doc_action=complete_meeting).
-If no user context was provided, ask what they'd like to do — respond as question intent.
-If user context was provided, propose the action — respond as pending intent with full payload.
+Response rules:
+- User instruction provided → pending intent, payload matches their instruction exactly
+- No user instruction → question intent, ask what they want
+- Never return a doc_action that contradicts the user's explicit words
 
-If doc_action is create_template, the payload MUST include:
+If doc_action is summarize, payload MUST include:
+- title: short descriptive title
+- summary: comprehensive summary of the document(s)
+- description: one sentence overview
+
+If doc_action is create_template, payload MUST include:
 - title: template name
-- doc_type: short type classifier (e.g. "Complaint Letter", "Executive Summary", "Script", "Response")
+- doc_type: short type classifier (e.g. "Complaint Letter", "Executive Summary", "Script")
 - description: one sentence — what this template is for
-- generation_instructions: the ACTUAL template document with blanks marked as ___ where variable content goes — structured exactly like the source document but genericized for reuse. This is the literal fill-in-the-blank template text, not instructions about it. Preserve headings, structure, and formatting from the source.
-- data_sources: object with boolean flags — { tasks: bool, meetings: bool, situation: bool, references: bool, completions: bool }
-- tags: relevant tags from the user's existing tags (max 5)
-- context_name: name of the context if identifiable`;
+- generation_instructions: the ACTUAL fill-in-the-blank template with ___ for variable content — preserve structure and headings from source
+- data_sources: { tasks: bool, meetings: bool, situation: bool, references: bool, completions: bool }
+- tags: relevant tags from user's existing tags (max 5)
+- context_name: context name if identifiable`;
 }
 
 function parseIdentifier(identifier: string): { prefix: string; index: number } | null {
@@ -141,7 +163,9 @@ async function executeOperation(user_id: string, object_type: string, record_id:
     const tagName = String(op.value);
     const { data: current } = await db.from(table).select('tags').eq(pk, record_id).single();
     const currentTags: string[] = (current as any)?.tags ?? [];
-    const newTags = op.tag_op === 'remove' ? currentTags.filter(t => t !== tagName) : currentTags.includes(tagName) ? currentTags : [...currentTags, tagName].slice(0, 5);
+    const newTags = op.tag_op === 'remove'
+      ? currentTags.filter(t => t !== tagName)
+      : currentTags.includes(tagName) ? currentTags : [...currentTags, tagName].slice(0, 5);
     const { error } = await db.from(table).update({ tags: newTags }).eq(pk, record_id).eq('user_id', user_id);
     if (error) throw new Error(error.message);
     return op.tag_op === 'remove' ? `removed #${tagName}` : `added #${tagName}`;
@@ -177,7 +201,11 @@ async function executeCaptureTask(user_id: string, payload: any): Promise<NextRe
   const bucketLabel = BUCKET_LABEL[result.task?.bucket_key ?? 'capture'] ?? result.task?.bucket_key;
   const tagNote     = result.task?.tags?.length ? ` · ${result.task.tags.map((t: string) => `#${t}`).join(' ')}` : '';
   writeKarlObservation(user_id, `Captured: "${result.task?.title}" → ${bucketLabel}${tagNote}`, 'pattern').catch(() => {});
-  return NextResponse.json({ success: true, intent: 'capture_task', task: result.task, task_id: result.task_id, refresh: true, response: `Captured — **${result.task?.title}** → ${bucketLabel}${tagNote}.`, offer_preview: true });
+  return NextResponse.json({
+    success: true, intent: 'capture_task', task: result.task, task_id: result.task_id,
+    refresh: true, offer_preview: true,
+    response: `Captured — **${result.task?.title}** → ${bucketLabel}${tagNote}.`,
+  });
 }
 
 async function executeCaptureTasksBulk(user_id: string, tasks: any[]): Promise<NextResponse> {
@@ -186,13 +214,22 @@ async function executeCaptureTasksBulk(user_id: string, tasks: any[]): Promise<N
   const success = results.filter(r => r.success);
   if (success.length === 0) throw new Error('All captures failed');
   writeKarlObservation(user_id, `Bulk captured ${success.length} tasks`, 'pattern').catch(() => {});
-  return NextResponse.json({ success: true, intent: 'capture_tasks', tasks: success.map(r => r.task), task_ids: success.map(r => r.task_id), refresh: true, response: failed.length > 0 ? `Captured ${success.length} tasks. ${failed.length} failed.` : `Captured ${success.length} task${success.length > 1 ? 's' : ''}.` });
+  return NextResponse.json({
+    success: true, intent: 'capture_tasks',
+    tasks: success.map(r => r.task), task_ids: success.map(r => r.task_id),
+    refresh: true,
+    response: failed.length > 0
+      ? `Captured ${success.length} tasks. ${failed.length} failed.`
+      : `Captured ${success.length} task${success.length > 1 ? 's' : ''}.`,
+  });
 }
 
 async function executeUpdateObject(user_id: string, payload: any, context_filter?: string | null): Promise<NextResponse> {
   const { object_type, identifier, operations } = payload;
   const record_id = await resolveIdentifier(user_id, identifier, object_type, context_filter);
-  if (!record_id) return NextResponse.json({ success: false, response: `Couldn't find ${identifier} — it may have moved. Try refreshing.` });
+  if (!record_id) {
+    return NextResponse.json({ success: false, response: `Couldn't find ${identifier} — it may have moved. Try refreshing.` });
+  }
 
   const isComplete = operations.some((op: any) => op.field === 'is_completed' && op.value === 'true');
   if (isComplete && object_type === 'task') {
@@ -239,7 +276,10 @@ async function executeProcessDocument(user_id: string, payload: any, context_fil
     });
     if (tmplError) throw new Error(tmplError.message);
     writeKarlObservation(user_id, `Created template from document: "${payload.title}"`, 'pattern').catch(() => {});
-    return NextResponse.json({ success: true, intent: 'process_document', refresh: true, response: `Template **${payload.title}** created. Find it in +template.` });
+    return NextResponse.json({
+      success: true, intent: 'process_document', refresh: true,
+      response: `Template **${payload.title}** created. Find it in +template.`,
+    });
   }
 
   const results: string[] = [];
@@ -257,7 +297,9 @@ async function executeProcessDocument(user_id: string, payload: any, context_fil
   // ── extract tasks ──────────────────────────────────────────────────────────
   if (payload.extracted_tasks?.length) {
     for (const t of payload.extracted_tasks) {
-      const result = await captureTask(user_id, { title: t.title, bucket_key: t.bucket_key ?? 'capture', tags: t.tags ?? [], notes: t.notes ?? null });
+      const result = await captureTask(user_id, {
+        title: t.title, bucket_key: t.bucket_key ?? 'capture', tags: t.tags ?? [], notes: t.notes ?? null,
+      });
       if (result.success) capturedTasks.push(result.task);
     }
     if (capturedTasks.length) results.push(`${capturedTasks.length} task${capturedTasks.length > 1 ? 's' : ''} captured`);
@@ -269,7 +311,11 @@ async function executeProcessDocument(user_id: string, payload: any, context_fil
   }
 
   writeKarlObservation(user_id, `Processed document: action=${payload.doc_action}, tasks=${capturedTasks.length}`, 'pattern').catch(() => {});
-  return NextResponse.json({ success: true, intent: 'process_document', tasks: capturedTasks, response: results.length ? results.join('. ') + '.' : 'Document processed.', refresh: capturedTasks.length > 0 || payload.doc_action === 'complete_meeting' });
+  return NextResponse.json({
+    success: true, intent: 'process_document', tasks: capturedTasks,
+    response: results.length ? results.join('. ') + '.' : 'Document processed.',
+    refresh: capturedTasks.length > 0 || payload.doc_action === 'complete_meeting',
+  });
 }
 
 // ── Main POST handler ─────────────────────────────────────────────────────────
@@ -304,19 +350,45 @@ export async function POST(req: NextRequest) {
     }
 
     if (extracted.length === 0) {
-      return NextResponse.json({ success: true, intent: 'question', response: errors.length ? `Couldn't read those files: ${errors.join(', ')}.` : `I opened the files but couldn't find any readable text.` });
+      return NextResponse.json({
+        success: true,
+        intent: 'question',
+        response: errors.length
+          ? `Couldn't read those files: ${errors.join(', ')}.`
+          : `I opened the files but couldn't find any readable text.`,
+      });
     }
 
-    const filePrompt = buildFilePrompt(extracted, input ?? '');
+    const userHint = input ?? '';
+    const filePrompt = buildFilePrompt(extracted, userHint);
     const result = await routeCommand(user.id, filePrompt, pending ?? null, context_filter ?? null);
 
-    writeKarlObservation(user.id, `File(s) dropped: ${extracted.map(f => f.name).join(', ')}, hint: "${input || 'none'}"`, 'pattern').catch(() => {});
+    // ── Self-teaching observation ─────────────────────────────────────────
+    // Karl records what user asked vs what he classified.
+    // This feeds back into context on future calls so Karl learns to honor
+    // explicit user instructions on file drops without being told twice.
+    const classifiedAction = result.payload?.doc_action ?? result.payload?.action ?? result.intent;
+    writeKarlObservation(
+      user.id,
+      `File drop: user said "${userHint || 'nothing'}", Karl classified as "${classifiedAction}". ` +
+      `Files: ${extracted.map(f => f.name).join(', ')}. ` +
+      `When user explicitly states an action (summarize, extract tasks, make template), Karl must honor it exactly.`,
+      'preference'
+    ).catch(() => {});
 
     if (errors.length) {
       result.response = (result.response ?? '') + `\n\n(Skipped: ${errors.join(', ')})`;
     }
 
-    return NextResponse.json({ success: true, ...result });
+    // ── CRITICAL: return explicit shape, never spread result ──────────────
+    // Spreading flattens payload fields to root, breaking client pending
+    // handling which expects fields nested under data.payload.
+    return NextResponse.json({
+      success:  true,
+      intent:   result.intent,
+      response: result.response ?? null,
+      payload:  result.payload ?? null,
+    });
   }
 
   // ── Normal text path ───────────────────────────────────────────────────────
@@ -331,13 +403,11 @@ export async function POST(req: NextRequest) {
     }
 
     if (result.intent === 'confirm_pending' && pending) {
-      // ── CRITICAL: flatten nested payload if present ───────────────────────
-      // workspace sends { ...pending.payload, action, intent }
-      // pending.payload may itself be nested — unwrap it
+      // Flatten nested payload — workspace sends { ...pending.payload, action, intent }
       const flat = pending.payload ? { ...pending.payload, ...pending } : pending;
       const action = flat.action ?? flat.intent;
 
-      if (action === 'capture_task') return await executeCaptureTask(user.id, flat);
+      if (action === 'capture_task')    return await executeCaptureTask(user.id, flat);
 
       if (action === 'capture_tasks') {
         const tasks = flat.tasks ?? flat.payload?.tasks ?? [];
@@ -345,13 +415,20 @@ export async function POST(req: NextRequest) {
       }
 
       if (action === 'capture_completion') {
-        const compResult = await captureCompletion(user.id, { title: flat.title ?? flat.payload?.title, outcome: flat.outcome ?? flat.payload?.outcome ?? '' });
+        const compResult = await captureCompletion(user.id, {
+          title:   flat.title ?? flat.payload?.title,
+          outcome: flat.outcome ?? flat.payload?.outcome ?? '',
+        });
         if (!compResult.success) throw new Error(compResult.error);
         writeKarlObservation(user.id, `Logged completion: "${compResult.completion?.title}"`, 'pattern').catch(() => {});
-        return NextResponse.json({ success: true, intent: 'capture_completion', completion: compResult.completion, refresh: true, response: `Logged — **${compResult.completion?.title}**.` });
+        return NextResponse.json({
+          success: true, intent: 'capture_completion',
+          completion: compResult.completion, refresh: true,
+          response: `Logged — **${compResult.completion?.title}**.`,
+        });
       }
 
-      if (action === 'update_object') return await executeUpdateObject(user.id, flat, context_filter);
+      if (action === 'update_object')    return await executeUpdateObject(user.id, flat, context_filter);
       if (action === 'process_document') return await executeProcessDocument(user.id, flat, context_filter);
     }
 
@@ -359,7 +436,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: true, intent: 'cancel_pending', response: result.response ?? 'Cancelled.' });
     }
 
-    return NextResponse.json({ success: true, ...result });
+    // Explicit shape on normal path too — consistent, no surprise flattening
+    return NextResponse.json({
+      success:  true,
+      intent:   result.intent,
+      response: result.response ?? null,
+      payload:  result.payload ?? null,
+    });
 
   } catch (err: any) {
     console.error('[POST /api/ko/command]', err);
