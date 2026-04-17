@@ -1,5 +1,5 @@
 // app/api/ko/command/route.ts
-// KarlOps L — Command execution route v0.7.1
+// KarlOps L — Command execution route v0.7.2
 // Karl decides everything. Route just executes.
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -39,6 +39,13 @@ const SUPPORTED_TYPES: Record<string, string> = {
   'text/plain': 'text',
   'text/markdown': 'text',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+};
+
+const EXT_FALLBACK: Record<string, string> = {
+  '.pdf':  'application/pdf',
+  '.txt':  'text/plain',
+  '.md':   'text/markdown',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 };
 
 // ── File text extraction ──────────────────────────────────────────────────────
@@ -82,7 +89,16 @@ ${truncated}
 Based on the document content and user context, classify what to do and respond with the appropriate intent.
 Common actions: extract tasks (capture_tasks), summarize and store (process_document with doc_action=summarize), create a template (process_document with doc_action=create_template), log as completion (capture_completion), complete a meeting (process_document with doc_action=complete_meeting).
 If no user context was provided, ask what they'd like to do with it — respond as question intent.
-If user context was provided, propose the action — respond as pending intent with full payload.`;
+If user context was provided, propose the action — respond as pending intent with full payload.
+
+If doc_action is create_template, the payload MUST include:
+- title: template name
+- doc_type: short type classifier (e.g. "Complaint Letter", "Executive Summary", "Script", "Response")
+- description: one sentence — what this template is for
+- generation_instructions: the ACTUAL template document with blanks marked as ___ where variable content goes — structured exactly like the source document but genericized for reuse. This is the literal fill-in-the-blank template text, not instructions about it. Preserve headings, structure, and formatting from the source.
+- data_sources: object with boolean flags for what live data should be injected — { tasks: bool, meetings: bool, situation: bool, references: bool, completions: bool }
+- tags: relevant tags from the user's existing tags (max 5)
+- context_name: name of the context if identifiable from the document (e.g. "The Unobsolete", "Work")`;
 }
 
 function parseIdentifier(identifier: string): { prefix: string; index: number } | null {
@@ -257,6 +273,47 @@ async function executeProcessDocument(user_id: string, payload: any, context_fil
   const results: string[] = [];
   const capturedTasks: any[] = [];
 
+  // ── create_template ────────────────────────────────────────────────────────
+  if (payload.doc_action === 'create_template') {
+    // Resolve context_id from name if provided
+    let context_id: string | null = null;
+    if (payload.context_name) {
+      const { data: ctx } = await db
+        .from('context')
+        .select('context_id')
+        .eq('user_id', user_id)
+        .ilike('name', payload.context_name)
+        .single();
+      context_id = ctx?.context_id ?? null;
+    }
+
+    const { error: tmplError } = await db.from('document_template').insert({
+      user_id,
+      name:            payload.title ?? 'Untitled Template',
+      description:     payload.description ?? null,
+      doc_type:        payload.doc_type ?? 'general',
+      prompt_template: payload.generation_instructions ?? '',
+      tags:            payload.tags ?? [],
+      context_id,
+      data_sources:    payload.data_sources ?? {},
+      output_format:   'markdown',
+      is_active:       true,
+      is_system:       false,
+    });
+
+    if (tmplError) throw new Error(tmplError.message);
+
+    writeKarlObservation(user_id, `Created template from document: "${payload.title}"`, 'pattern').catch(() => {});
+
+    return NextResponse.json({
+      success:  true,
+      intent:   'process_document',
+      refresh:  true,
+      response: `Template **${payload.title}** created. Find it in +template.`,
+    });
+  }
+
+  // ── complete_meeting ───────────────────────────────────────────────────────
   if (payload.doc_action === 'complete_meeting' && payload.target_identifier) {
     const meeting_id = await resolveIdentifier(user_id, payload.target_identifier, 'meeting', context_filter);
     if (meeting_id && payload.summary) {
@@ -265,6 +322,7 @@ async function executeProcessDocument(user_id: string, payload: any, context_fil
     }
   }
 
+  // ── extract tasks ──────────────────────────────────────────────────────────
   if (payload.extracted_tasks?.length) {
     for (const t of payload.extracted_tasks) {
       const result = await captureTask(user_id, { title: t.title, bucket_key: t.bucket_key ?? 'capture', tags: t.tags ?? [], notes: t.notes ?? null });
@@ -273,6 +331,7 @@ async function executeProcessDocument(user_id: string, payload: any, context_fil
     if (capturedTasks.length) results.push(`${capturedTasks.length} task${capturedTasks.length > 1 ? 's' : ''} captured`);
   }
 
+  // ── field learning ─────────────────────────────────────────────────────────
   if (payload.field_learning?.object_type && payload.field_learning?.field && payload.field_learning?.llm_notes) {
     updateFieldLlmNotes(user_id, payload.field_learning.object_type, payload.field_learning.field, payload.field_learning.llm_notes).catch(() => {});
   }
@@ -301,7 +360,6 @@ export async function POST(req: NextRequest) {
   if (file) {
     const { name, type, data, size } = file;
 
-    // Size check (client should catch this too, but double-check server side)
     if (size > MAX_FILE_BYTES) {
       return NextResponse.json({
         success: true,
@@ -310,8 +368,13 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Type check
-    const fileKind = SUPPORTED_TYPES[type];
+    // Type check — fall back to extension if MIME type is missing/wrong
+    let resolvedType = type;
+    if (!SUPPORTED_TYPES[resolvedType]) {
+      const ext = '.' + (name.split('.').pop()?.toLowerCase() ?? '');
+      resolvedType = EXT_FALLBACK[ext] ?? type;
+    }
+    const fileKind = SUPPORTED_TYPES[resolvedType];
     if (!fileKind) {
       return NextResponse.json({
         success: true,
@@ -323,7 +386,7 @@ export async function POST(req: NextRequest) {
     // Extract text
     let extractedText = '';
     try {
-      extractedText = await extractTextFromFile(data, type);
+      extractedText = await extractTextFromFile(data, resolvedType);
     } catch (extractErr: any) {
       console.error('[command] file extraction failed:', extractErr);
       return NextResponse.json({
@@ -341,13 +404,11 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Build file-specific prompt and send to Karl via routeCommand
-    const filePrompt = buildFilePrompt(name, type, extractedText, input ?? '');
+    const filePrompt = buildFilePrompt(name, resolvedType, extractedText, input ?? '');
     const result = await routeCommand(user.id, filePrompt, pending ?? null, context_filter ?? null);
 
     writeKarlObservation(user.id, `File dropped: ${name} (${fileKind}), hint: "${input || 'none'}"`, 'pattern').catch(() => {});
 
-    // If Karl proposes pending — return it for workspace to handle normally
     return NextResponse.json({ success: true, ...result });
   }
 
@@ -373,19 +434,22 @@ export async function POST(req: NextRequest) {
       }
 
       if (action === 'capture_completion') {
-        const compResult = await captureCompletion(user.id, { title: pending.title ?? pending.payload?.title, outcome: pending.outcome ?? pending.payload?.outcome ?? '' });
+        const compResult = await captureCompletion(user.id, {
+          title:   pending.title ?? pending.payload?.title,
+          outcome: pending.outcome ?? pending.payload?.outcome ?? '',
+        });
         if (!compResult.success) throw new Error(compResult.error);
         writeKarlObservation(user.id, `Logged completion: "${compResult.completion?.title}"`, 'pattern').catch(() => {});
         return NextResponse.json({
-          success: true,
-          intent: 'capture_completion',
+          success:    true,
+          intent:     'capture_completion',
           completion: compResult.completion,
-          refresh: true,
-          response: `Logged — **${compResult.completion?.title}**.`,
+          refresh:    true,
+          response:   `Logged — **${compResult.completion?.title}**.`,
         });
       }
 
-      if (action === 'update_object') return await executeUpdateObject(user.id, pending, context_filter);
+      if (action === 'update_object')    return await executeUpdateObject(user.id, pending, context_filter);
       if (action === 'process_document') return await executeProcessDocument(user.id, pending, context_filter);
     }
 
