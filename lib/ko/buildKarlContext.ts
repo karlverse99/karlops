@@ -49,7 +49,7 @@ async function buildFieldKnowledge(user_id: string): Promise<string> {
     .from('ko_field_metadata')
     .select('object_type, field, label, field_type, insert_behavior, update_behavior, description, llm_notes')
     .eq('user_id', user_id)
-    .in('object_type', ['task', 'completion', 'meeting', 'contact', 'external_reference', 'document_template'])
+    .in('object_type', ['task', 'completion', 'meeting', 'contact', 'external_reference', 'document_template', 'task_status'])
     .lt('display_order', 999)
     .order('object_type')
     .order('display_order');

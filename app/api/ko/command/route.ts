@@ -113,7 +113,9 @@ async function resolveIdentifier(
 async function resolveStatusId(user_id: string, label: string): Promise<string | null> {
   const db = createSupabaseAdmin();
   const { data } = await db.from('task_status').select('task_status_id, label').eq('user_id', user_id);
-  return data?.find(s => s.label.toLowerCase() === label.toLowerCase())?.task_status_id ?? null;
+  // Normalize underscores to spaces — Karl sometimes sends "not_started" instead of "Not Started"
+  const normalized = label.replace(/_/g, ' ').toLowerCase();
+  return data?.find(s => s.label.toLowerCase() === normalized)?.task_status_id ?? null;
 }
 
 async function resolveContextId(user_id: string, contextName: string | null | undefined): Promise<string | null> {

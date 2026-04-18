@@ -99,6 +99,7 @@ export const OBJECT_TABLE: Record<string, string> = {
   document_template:  'document_template',
   contact:            'contact',
   tag:                'tag',
+  task_status:        'task_status',
 };
 
 export const OBJECT_PK: Record<string, string> = {
@@ -109,6 +110,7 @@ export const OBJECT_PK: Record<string, string> = {
   document_template:  'document_template_id',
   contact:            'contact_id',
   tag:                'tag_id',
+  task_status:        'task_status_id',
 };
 
 export const OBJECT_MODAL: Record<string, string> = {
@@ -577,7 +579,7 @@ export async function routeCommand(
       .from('ko_field_metadata')
       .select('object_type, field, label, field_type, insert_behavior, update_behavior, description, llm_notes')
       .eq('user_id', user_id)
-      .in('object_type', ['task', 'meeting', 'completion', 'external_reference', 'document_template', 'contact']);
+      .in('object_type', ['task', 'meeting', 'completion', 'external_reference', 'document_template', 'contact', 'task_status']);
 
     const meta = allMeta ?? [];
     const objectSummaries = buildObjectSummaries(meta);
