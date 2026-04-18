@@ -435,8 +435,9 @@ async function enrichActions(
       a.modal = OBJECT_MODAL[a.object_type] ?? undefined;
     }
 
-    // Tag suggestion on insert/capture
-    if (!isModify && (a.action === 'insert' || a.action === 'capture_tasks')) {
+    // Tag suggestion on insert/capture — skip if no_suggest flag set on any matching rule
+    const noSuggest = (a as any)._no_suggest === true;
+    if (!isModify && !noSuggest && (a.action === 'insert' || a.action === 'capture_tasks')) {
       if (a.fields?.tags !== undefined) {
         const existing = (a.fields.tags as string[]).filter(t => !rejectedTags.includes(t));
         const contextText = [a.fields.title, a.fields.description, a.fields.notes].filter(Boolean).join(' ');
@@ -519,6 +520,9 @@ function applyRuleToActions(actions: KarlAction[], rule: MatchedRule): KarlActio
     if (a.object_type !== appliesTo) return a;
     if (a.action !== 'insert' && a.action !== 'capture_tasks') return a;
 
+    // Mark action as no_suggest if rule has that flag
+    if (ruleData.no_suggest) (a as any)._no_suggest = true;
+
     if (a.action === 'insert' && a.fields) {
       for (const ra of ruleActions) {
         if (ra.field === 'tags' && ra.mode === 'add') {
@@ -537,6 +541,10 @@ function applyRuleToActions(actions: KarlAction[], rule: MatchedRule): KarlActio
           if (!a.fields.bucket_key || a.fields.bucket_key === 'capture') {
             a.fields.bucket_key = ra.value;
           }
+        } else if (ra.field === 'task_status_id' && ra.mode === 'set') {
+          if (!a.fields.task_status_id) {
+            a.fields.task_status_id = ra.value;
+          }
         }
       }
     }
@@ -554,6 +562,8 @@ function applyRuleToActions(actions: KarlAction[], rule: MatchedRule): KarlActio
               if (isUuid) t.context_id = ra.value;
               else t.context_name = ra.value;
             }
+          } else if (ra.field === 'task_status_id' && ra.mode === 'set') {
+            if (!t.task_status_id) t.task_status_id = ra.value;
           }
         }
         return t;
@@ -820,7 +830,7 @@ export async function routeCommand(
       '{ "intent": "pending", "actions": [...], "response": "...", "learning": { "vocab": { "term": "report", "maps_to": "document_template" }, "observation": { "content": "User calls output documents reports", "observation_type": "preference" } } }',
       '',
       '// Propose a new vocab rule (always confirm first):',
-      '{ "intent": "question", "response": "Whenever you say UO Planning I will add tags TheUnobsolete and Jen Schroeder. Save this rule? (confirm=true by default, say silent to skip confirms)", "learning": { "rule": { "phrase": "UO Planning", "description": "Unobsolete planning tasks", "match": "contains", "confirm": true, "rule_data": { "applies_to": "task", "actions": [{ "field": "tags", "mode": "add", "value": ["TheUnobsolete", "Jen Schroeder"] }] } } } }',
+      '{ "intent": "question", "response": "Whenever you say UO Planning I will add tags TheUnobsolete and Jen Schroeder. Save this rule? (confirm=true by default, say silent to skip confirms)", "learning": { "rule": { "phrase": "UO Planning", "description": "Unobsolete planning tasks", "match": "contains", "confirm": true, "rule_data": { "applies_to": "task", "no_suggest": false, "actions": [{ "field": "tags", "mode": "add", "value": ["TheUnobsolete", "Jen Schroeder"] }] } } } }',
       '',
       '// Delete a rule:',
       '{ "intent": "question", "response": "Deleted the UO Planning rule.", "learning": { "delete_rule": { "vocab_id": "vocab-id-from-learned-vocabulary" } } }',
