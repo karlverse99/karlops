@@ -123,7 +123,7 @@ export async function buildKarlContext(user_id: string, context_filter: string |
       .eq('user_id', user_id).eq('is_completed', false)
       .order('meeting_date', { ascending: false }).limit(15),
     db.from('completion')
-      .select('completion_id, title, completed_at, outcome, description, tags')
+      .select('completion_id, title, completed_at, outcome, description, tags, context_id')
       .eq('user_id', user_id)
       .order('completed_at', { ascending: false }).limit(15),
     db.from('external_reference')
@@ -234,9 +234,12 @@ export async function buildKarlContext(user_id: string, context_filter: string |
   if (allCompletions.length) {
     fcLines.push('completions:');
     allCompletions.forEach((c, i) => {
-      const date   = c.completed_at?.slice(0, 10) ?? '';
-      const tagStr = c.tags?.length ? ` [${c.tags.join(', ')}]` : '';
-      fcLines.push(`  CM${i + 1} ${c.title} · ${date}${tagStr}`);
+      const date    = c.completed_at?.slice(0, 10) ?? '';
+      const tagStr  = c.tags?.length ? ` [${c.tags.join(', ')}]` : '';
+      // Resolve context_id to name using availableContexts (format: Name|uuid)
+      const ctxName = contextRes.data?.find((ctx: any) => ctx.context_id === c.context_id)?.name ?? null;
+      const ctxStr  = ctxName ? ` · context:${ctxName}` : '';
+      fcLines.push(`  CM${i + 1} ${c.title} · ${date}${tagStr}${ctxStr}`);
       if (c.outcome)     fcLines.push(`    outcome: ${trunc(c.outcome, 500)}`);
       if (c.description) fcLines.push(`    description: ${trunc(c.description, 300)}`);
     });
