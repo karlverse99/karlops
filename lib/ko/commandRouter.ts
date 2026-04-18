@@ -747,6 +747,16 @@ export async function routeCommand(
 
     const maxTokens = isDeep ? 1500 : hasPending ? 3000 : isLong ? 2000 : 1000;
 
+const requestBody = JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: maxTokens,
+      system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
+      messages: anthropicMessages,
+    });
+    console.log('[commandRouter] prompt length:', systemPrompt.length);
+    console.log('[commandRouter] messages count:', anthropicMessages.length);
+    console.log('[commandRouter] body length:', requestBody.length);
+
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -755,13 +765,14 @@ export async function routeCommand(
         'anthropic-version': '2023-06-01',
         'anthropic-beta': 'prompt-caching-2024-07-31',
       },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: maxTokens,
-        system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
-        messages: anthropicMessages,
-      }),
+      body: requestBody,
     });
+
+    const rawData = await res.json();
+    console.log('[commandRouter] anthropic status:', res.status);
+    if (res.status !== 200) {
+      console.error('[commandRouter] anthropic error body:', JSON.stringify(rawData));
+    }
 
     const rawData = await res.json();
     const usage = rawData.usage;
