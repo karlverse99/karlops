@@ -158,16 +158,27 @@ async function applyFieldOperation(
   if (!table || !pk) throw new Error(`Unknown object type: ${object_type}`);
 
   // Tags — add/remove
+  // Handles: op.mode ('remove'/'add') AND legacy op.tag_op ('remove'/'add')
+  // Also handles comma-separated tag values e.g. "TheUnobsolete,Operations" → split to individual tags
   if (op.field === 'tags') {
-    const tagName = String(op.value);
+    const isRemove = op.mode === 'remove' || (op as any).tag_op === 'remove';
+    // Split comma-separated values into individual tag names
+    const tagNames = String(op.value).split(',').map((t: string) => t.trim()).filter(Boolean);
     const { data: current } = await db.from(table).select('tags').eq(pk, record_id).single();
-    const currentTags: string[] = (current as any)?.tags ?? [];
-    const newTags = op.mode === 'remove'
-      ? currentTags.filter(t => t !== tagName)
-      : currentTags.includes(tagName) ? currentTags : [...currentTags, tagName].slice(0, 5);
-    const { error } = await db.from(table).update({ tags: newTags }).eq(pk, record_id).eq('user_id', user_id);
+    let currentTags: string[] = (current as any)?.tags ?? [];
+    if (isRemove) {
+      currentTags = currentTags.filter(t => !tagNames.includes(t));
+    } else {
+      for (const tagName of tagNames) {
+        if (!currentTags.includes(tagName)) currentTags.push(tagName);
+      }
+      currentTags = currentTags.slice(0, 5);
+    }
+    const { error } = await db.from(table).update({ tags: currentTags }).eq(pk, record_id).eq('user_id', user_id);
     if (error) throw new Error(error.message);
-    return op.mode === 'remove' ? `removed #${tagName}` : `added #${tagName}`;
+    return isRemove
+      ? `removed ${tagNames.map(t => `#${t}`).join(', ')}`
+      : `added ${tagNames.map(t => `#${t}`).join(', ')}`;
   }
 
   // Status label → id
