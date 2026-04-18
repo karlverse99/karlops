@@ -32,6 +32,16 @@ interface DataSources {
 
 interface AssistMessage { role: 'user' | 'assistant'; content: string; }
 
+// Concept registry entry — matches ConceptEntry from buildKarlContext
+interface ConceptEntry {
+  concept_key: string;
+  concept_type: string;
+  label: string;
+  icon: string | null;
+  description: string | null;
+  display_order: number;
+}
+
 interface TemplatesModalProps {
   userId: string;
   accessToken: string;
@@ -45,7 +55,8 @@ const ACCENT        = '#14b8a6';
 const ACCENT_BG     = '#f0fdfa';
 const ACCENT_BORDER = '#99f6e4';
 
-const BUCKET_OPTS = ['now', 'soon', 'realwork', 'later', 'delegate', 'capture'];
+// Fallback bucket keys if registry not loaded yet
+const BUCKET_KEYS_FALLBACK = ['now', 'soon', 'realwork', 'later', 'delegate', 'capture'];
 
 const DEFAULT_DS: DataSources = {
   situation:   true,
@@ -55,12 +66,52 @@ const DEFAULT_DS: DataSources = {
   references:  false,
 };
 
-// ─── SUBCOMPONENTS ────────────────────────────────────────────────────────────
+// ─── CONCEPT REGISTRY HELPERS ─────────────────────────────────────────────────
 
-function DataSourcesEditor({ ds, onChange }: { ds: DataSources; onChange: (ds: DataSources) => void }) {
+function getBucketIcon(concepts: ConceptEntry[], bucketKey: string): string {
+  const found = concepts.find(c => c.concept_type === 'bucket' && c.concept_key === `bucket_${bucketKey}`);
+  return found?.icon ?? '';
+}
+
+function getBucketLabel(concepts: ConceptEntry[], bucketKey: string): string {
+  const found = concepts.find(c => c.concept_type === 'bucket' && c.concept_key === `bucket_${bucketKey}`);
+  return found?.label ?? bucketKey;
+}
+
+function getObjectIcon(concepts: ConceptEntry[], key: string): string {
+  const found = concepts.find(c => c.concept_type === 'object' && c.concept_key === key);
+  return found?.icon ?? '';
+}
+
+function getObjectLabel(concepts: ConceptEntry[], key: string): string {
+  const found = concepts.find(c => c.concept_type === 'object' && c.concept_key === key);
+  return found?.label ?? key;
+}
+
+// ─── DATA SOURCES EDITOR ──────────────────────────────────────────────────────
+
+function DataSourcesEditor({
+  ds,
+  onChange,
+  concepts,
+}: {
+  ds: DataSources;
+  onChange: (ds: DataSources) => void;
+  concepts: ConceptEntry[];
+}) {
   const hasTasks       = !!ds.tasks;
   const hasCompletions = !!ds.completions;
   const hasMeetings    = !!ds.meetings;
+
+  // Use registry bucket order/labels if available, fallback to hardcoded keys
+  const bucketOpts = concepts.filter(c => c.concept_type === 'bucket').map(c => ({
+    key:   c.concept_key.replace('bucket_', ''),
+    label: c.label,
+    icon:  c.icon ?? '',
+  }));
+  if (!bucketOpts.length) {
+    BUCKET_KEYS_FALLBACK.forEach(k => bucketOpts.push({ key: k, label: k, icon: '' }));
+  }
 
   const toggle = (key: keyof DataSources, defaultVal: any) => {
     const next = { ...ds };
@@ -85,29 +136,39 @@ function DataSourcesEditor({ ds, onChange }: { ds: DataSources; onChange: (ds: D
     </div>
   );
 
+  const completionLabel = getObjectLabel(concepts, 'completion') || 'Completions';
+  const meetingLabel    = getObjectLabel(concepts, 'meeting')    || 'Meetings';
+  const completionIcon  = getObjectIcon(concepts, 'completion');
+  const meetingIcon     = getObjectIcon(concepts, 'meeting');
+  const situationIcon   = '📋';
+
   return (
     <div>
-      {row('Situation brief', !!ds.situation, () => toggle('situation', true))}
-      {row('Tasks', hasTasks, () => toggle('tasks', { buckets: ['now', 'soon', 'realwork'], context: null, tags: [] }),
+      {row(`${situationIcon} Situation brief`, !!ds.situation, () => toggle('situation', true))}
+
+      {row('✅ Tasks', hasTasks, () => toggle('tasks', { buckets: ['now', 'soon', 'realwork'], context: null, tags: [] }),
         hasTasks && typeof ds.tasks === 'object' ? (
           <div>
             <div style={{ color: '#666', fontSize: '0.62rem', marginBottom: '0.3rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Buckets</div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
-              {BUCKET_OPTS.map(b => {
-                const active = (ds.tasks as any).buckets?.includes(b);
+              {bucketOpts.map(b => {
+                const active = (ds.tasks as any).buckets?.includes(b.key);
                 return (
-                  <button key={b} onClick={() => {
+                  <button key={b.key} onClick={() => {
                     const cur  = (ds.tasks as any).buckets ?? [];
-                    const next = active ? cur.filter((x: string) => x !== b) : [...cur, b];
+                    const next = active ? cur.filter((x: string) => x !== b.key) : [...cur, b.key];
                     onChange({ ...ds, tasks: { ...(ds.tasks as any), buckets: next } });
-                  }} style={{ background: active ? ACCENT_BG : 'transparent', border: `1px solid ${active ? ACCENT : '#333'}`, color: active ? ACCENT : '#555', padding: '0.12rem 0.4rem', borderRadius: 3, fontSize: '0.65rem', fontFamily: 'monospace', cursor: 'pointer' }}>{b}</button>
+                  }} style={{ background: active ? ACCENT_BG : 'transparent', border: `1px solid ${active ? ACCENT : '#333'}`, color: active ? ACCENT : '#555', padding: '0.12rem 0.4rem', borderRadius: 3, fontSize: '0.65rem', fontFamily: 'monospace', cursor: 'pointer' }}>
+                    {b.icon} {b.label}
+                  </button>
                 );
               })}
             </div>
           </div>
         ) : null
       )}
-      {row('Completions', hasCompletions, () => toggle('completions', { window_days: 30, context: null, tags: [] }),
+
+      {row(`${completionIcon} ${completionLabel}`, hasCompletions, () => toggle('completions', { window_days: 30, context: null, tags: [] }),
         hasCompletions && typeof ds.completions === 'object' ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <span style={{ color: '#666', fontSize: '0.65rem' }}>Last</span>
@@ -118,7 +179,8 @@ function DataSourcesEditor({ ds, onChange }: { ds: DataSources; onChange: (ds: D
           </div>
         ) : null
       )}
-      {row('Meetings', hasMeetings, () => toggle('meetings', { window_days: 30, completed_only: true }),
+
+      {row(`${meetingIcon} ${meetingLabel}`, hasMeetings, () => toggle('meetings', { window_days: 30, completed_only: true }),
         hasMeetings && typeof ds.meetings === 'object' ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <span style={{ color: '#666', fontSize: '0.65rem' }}>Last</span>
@@ -129,7 +191,8 @@ function DataSourcesEditor({ ds, onChange }: { ds: DataSources; onChange: (ds: D
           </div>
         ) : null
       )}
-      {row('References', !!ds.references, () => toggle('references', true))}
+
+      {row('🔗 References', !!ds.references, () => toggle('references', true))}
     </div>
   );
 }
@@ -146,6 +209,9 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const [search, setSearch]         = useState('');
   const [filterType, setFilterType] = useState<'all' | 'system' | 'mine'>('all');
 
+  // Concept registry — loaded once on mount
+  const [concepts, setConcepts] = useState<ConceptEntry[]>([]);
+
   // Edit state
   const [editName, setEditName]           = useState('');
   const [editDesc, setEditDesc]           = useState('');
@@ -158,13 +224,13 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const [saveErr, setSaveErr]             = useState('');
 
   // Run/preview state
-  const [running, setRunning]         = useState(false);
-  const [runOutput, setRunOutput]     = useState<string | null>(null);
-  const [runErr, setRunErr]           = useState('');
-  const [copied, setCopied]           = useState(false);
-  const [savePrompt, setSavePrompt]   = useState(false);
+  const [running, setRunning]           = useState(false);
+  const [runOutput, setRunOutput]       = useState<string | null>(null);
+  const [runErr, setRunErr]             = useState('');
+  const [copied, setCopied]             = useState(false);
+  const [savePrompt, setSavePrompt]     = useState(false);
   const [savingToRefs, setSavingToRefs] = useState(false);
-  const [savedToRefs, setSavedToRefs] = useState(false);
+  const [savedToRefs, setSavedToRefs]   = useState(false);
 
   // Assist state
   const [assistInput, setAssistInput]     = useState('');
@@ -177,21 +243,21 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const [pos, setPos]   = useState({ x: initX, y: initY });
   const [size, setSize] = useState({ w: 1100, h: 780 });
 
-  // Left panel resize
-  const [leftW, setLeftW] = useState(300);
-  const leftDragging      = useRef(false);
-  const leftDragStart     = useRef({ mx: 0, w: 0 });
-
-  const dragging    = useRef(false);
-  const resizing    = useRef(false);
-  const dragStart   = useRef({ x: 0, y: 0, px: 0, py: 0 });
-  const resizeStart = useRef({ x: 0, y: 0, w: 0, h: 0 });
-
-  const assistBottomRef = useRef<HTMLDivElement>(null);
+  const [leftW, setLeftW]     = useState(300);
+  const leftDragging          = useRef(false);
+  const leftDragStart         = useRef({ mx: 0, w: 0 });
+  const dragging              = useRef(false);
+  const resizing              = useRef(false);
+  const dragStart             = useRef({ x: 0, y: 0, px: 0, py: 0 });
+  const resizeStart           = useRef({ x: 0, y: 0, w: 0, h: 0 });
+  const assistBottomRef       = useRef<HTMLDivElement>(null);
 
   // ── Data ───────────────────────────────────────────────────────────────────
 
-  useEffect(() => { loadTemplates(); }, []);
+  useEffect(() => {
+    loadTemplates();
+    loadConceptRegistry();
+  }, []);
 
   useEffect(() => {
     assistBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -208,6 +274,33 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
       .order('name');
     if (data) { setTemplates(data as Template[]); onCountChange?.(data.length); }
     setLoading(false);
+  };
+
+  // Load concept registry — join through ko_user to get implementation_type
+  const loadConceptRegistry = async () => {
+    try {
+      // Get implementation_type for this user
+      const { data: koUser } = await supabase
+        .from('ko_user')
+        .select('implementation_type')
+        .eq('id', userId)
+        .maybeSingle();
+
+      const implType = koUser?.implementation_type ?? 'personal';
+
+      const { data } = await supabase
+        .from('concept_registry')
+        .select('concept_key, concept_type, label, icon, description, display_order')
+        .eq('implementation_type', implType)
+        .eq('is_active', true)
+        .order('concept_type')
+        .order('display_order');
+
+      if (data) setConcepts(data as ConceptEntry[]);
+    } catch (err) {
+      console.error('[TemplatesModal] concept registry load failed:', err);
+      // Non-fatal — modal works fine without it, just no icons
+    }
   };
 
   // ── Drag / Resize ──────────────────────────────────────────────────────────
@@ -377,7 +470,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
 
   // ── Derived ────────────────────────────────────────────────────────────────
 
-  const filtered  = templates.filter(t => {
+  const filtered = templates.filter(t => {
     const matchS = !search || t.name.toLowerCase().includes(search.toLowerCase()) || (t.description ?? '').toLowerCase().includes(search.toLowerCase());
     const matchT = filterType === 'all' ? true : filterType === 'system' ? t.is_system : !t.is_system;
     return matchS && matchT;
@@ -385,6 +478,16 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
 
   const isEditing = isNew || !!selected;
   const isSystem  = selected?.is_system ?? false;
+
+  // Concept registry derived helpers
+  const templateIcon = getObjectIcon(concepts, 'document_template') || '📄';
+
+  // Build assist placeholder using registry vocabulary
+  const completionVocab = getObjectLabel(concepts, 'completion') || 'completions';
+  const contextVocab    = concepts.find(c => c.concept_key === 'context')?.label || 'context';
+  const assistPlaceholder = assistHistory.length > 0
+    ? 'Refine further...'
+    : `e.g. "A weekly status showing ${completionVocab} by ${contextVocab} with key wins"`;
 
   // ─── RENDER ────────────────────────────────────────────────────────────────
 
@@ -398,7 +501,9 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
           style={{ background: ACCENT, padding: '0 1rem', height: 44, display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'grab', flexShrink: 0 }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <span style={{ color: '#000', fontWeight: 700, fontSize: '0.85rem' }}>Templates</span>
+            <span style={{ color: '#000', fontWeight: 700, fontSize: '0.85rem' }}>
+              {templateIcon} {getObjectLabel(concepts, 'document_template') || 'Templates'}
+            </span>
             <span style={{ color: '#000', fontSize: '0.7rem', opacity: 0.5 }}>TM · {templates.length} template{templates.length !== 1 ? 's' : ''}</span>
           </div>
           <button onMouseDown={e => e.stopPropagation()} onClick={onClose}
@@ -444,12 +549,17 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                         >
                           <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.2rem' }}>
                             <span style={{ color: ACCENT, fontSize: '0.6rem', opacity: 0.5, fontWeight: 600 }}>TM{idx + 1}</span>
+                            <span style={{ fontSize: '0.75rem' }}>{templateIcon}</span>
                             <span style={{ color: '#222', fontSize: '0.78rem', flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.name}</span>
                           </div>
-                          <div style={{ display: 'flex', gap: '0.3rem' }}>
+                          <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
                             {t.is_system && <span style={{ fontSize: '0.6rem', color: ACCENT, background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, padding: '0.05rem 0.3rem', borderRadius: 2 }}>system</span>}
                             {t.implementation_type && <span style={{ fontSize: '0.6rem', color: '#8b5cf6', background: '#120a1a', border: '1px solid #3a1a5a', padding: '0.05rem 0.3rem', borderRadius: 2 }}>{t.implementation_type}</span>}
                             {t.doc_type && <span style={{ fontSize: '0.6rem', color: '#666', background: '#e5e5e5', border: '1px solid #e5e7eb', padding: '0.05rem 0.3rem', borderRadius: 2 }}>{t.doc_type}</span>}
+                            {/* Show data source icons from registry */}
+                            {t.data_sources?.completions && <span style={{ fontSize: '0.65rem' }} title={`${completionVocab}`}>{getObjectIcon(concepts, 'completion')}</span>}
+                            {t.data_sources?.meetings    && <span style={{ fontSize: '0.65rem' }} title="meetings">{getObjectIcon(concepts, 'meeting')}</span>}
+                            {t.data_sources?.tasks       && <span style={{ fontSize: '0.65rem' }} title="tasks">✅</span>}
                           </div>
                         </div>
                       );
@@ -463,7 +573,8 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
             onMouseDown={e => { leftDragging.current = true; leftDragStart.current = { mx: e.clientX, w: leftW }; }}
             style={{ width: 5, flexShrink: 0, background: '#e5e5e5', cursor: 'col-resize', transition: 'background 0.15s' }}
             onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BORDER)}
-            onMouseLeave={e => (e.currentTarget.style.background = '#e5e7eb')}          />
+            onMouseLeave={e => (e.currentTarget.style.background = '#e5e7eb')}
+          />
 
           {/* RIGHT PANEL */}
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
@@ -471,8 +582,15 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
             {/* Empty state */}
             {!isEditing && (
               <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#555', fontSize: '0.8rem', flexDirection: 'column', gap: '0.75rem' }}>
-                <div style={{ opacity: 0.3, fontSize: '1.5rem' }}>⊙</div>
+                <div style={{ opacity: 0.3, fontSize: '1.5rem' }}>{templateIcon}</div>
                 <div>Select a template or create a new one</div>
+                {concepts.length > 0 && (
+                  <div style={{ display: 'flex', gap: '0.5rem', opacity: 0.4, fontSize: '0.65rem' }}>
+                    {concepts.filter(c => c.concept_type === 'bucket').slice(0, 4).map(c => (
+                      <span key={c.concept_key}>{c.icon} {c.label}</span>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
@@ -519,38 +637,41 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                     </div>
                   </div>
 
-                  {/* Data Sources */}
+                  {/* Data Sources — passes concepts for registry-aware labels */}
                   <div style={{ marginBottom: '0.75rem' }}>
                     <div style={labelSt}>Data Sources</div>
                     <div style={{ padding: '0.75rem', background: '#fafafa', border: '1px solid #e5e7eb', borderRadius: 4 }}>
                       {isSystem
                         ? <div style={{ color: '#888', fontSize: '0.7rem', whiteSpace: 'pre-wrap' }}>{JSON.stringify(editDs, null, 2)}</div>
-                        : <DataSourcesEditor ds={editDs} onChange={setEditDs} />
+                        : <DataSourcesEditor ds={editDs} onChange={setEditDs} concepts={concepts} />
                       }
                     </div>
                   </div>
 
-                  {/* ── KARL ASSIST — PRIMARY ── */}
+                  {/* KARL ASSIST */}
                   {!isSystem && (
                     <div style={{ border: `1px solid ${ACCENT_BORDER}`, borderRadius: 6, overflow: 'hidden', marginBottom: '0.75rem' }}>
 
-                      {/* Assist header */}
                       <div style={{ padding: '0.5rem 0.75rem', background: ACCENT_BG, borderBottom: `1px solid ${ACCENT_BORDER}`, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                         <span style={{ color: ACCENT, fontSize: '0.68rem', fontWeight: 700 }}>KARL ASSIST</span>
                         <span style={{ color: '#2d6e65', fontSize: '0.65rem' }}>— describe what you want, Karl drafts the generation instructions</span>
+                        {/* Show registry vocabulary hint */}
+                        {concepts.length > 0 && (
+                          <span style={{ marginLeft: 'auto', color: '#2d6e65', fontSize: '0.6rem', opacity: 0.7 }}>
+                            {concepts.filter(c => c.concept_type === 'bucket').slice(0, 3).map(c => `${c.icon} ${c.label}`).join(' · ')}
+                          </span>
+                        )}
                       </div>
 
-                      {/* Empty state prompt */}
                       {assistHistory.length === 0 && !editInstructions && (
-                        <div style={{ padding: '0.75rem', background: '#f0fdfa', borderBottom: `1px solid ` }}>
+                        <div style={{ padding: '0.75rem', background: '#f0fdfa' }}>
                           <div style={{ color: '#888', fontSize: '0.72rem', lineHeight: 1.5 }}>
                             Tell Karl what you want this template to produce. For example:<br />
-                            <span style={{ color: '#666', fontStyle: 'italic' }}>"A weekly status report summarizing my completions by context area, with key wins and open risks"</span>
+                            <span style={{ color: '#666', fontStyle: 'italic' }}>"{assistPlaceholder}"</span>
                           </div>
                         </div>
                       )}
 
-                      {/* Assist history */}
                       {assistHistory.length > 0 && (
                         <div style={{ maxHeight: 200, overflowY: 'auto', padding: '0.6rem 0.75rem', background: '#f5f5f5', scrollbarWidth: 'thin', scrollbarColor: '#ddd transparent' }}>
                           {assistHistory.map((m, i) => (
@@ -568,13 +689,12 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                         </div>
                       )}
 
-                      {/* Assist input */}
                       <div style={{ display: 'flex', gap: '0.5rem', padding: '0.5rem 0.75rem', background: '#fafafa' }}>
                         <textarea
                           value={assistInput}
                           onChange={e => setAssistInput(e.target.value)}
                           onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAssist(); } }}
-                          placeholder={assistHistory.length > 0 ? 'Refine further...' : 'Describe what you want this template to produce...'}
+                          placeholder={assistPlaceholder}
                           rows={2}
                           style={{ flex: 1, background: '#fafafa', border: '1px solid #e5e7eb', color: '#222', padding: '0.35rem 0.6rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.72rem', outline: 'none', resize: 'vertical', minHeight: 36 }}
                           onFocus={e => (e.target.style.borderColor = ACCENT)}
@@ -588,7 +708,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                     </div>
                   )}
 
-                  {/* ── GENERATION INSTRUCTIONS — SECONDARY ── */}
+                  {/* GENERATION INSTRUCTIONS */}
                   <div style={{ marginBottom: '0.5rem' }}>
                     <div
                       onClick={() => setShowInstructions(v => !v)}
@@ -652,7 +772,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
             {running && (
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '1.25rem' }}>
                 <KarlSpinner size="lg" color={ACCENT} />
-                <div style={{ color: '#666', fontSize: '0.8rem' }}>Karl is previewing your template...</div>
+                <div style={{ color: '#666', fontSize: '0.8rem' }}>Karl is generating your document...</div>
                 <div style={{ color: '#555', fontSize: '0.7rem' }}>This is a test run — nothing is saved yet</div>
               </div>
             )}
@@ -662,7 +782,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
                 <div style={{ padding: '0.5rem 1rem', borderBottom: '1px solid #e5e7eb', background: '#fafafa', display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
-                  <span style={{ color: ACCENT, fontSize: '0.7rem', fontWeight: 600 }}>PREVIEW</span>
+                  <span style={{ color: ACCENT, fontSize: '0.7rem', fontWeight: 600 }}>{templateIcon} PREVIEW</span>
                   <span style={{ color: '#555', fontSize: '0.65rem' }}>· test run · nothing saved</span>
                   <span style={{ flex: 1 }} />
                   <button onClick={handleCopy}
@@ -688,7 +808,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                       <div style={{ flex: 1 }}>
                         <div style={{ color: '#888', fontSize: '0.72rem' }}>Happy with this?</div>
-                        <div style={{ color: '#888', fontSize: '0.65rem', marginTop: '0.1rem' }}>Save to your Extracts so you can rerun it anytime — or just copy and go.</div>
+                        <div style={{ color: '#888', fontSize: '0.65rem', marginTop: '0.1rem' }}>Save to your {getObjectLabel(concepts, 'external_reference') || 'Extracts'} so you can rerun it anytime — or just copy and go.</div>
                       </div>
                       <button onClick={handleRun} style={{ background: 'transparent', border: '1px solid #ddd', color: '#666', padding: '0.35rem 0.75rem', borderRadius: 4, fontSize: '0.7rem', fontFamily: 'monospace', cursor: 'pointer' }}>▶ preview again</button>
                       <button onClick={() => setSavePrompt(true)} style={{ background: ACCENT, border: 'none', color: '#000', padding: '0.35rem 1rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer', fontWeight: 700 }}>Save & Track</button>
@@ -697,7 +817,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                   {savePrompt && !savedToRefs && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                       <div style={{ flex: 1 }}>
-                        <div style={{ color: '#222', fontSize: '0.72rem' }}>Save this to your Extracts?</div>
+                        <div style={{ color: '#222', fontSize: '0.72rem' }}>Save this to your {getObjectLabel(concepts, 'external_reference') || 'Extracts'}?</div>
                         <div style={{ color: '#666', fontSize: '0.65rem', marginTop: '0.1rem' }}>We'll keep a copy so you can rerun it anytime.</div>
                       </div>
                       <button onClick={() => setSavePrompt(false)} style={{ background: 'transparent', border: '1px solid #ddd', color: '#666', padding: '0.35rem 0.75rem', borderRadius: 4, fontSize: '0.7rem', fontFamily: 'monospace', cursor: 'pointer' }}>no thanks</button>
@@ -706,8 +826,8 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                   )}
                   {savedToRefs && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                      <span style={{ color: ACCENT, fontSize: '0.72rem' }}>✓ Saved to Extracts.</span>
-                      <span style={{ color: '#888', fontSize: '0.65rem' }}>Find it anytime in your Extracts — or rerun it from there.</span>
+                      <span style={{ color: ACCENT, fontSize: '0.72rem' }}>✓ Saved to {getObjectLabel(concepts, 'external_reference') || 'Extracts'}.</span>
+                      <span style={{ color: '#888', fontSize: '0.65rem' }}>Find it anytime — or rerun it from there.</span>
                       <span style={{ flex: 1 }} />
                       <button onClick={handleRun} style={{ background: 'transparent', border: '1px solid #ddd', color: '#666', padding: '0.35rem 0.75rem', borderRadius: 4, fontSize: '0.7rem', fontFamily: 'monospace', cursor: 'pointer' }}>▶ preview again</button>
                     </div>
