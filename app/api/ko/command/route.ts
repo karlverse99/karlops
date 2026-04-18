@@ -9,6 +9,113 @@ import { captureTask } from '@/lib/ko/commands/captureTask';
 import { captureCompletion } from '@/lib/ko/commands/captureCompletion';
 import { writeKarlObservation } from '@/lib/ko/buildKarlContext';
 
+// ─── ERROR HANDLING ──────────────────────────────────────────────────────────
+
+// Knowledge failures — DB constraint/validation errors Karl can learn from
+const KNOWLEDGE_FAILURE_PATTERNS = [
+  'null value in column',
+  'violates not-null constraint',
+  'violates foreign key constraint',
+  'violates unique constraint',
+  'violates check constraint',
+  'invalid input syntax',
+  'not found',
+  'does not exist',
+];
+
+function isKnowledgeFailure(message: string): boolean {
+  const lower = message.toLowerCase();
+  return KNOWLEDGE_FAILURE_PATTERNS.some(p => lower.includes(p));
+}
+
+// Log to ko_error_log — always async, never blocks response
+async function logError(
+  user_id: string,
+  route: string,
+  action: string,
+  error_type: 'knowledge' | 'system',
+  message: string,
+  payload?: Record<string, any>
+): Promise<void> {
+  try {
+    const db = createSupabaseAdmin();
+    await db.from('ko_error_log').insert({
+      user_id,
+      route,
+      action,
+      error_type,
+      message,
+      payload: payload ?? null,
+      resolved: false,
+    });
+  } catch {
+    // Never let logging break the response
+  }
+}
+
+// Karl feedback call — called when a knowledge failure occurs
+// Karl reasons about what went wrong and returns a learning block
+async function karlLearnFromFailure(
+  user_id: string,
+  action: KarlAction,
+  errorMessage: string
+): Promise<void> {
+  try {
+    const systemPrompt = `You are Karl, an AI assistant for KarlOps. An action you proposed just failed with a DB error.
+Reason about what went wrong and what you should remember to avoid this next time.
+Return ONLY valid JSON — no markdown, no code fences:
+{
+  "field_notes": { "object_type": "...", "field": "...", "llm_notes": "one sentence about what you learned" },
+  "observation": { "content": "...", "observation_type": "flag" }
+}
+If you cannot determine a specific field lesson, return only the observation block.`;
+
+    const userMessage = `Action attempted: ${JSON.stringify(action, null, 2)}
+DB error: ${errorMessage}
+What did you learn?`;
+
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY!,
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'prompt-caching-2024-07-31',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 300,
+        system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
+        messages: [{ role: 'user', content: userMessage }],
+      }),
+    });
+
+    const data = await res.json();
+    const text = data.content?.[0]?.text ?? '';
+    const parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
+
+    const db = createSupabaseAdmin();
+
+    if (parsed.field_notes?.object_type && parsed.field_notes?.field && parsed.field_notes?.llm_notes) {
+      await db.from('ko_field_metadata')
+        .update({ llm_notes: parsed.field_notes.llm_notes })
+        .eq('user_id', user_id)
+        .eq('object_type', parsed.field_notes.object_type)
+        .eq('field', parsed.field_notes.field);
+      console.log('[karlLearnFromFailure] field_notes written:', parsed.field_notes);
+    }
+
+    if (parsed.observation?.content) {
+      const { writeKarlObservation } = await import('@/lib/ko/buildKarlContext');
+      await writeKarlObservation(user_id, parsed.observation.content, 'flag');
+      console.log('[karlLearnFromFailure] observation written:', parsed.observation.content);
+    }
+
+  } catch (err) {
+    console.error('[karlLearnFromFailure] failed:', err);
+  }
+}
+
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
 
 async function getUser(req: NextRequest) {
@@ -493,8 +600,19 @@ async function executeActions(
       const result = await dispatchAction(user_id, action, context_filter);
       results.push(result);
     } catch (err: any) {
-      console.error(`[executeActions] ${action.action} ${action.object_type} failed:`, err.message);
-      errors.push(`${action.action} ${action.object_type ?? ''}: ${err.message}`);
+      const message = err.message ?? 'Unknown error';
+      console.error(`[executeActions] ${action.action} ${action.object_type} failed:`, message);
+
+      if (isKnowledgeFailure(message)) {
+        // Knowledge failure — Karl learns from it, write warning observation
+        logError(user_id, 'command', `${action.action} ${action.object_type ?? ''}`, 'knowledge', message, action as any).catch(() => {});
+        karlLearnFromFailure(user_id, action, message).catch(() => {});
+        errors.push(`${action.action} ${action.object_type ?? ''}: ${message}`);
+      } else {
+        // System failure — log only, don't bother Karl
+        logError(user_id, 'command', `${action.action} ${action.object_type ?? ''}`, 'system', message, action as any).catch(() => {});
+        errors.push(`${action.action} ${action.object_type ?? ''}: something went wrong`);
+      }
     }
   }
 
@@ -677,6 +795,7 @@ export async function POST(req: NextRequest) {
 
   } catch (err: any) {
     console.error('[POST /api/ko/command]', err);
+    logError(user?.id ?? 'unknown', 'command', 'POST', 'system', err.message ?? 'Unknown error').catch(() => {});
     return NextResponse.json({ error: err.message ?? 'Command failed' }, { status: 500 });
   }
 }
