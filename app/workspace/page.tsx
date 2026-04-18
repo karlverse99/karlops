@@ -642,21 +642,33 @@ export default function WorkspacePage() {
 
     if (data.intent === 'open_form') {
       addMessage('assistant', data.response ?? 'Opening it up.');
-      const modal      = data.payload?.modal ?? data.actions?.[0]?.modal ?? 'TaskAddModal';
+      const modal      = data.payload?.modal ?? data.actions?.[0]?.modal ?? '';
       const identifier = data.payload?.identifier ?? data.actions?.[0]?.identifier;
-      if (identifier) {
+
+      // Task with identifier — open TaskDetailModal
+      if (identifier && (!modal || modal === 'TaskDetailModal' || modal === 'TaskAddModal')) {
         const taskId = resolveIdentifierToTaskId(identifier);
         if (taskId) {
           const task = tasks.find(t => t.id === taskId);
           if (task) { setSelectedTask(task); return; }
         }
       }
-      if (modal === 'MeetingsModal')         setShowMeetings(true);
-      else if (modal === 'ExtractsModal')    setShowExtracts(true);
-      else if (modal === 'TemplatesModal')   setShowTemplates(true);
-      else if (modal === 'ContactsModal')    setShowContacts(true);
-      else if (modal === 'CompletionsModal') setShowCompletions(true);
-      else setShowTaskAdd(true);
+
+      // Route to correct modal by name
+      if      (modal === 'TaskDetailModal')  { /* handled above or fall through to TaskAdd */ }
+      if      (modal === 'CompletionsModal') { setShowCompletions(true); }
+      else if (modal === 'MeetingsModal')    { setShowMeetings(true); }
+      else if (modal === 'ExtractsModal')    { setShowExtracts(true); }
+      else if (modal === 'TemplatesModal')   { setShowTemplates(true); }
+      else if (modal === 'ContactsModal')    { setShowContacts(true); }
+      else if (modal === 'TagManagerModal')  { setShowTagManager(true); }
+      else if (modal === 'TaskListModal')    { setShowTaskList(true); }
+      else if (modal === 'TaskAddModal')     { setShowTaskAdd(true); }
+      else {
+        // No modal specified or unknown — Karl probably said "open it" without specifying
+        // Default to task add unless we can infer from context
+        setShowTaskAdd(true);
+      }
       return;
     }
 
