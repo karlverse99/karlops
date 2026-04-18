@@ -105,7 +105,7 @@ export const OBJECT_PK: Record<string, string> = {
 };
 
 export const OBJECT_MODAL: Record<string, string> = {
-  task:               'TaskAddModal',
+  task:               'TaskDetailModal', // existing task — use TaskDetailModal. New task insert uses TaskAddModal explicitly.
   completion:         'CompletionsModal',
   meeting:            'MeetingsModal',
   external_reference: 'ExtractsModal',
@@ -594,6 +594,10 @@ export async function routeCommand(
       '## RULE — run_template.',
       'Ask user: preview in chat, or save as extract? Set run_mode accordingly.',
       '',
+      '## RULE — Karl can update any field shown in Field Knowledge.',
+      'Do not tell the user you cannot access a field. If it is in Field Knowledge with update:editable, you can update it.',
+      'target_date, notes, bucket_key, tags, status — all editable. Just propose the update and confirm.',
+      '',
       '## RULE — New patterns → write back.',
       'If Karl figures out something new (a user term maps to an object, a field behaves differently than expected),',
       'include a "learning" block in the response. Route will persist it.',
@@ -665,8 +669,14 @@ export async function routeCommand(
       '// Open form — multiple objects:',
       '{ "intent": "question", "open_modal": true, "response": "Open what, dimrod? I have a meeting and 8 tasks pending." }',
       '',
-      '// Open form — single object:',
-      '{ "intent": "open_form", "modal": "MeetingsModal", "prefill": { ...fields... }, "response": "Opening it up." }',
+      '// Open existing task by identifier:',
+      '{ "intent": "open_form", "modal": "TaskDetailModal", "identifier": "N1", "response": "Opening N1." }',
+      '',
+      '// Open non-task FC object:',
+      '{ "intent": "open_form", "modal": "MeetingsModal", "identifier": "MT2", "response": "Opening MT2." }',
+      '',
+      '// Open add form (no existing object):',
+      '{ "intent": "open_form", "modal": "TaskAddModal", "response": "Opening a new task form." }',
       '',
       '// Question / analysis:',
       '{ "intent": "question", "response": "Karl answer in plain English" }',
@@ -820,7 +830,7 @@ export async function routeCommand(
 
     // ── open_form ──────────────────────────────────────────────────────────
     if (intent === 'open_form') {
-      return { intent: 'open_form', payload: { modal: parsed.modal, prefill: parsed.prefill ?? {} }, response: karlResponse };
+      return { intent: 'open_form', payload: { modal: parsed.modal, identifier: parsed.identifier ?? null, prefill: parsed.prefill ?? {} }, response: karlResponse };
     }
 
     // ── command ────────────────────────────────────────────────────────────
