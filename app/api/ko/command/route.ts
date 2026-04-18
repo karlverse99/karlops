@@ -372,6 +372,17 @@ async function executeInsert(user_id: string, action: KarlAction, context_filter
     fields.delegated_to = await resolvePeopleTagId(user_id, fields.delegated_to);
   }
 
+  // Resolve task_status_id label → uuid
+  // Rules store label names (e.g. "not_started", "Not Started") — resolve before insert
+  if (fields.task_status_id && typeof fields.task_status_id === 'string') {
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(fields.task_status_id);
+    if (!isUuid) {
+      const resolved = await resolveStatusId(user_id, fields.task_status_id);
+      if (resolved) fields.task_status_id = resolved;
+      else delete fields.task_status_id; // Don't fail insert over bad status — just drop it
+    }
+  }
+
   // Task — use captureTask for defaults + observation
   if (object_type === 'task') {
     const result = await captureTask(user_id, fields as any);
