@@ -39,7 +39,7 @@ export type ActionType =
   | 'delete'
   | 'refine'
   | 'run_template'
-  | 'save_as_template' // NEW — save chat-designed doc as reusable template
+  | 'save_as_template'
   | 'capture_tasks'
   | 'create_tag'
   | 'summarize'
@@ -550,7 +550,6 @@ export async function routeCommand(
     const contextBlock = formatContextForPrompt(bundle);
     const pendingBlock = formatPendingForPrompt(pending);
 
-    // Concept registry visual guide — built from live registry data, not hardcoded
     const bucketConcepts = bundle.conceptRegistry.filter(c => c.concept_type === 'bucket');
     const objectConcepts = bundle.conceptRegistry.filter(c => c.concept_type === 'object');
     const actionConcepts = bundle.conceptRegistry.filter(c => c.concept_type === 'action');
@@ -705,7 +704,7 @@ export async function routeCommand(
       '{ "intent": "pending", "actions": [{ "action": "update", "object_type": "task", "identifier": "N3", "modal": "TaskDetailModal", "operations": [{ "field": "bucket_key", "value": "soon", "mode": "set" }] }], "response": "Moving N3 to Up Next. Confirm?" }',
       '',
       '// pending — save_as_template:',
-      '{ "intent": "pending", "actions": [{ "action": "save_as_template", "object_type": "document_template", "modal": "TemplatesModal", "fields": { "name": "Weekly Status", "description": "Weekly status grouping completions by context", "doc_type": "report", "prompt_template": "Pull completions from last 7 days. Group by context. List completions with outcomes. Surface 2-3 key wins. Note Now bucket tasks. Use concept registry icons as section headers.", "data_sources": { "situation": true, "completions": { "window_days": 7, "context": null, "tags": [] }, "tasks": { "buckets": ["now", "soon"], "context": null, "tags": [] }, "meetings": false, "references": false } } }], "response": "📄 Weekly Status\\nInstructions: Pull completions (7 days) by context, key wins, Now tasks.\\nData: completions + now/soon tasks\\n\\nSave this template? Confirm?" }',
+      '{ "intent": "pending", "actions": [{ "action": "save_as_template", "object_type": "document_template", "modal": "TemplatesModal", "fields": { "name": "Weekly Status", "description": "Weekly status grouping completions by context", "doc_type": "report", "prompt_template": "Pull completions from last 7 days. Group by context. List completions with outcomes. Surface 2-3 key wins. Note Now bucket tasks. Use concept registry icons as section headers.", "data_sources": { "situation": true, "completions": { "window_days": 7, "context": null, "tags": [] }, "tasks": { "buckets": ["now", "soon"], "context": null, "tags": [] }, "meetings": false, "references": false } } }], "response": "Save this template? Confirm?" }',
       '',
       '// pending — run_template:',
       '{ "intent": "pending", "actions": [{ "action": "run_template", "target_identifier": "TM2", "run_mode": "preview" }], "response": "Running TM2. Preview in chat or save as extract?" }',
@@ -747,12 +746,13 @@ export async function routeCommand(
 
     const maxTokens = isDeep ? 1500 : hasPending ? 3000 : isLong ? 2000 : 1000;
 
-const requestBody = JSON.stringify({
+    const requestBody = JSON.stringify({
       model: 'claude-sonnet-4-20250514',
       max_tokens: maxTokens,
       system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
       messages: anthropicMessages,
     });
+
     console.log('[commandRouter] prompt length:', systemPrompt.length);
     console.log('[commandRouter] messages count:', anthropicMessages.length);
     console.log('[commandRouter] body length:', requestBody.length);
@@ -774,7 +774,6 @@ const requestBody = JSON.stringify({
       console.error('[commandRouter] anthropic error body:', JSON.stringify(rawData));
     }
 
-    const rawData = await res.json();
     const usage = rawData.usage;
     if (usage) console.log('[commandRouter] tokens:', {
       input: usage.input_tokens, output: usage.output_tokens,
