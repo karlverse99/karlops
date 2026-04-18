@@ -31,51 +31,51 @@ export type IntentType =
   | 'command'
   | 'unclear';
 
-// Action types Karl can propose
 export type ActionType =
-  | 'insert'           // create any FC object
-  | 'update'           // update any FC object (generic field ops)
-  | 'complete'         // complete a task or meeting (two-step, produces completion record)
-  | 'archive'          // set is_archived = true
-  | 'delete'           // hard delete
-  | 'refine'           // iterate on extract content in chat
-  | 'run_template'     // run a template — preview in chat or save as extract
-  | 'capture_tasks'    // bulk task insert (kept named — special bulk flow)
-  | 'create_tag'       // propose a new tag (always pending, never silent)
-  | 'summarize'        // no DB write — Karl summarizes content in chat
-  | 'propose_rule'     // Karl proposes a new vocab rule — always pending, user approves
-  | 'update_rule'      // Karl proposes updating an existing rule
-  | 'delete_rule'      // Karl proposes deleting a rule
+  | 'insert'
+  | 'update'
+  | 'complete'
+  | 'archive'
+  | 'delete'
+  | 'refine'
+  | 'run_template'
+  | 'save_as_template' // NEW — save chat-designed doc as reusable template
+  | 'capture_tasks'
+  | 'create_tag'
+  | 'summarize'
+  | 'propose_rule'
+  | 'update_rule'
+  | 'delete_rule'
 
 export interface KarlAction {
   action: ActionType;
-  object_type?: string;           // FC object: task | completion | meeting | external_reference | document_template | contact | tag
-  modal?: string;                 // modal to open if user wants UI escape hatch
-  fields?: Record<string, any>;  // fields for insert/update
-  tasks?: any[];                  // bulk tasks (capture_tasks only)
-  operations?: UpdateOperation[]; // field operations for update
-  identifier?: string;            // e.g. N3, MT1, EX2
-  target_identifier?: string;     // for complete/refine/run — which object
-  run_mode?: 'preview' | 'save';  // run_template: preview in chat or save as extract
-  learning?: KarlLearning;        // write-back on new patterns
+  object_type?: string;
+  modal?: string;
+  fields?: Record<string, any>;
+  tasks?: any[];
+  operations?: UpdateOperation[];
+  identifier?: string;
+  target_identifier?: string;
+  run_mode?: 'preview' | 'save';
+  learning?: KarlLearning;
 }
 
 export interface UpdateOperation {
   field: string;
   value: string | string[];
-  mode?: 'set' | 'append' | 'add' | 'remove'; // default: set
+  mode?: 'set' | 'append' | 'add' | 'remove';
 }
 
 export interface KarlLearning {
-  vocab?: { term: string; maps_to: string };         // new user term → object_type or action
+  vocab?: { term: string; maps_to: string };
   field_notes?: { object_type: string; field: string; llm_notes: string };
   observation?: { content: string; observation_type: 'pattern' | 'preference' | 'flag' };
 }
 
 export interface RouterResult {
   intent: IntentType;
-  actions?: KarlAction[];   // v0.8.0 — array of actions replacing single payload
-  payload?: Record<string, any>; // kept for backwards compat on execute
+  actions?: KarlAction[];
+  payload?: Record<string, any>;
   response?: string;
   error?: string;
 }
@@ -114,7 +114,7 @@ export const OBJECT_PK: Record<string, string> = {
 };
 
 export const OBJECT_MODAL: Record<string, string> = {
-  task:               'TaskDetailModal', // existing task — use TaskDetailModal. New task insert uses TaskAddModal explicitly.
+  task:               'TaskDetailModal',
   completion:         'CompletionsModal',
   meeting:            'MeetingsModal',
   external_reference: 'ExtractsModal',
@@ -153,15 +153,12 @@ async function resolveDelegatee(user_id: string, nameHint: string): Promise<{ ta
   if (!nameHint || nameHint.toLowerCase() === 'skip' || nameHint.toLowerCase() === 'other') {
     return resolveOtherTag(user_id);
   }
-
   const db = createSupabaseAdmin();
   const { data: peopleGroup } = await db.from('tag_group').select('tag_group_id').eq('user_id', user_id).eq('name', 'People').maybeSingle();
   if (!peopleGroup) return null;
-
   const { data: peopleTags } = await db.from('tag').select('tag_id, name, description').eq('user_id', user_id).eq('tag_group_id', peopleGroup.tag_group_id).eq('is_archived', false);
   const tags: PeopleTag[] = peopleTags ?? [];
   const hint = nameHint.toLowerCase().trim();
-
   let match = tags.find(t => t.name === nameHint);
   if (match) return { tag_id: match.tag_id, name: match.name };
   match = tags.find(t => t.name.toLowerCase() === hint);
@@ -170,7 +167,6 @@ async function resolveDelegatee(user_id: string, nameHint: string): Promise<{ ta
   if (match) return { tag_id: match.tag_id, name: match.name };
   match = tags.find(t => t.description && t.description.toLowerCase().includes(hint));
   if (match) return { tag_id: match.tag_id, name: match.name };
-
   const { data: contacts } = await db.from('contact').select('name, notes, tag_id').eq('user_id', user_id).eq('is_archived', false);
   for (const contact of contacts ?? []) {
     const nameMatch  = contact.name?.toLowerCase().includes(hint) || hint.includes(contact.name?.toLowerCase() ?? '');
@@ -187,7 +183,6 @@ async function resolveOtherTag(user_id: string): Promise<{ tag_id: string; name:
   const db = createSupabaseAdmin();
   const { data } = await db.from('tag').select('tag_id, name').eq('user_id', user_id).eq('name', 'Other').eq('is_archived', false).maybeSingle();
   if (data) return { tag_id: data.tag_id, name: data.name };
-
   const { data: peopleGroup } = await db.from('tag_group').select('tag_group_id').eq('user_id', user_id).eq('name', 'People').maybeSingle();
   if (!peopleGroup) return null;
   const { data: otherTag } = await db.from('tag').select('tag_id, name').eq('user_id', user_id).eq('tag_group_id', peopleGroup.tag_group_id).eq('name', 'Other').maybeSingle();
@@ -223,28 +218,20 @@ async function suggestTagsForCapture(
     const existingTags = tagRes.data ?? [];
     const situation    = situationRes.data?.brief?.trim() ?? '';
     const observations = (obsRes.data ?? []).map(o => `[${o.observation_type}] ${o.content}`).join('\n');
-
     if (existingTags.length === 0) return [];
 
     const groupMap: Record<string, string> = {};
     for (const g of tagGroups) groupMap[g.tag_group_id] = g.name;
-
     const existingTagList = existingTags
       .map(t => `${t.name} [${groupMap[t.tag_group_id] ?? 'General'}]${t.description ? ` (${t.description})` : ''}`)
       .join(', ');
-
-    const rejectedNote = rejected_tags.length
-      ? `\nNEVER suggest these (user rejected): ${rejected_tags.join(', ')}`
-      : '';
+    const rejectedNote = rejected_tags.length ? `\nNEVER suggest these (user rejected): ${rejected_tags.join(', ')}` : '';
 
     const systemPrompt = `You are Karl, suggesting tags for a KarlOps object being captured via chat.
-Suggest 1-3 existing tags that fit the content. Existing tags only — do not invent new ones.
-
 Existing tags: ${existingTagList}
 Already tagged (do not re-suggest): ${already_tagged.join(', ') || 'none'}
 User situation: ${situation || 'Not provided.'}
 ${observations ? `Karl observations:\n${observations}` : ''}${rejectedNote}
-
 Rules:
 - Suggest 1-3 tags maximum from the existing list only
 - Only suggest tags you are confident fit
@@ -328,10 +315,7 @@ const BUCKET_LABEL: Record<string, string> = {
 
 function formatPendingForPrompt(pending: Record<string, any> | null): string {
   if (!pending) return '';
-
   const lines = ['## Current Pending Actions'];
-
-  // v0.8.0 — actions array
   const actions: any[] = pending.actions ?? [];
 
   if (actions.length > 0) {
@@ -354,7 +338,6 @@ function formatPendingForPrompt(pending: Record<string, any> | null): string {
       }
     });
   } else {
-    // Legacy single-action pending — backwards compat
     lines.push(`Intent: ${pending.intent ?? pending.action}`);
     if (pending.title) lines.push(`Title: ${pending.title}`);
     if (pending.bucket_key) lines.push(`Bucket: ${BUCKET_LABEL[pending.bucket_key] ?? pending.bucket_key}`);
@@ -373,9 +356,8 @@ function formatPendingForPrompt(pending: Record<string, any> | null): string {
   lines.push('User cancels → { "intent": "cancel_pending", "response": "Cancelled." }');
   lines.push('User modifies → { "intent": "modify_pending", "actions": [...updated actions...], "response": "Updated. Confirm?" }');
   lines.push('User asks to preview → { "intent": "preview_pending", "response": "exact field-by-field description of what will be written" }');
-  lines.push('User asks to open modal → { "intent": "question", "open_modal": true, "response": "Open what, dimrod? [list the objects]" }');
+  lines.push('User asks to open modal → { "intent": "question", "open_modal": true, "response": "Open what? [list the objects]" }');
   lines.push('DO NOT re-emit full payloads on confirm. Just confirm.');
-
   return lines.join('\n');
 }
 
@@ -389,53 +371,29 @@ async function persistLearning(user_id: string, learning: KarlLearning & {
     upsertKarlVocab(user_id, learning.vocab.term, 'pending', learning.vocab.maps_to).catch(() => {});
   }
   if (learning.rule?.phrase && learning.rule?.rule_data) {
-    writeKarlVocabRule(
-      user_id,
-      learning.rule.phrase,
-      learning.rule.description ?? '',
-      learning.rule.rule_data,
-      learning.rule.match ?? 'contains',
-      learning.rule.confirm ?? true
-    ).catch(() => {});
+    writeKarlVocabRule(user_id, learning.rule.phrase, learning.rule.description ?? '', learning.rule.rule_data, learning.rule.match ?? 'contains', learning.rule.confirm ?? true).catch(() => {});
   }
   if (learning.delete_rule?.vocab_id) {
     deleteKarlVocabRule(user_id, learning.delete_rule.vocab_id).catch(() => {});
   }
   if (learning.field_notes?.object_type && learning.field_notes?.field && learning.field_notes?.llm_notes) {
-    updateFieldLlmNotes(
-      user_id,
-      learning.field_notes.object_type,
-      learning.field_notes.field,
-      learning.field_notes.llm_notes
-    ).catch(() => {});
+    updateFieldLlmNotes(user_id, learning.field_notes.object_type, learning.field_notes.field, learning.field_notes.llm_notes).catch(() => {});
   }
   if (learning.observation?.content) {
     const obsType = (['pattern', 'preference', 'flag'] as const).includes(learning.observation.observation_type)
-      ? learning.observation.observation_type
-      : 'pattern';
+      ? learning.observation.observation_type : 'pattern';
     writeKarlObservation(user_id, learning.observation.content, obsType).catch(() => {});
   }
 }
 
 // ─── ENRICH ACTIONS ──────────────────────────────────────────────────────────
-// Post-process Karl's proposed actions:
-// - resolve delegated_to to tag_id
-// - run tag suggestion on inserts
-// - attach modal name if missing
 
-async function enrichActions(
-  user_id: string,
-  actions: KarlAction[],
-  rejectedTags: string[],
-  isModify: boolean
-): Promise<KarlAction[]> {
+async function enrichActions(user_id: string, actions: KarlAction[], rejectedTags: string[], isModify: boolean): Promise<KarlAction[]> {
   return Promise.all(actions.map(async (a) => {
-    // Attach modal
     if (!a.modal && a.object_type) {
       a.modal = OBJECT_MODAL[a.object_type] ?? undefined;
     }
 
-    // Tag suggestion on insert/capture — skip if no_suggest flag set on any matching rule
     const noSuggest = (a as any)._no_suggest === true;
     if (!isModify && !noSuggest && (a.action === 'insert' || a.action === 'capture_tasks')) {
       if (a.fields?.tags !== undefined) {
@@ -454,7 +412,6 @@ async function enrichActions(
       }
     }
 
-    // Resolve delegated_to on task inserts
     if (a.action === 'insert' && a.object_type === 'task' && a.fields?.delegated_to && typeof a.fields.delegated_to === 'string') {
       const resolved = await resolveDelegatee(user_id, a.fields.delegated_to)
         ?? await createPeopleTag(user_id, a.fields.delegated_to)
@@ -462,7 +419,6 @@ async function enrichActions(
       if (resolved) a.fields.delegated_to = resolved.tag_id;
     }
 
-    // Resolve delegated_to on update operations
     if (a.action === 'update' && a.operations) {
       a.operations = await Promise.all(a.operations.map(async (op) => {
         if (op.field === 'delegated_to' && typeof op.value === 'string') {
@@ -480,8 +436,6 @@ async function enrichActions(
 }
 
 // ─── RULE MATCHING ───────────────────────────────────────────────────────────
-// Check input against active vocab rules. Apply matching rules to actions.
-// Silent rules apply automatically. Confirm rules get added to pending.
 
 interface MatchedRule {
   vocab_id: string;
@@ -494,16 +448,14 @@ async function matchVocabRules(user_id: string, input: string): Promise<MatchedR
   const rules = await loadActiveVocabRules(user_id);
   const lower = input.toLowerCase();
   const matched: MatchedRule[] = [];
-
   for (const rule of rules) {
-    // Support pipe-delimited multiple triggers e.g. "ko|karlops"
     const phrases = rule.phrase.toLowerCase().split('|').map((p: string) => p.trim()).filter(Boolean);
     const match   = rule.match ?? 'contains';
     let hit = false;
     for (const phrase of phrases) {
       if (match === 'exact')            hit = lower === phrase;
       else if (match === 'starts_with') hit = lower.startsWith(phrase);
-      else                              hit = lower.includes(phrase); // contains (default)
+      else                              hit = lower.includes(phrase);
       if (hit) break;
     }
     if (hit) matched.push(rule as MatchedRule);
@@ -519,8 +471,6 @@ function applyRuleToActions(actions: KarlAction[], rule: MatchedRule): KarlActio
   return actions.map(a => {
     if (a.object_type !== appliesTo) return a;
     if (a.action !== 'insert' && a.action !== 'capture_tasks') return a;
-
-    // Mark action as no_suggest if rule has that flag
     if (ruleData.no_suggest) (a as any)._no_suggest = true;
 
     if (a.action === 'insert' && a.fields) {
@@ -530,21 +480,15 @@ function applyRuleToActions(actions: KarlAction[], rule: MatchedRule): KarlActio
           const toAdd = Array.isArray(ra.value) ? ra.value : [ra.value];
           a.fields.tags = Array.from(new Set([...existing, ...toAdd])).slice(0, 5);
         } else if ((ra.field === 'context_id' || ra.field === 'context_name') && ra.mode === 'set') {
-          // If value looks like a UUID, store as context_id directly
-          // If it's a name string, store as context_name for resolution at execution time
           const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(ra.value));
           if (!a.fields.context_id && !a.fields.context_name) {
             if (isUuid) a.fields.context_id = ra.value;
             else a.fields.context_name = ra.value;
           }
         } else if (ra.field === 'bucket_key' && ra.mode === 'set') {
-          if (!a.fields.bucket_key || a.fields.bucket_key === 'capture') {
-            a.fields.bucket_key = ra.value;
-          }
+          if (!a.fields.bucket_key || a.fields.bucket_key === 'capture') a.fields.bucket_key = ra.value;
         } else if (ra.field === 'task_status_id' && ra.mode === 'set') {
-          if (!a.fields.task_status_id) {
-            a.fields.task_status_id = ra.value;
-          }
+          if (!a.fields.task_status_id) a.fields.task_status_id = ra.value;
         }
       }
     }
@@ -606,6 +550,24 @@ export async function routeCommand(
     const contextBlock = formatContextForPrompt(bundle);
     const pendingBlock = formatPendingForPrompt(pending);
 
+    // Concept registry visual guide — built from live registry data, not hardcoded
+    const bucketConcepts = bundle.conceptRegistry.filter(c => c.concept_type === 'bucket');
+    const objectConcepts = bundle.conceptRegistry.filter(c => c.concept_type === 'object');
+    const actionConcepts = bundle.conceptRegistry.filter(c => c.concept_type === 'action');
+
+    const conceptRegistryGuide = bundle.conceptRegistry.length ? [
+      '## Concept Registry — Visual Language',
+      'Use these icons and labels in ALL responses, document previews, and template output.',
+      'Labels reflect this user\'s implementation vocabulary. Always use icon + label from registry.',
+      '',
+      bucketConcepts.length ? 'Buckets: ' + bucketConcepts.map(c => `${c.icon ?? ''} ${c.label} (key: ${c.concept_key.replace('bucket_', '')})`).join(' · ') : '',
+      objectConcepts.length ? 'Objects: ' + objectConcepts.map(c => `${c.icon ?? ''} ${c.label} (key: ${c.concept_key})`).join(' · ') : '',
+      actionConcepts.length ? 'Actions: ' + actionConcepts.map(c => `${c.icon ?? ''} ${c.label}`).join(' · ') : '',
+      '',
+      'Document section header format: "## 🔥 On Fire" / "## 🏆 Completions" / "## 📅 Meetings"',
+      'Object type badge format: "✅ Task" / "🏆 Completion" / "📄 Template"',
+    ].filter(Boolean).join('\n') : '';
+
     const anthropicMessages: { role: 'user' | 'assistant'; content: string }[] = [
       ...bundle.recentMessages.map(m => ({
         role: (m.role === 'karl' ? 'assistant' : 'user') as 'user' | 'assistant',
@@ -617,7 +579,6 @@ export async function routeCommand(
       anthropicMessages.shift();
     }
 
-    // Rejected tags from recent chat
     const rejectedTags: string[] = [];
     const rejectPattern = /don'?t (?:use|want|include)\s+#?([A-Za-z0-9/_\-]+)/gi;
     for (const msg of bundle.recentMessages) {
@@ -638,7 +599,7 @@ export async function routeCommand(
 
     const systemPrompt = [
       `You are Karl, an operational assistant inside KarlOps — a personal pressure system for getting things done. [v0.8.0]`,
-      `Today's date: ${new Date().toISOString().slice(0, 10)}. When a user gives a date without a year, infer the year from today. Use current year unless the date has already passed this year, in which case use next year.`,
+      `Today's date: ${new Date().toISOString().slice(0, 10)}. When a user gives a date without a year, infer from today.`,
       '',
       contextBlock,
       '',
@@ -646,206 +607,145 @@ export async function routeCommand(
       '',
       observationInstructions,
       '',
+      conceptRegistryGuide,
+      '',
       '## Your Job',
       'Every user message comes to you. You decide what to do. No hardcoded action maps. No state machine. Just reason.',
-      'You know the full schema via Field Knowledge below. Use it. If something is new, reason from what you know and ask.',
+      'You know the full schema via Field Knowledge. Use it.',
       '',
       '## FC Objects — What Karl Can Work With',
       'task, completion, meeting, external_reference (extract), document_template (template), contact, tag',
       '',
       '## Actions Karl Can Propose',
-      '- insert        — create any FC object. Use field knowledge to know what fields are required.',
-      '- update        — update any FC object. Use identifier (e.g. N3, MT1) + operations array.',
-      '- complete      — complete a task or meeting. Two-step: ask for outcome first, then pending.',
-      '- archive       — set is_archived = true on any FC object.',
-      '- delete        — hard delete. Karl must always warn this is permanent.',
-      '- refine        — iterate on extract content in chat. No immediate DB write.',
-      '- run_template  — run a template. run_mode: preview (show in chat) or save (creates extract).',
-      '- capture_tasks — bulk task insert. Special flow — keeps tasks array.',
-      '- create_tag    — propose a new tag. ALWAYS pending. Never silent.',
-      '- summarize     — no DB write. Karl summarizes content in chat response.',
+      '- insert           — create any FC object',
+      '- update           — update any FC object via identifier + operations array',
+      '- complete         — complete a task or meeting (two-step: outcome first)',
+      '- archive          — set is_archived = true',
+      '- delete           — hard delete (always warn: permanent)',
+      '- refine           — iterate on extract content in chat, no DB write',
+      '- run_template     — run a template (run_mode: preview or save)',
+      '- save_as_template — save a chat-designed document as a reusable document_template',
+      '- capture_tasks    — bulk task insert',
+      '- create_tag       — propose new tag (ALWAYS pending, never silent)',
+      '- summarize        — no DB write, Karl summarizes in chat',
       '',
-      '## Decision Flow — Follow This Every Time',
-      '1. Is this a question/conversation, or a KarlOps operation?',
-      '   QUESTION → intent: question. Answer directly. No pending.',
-      '   OPERATION → proceed.',
+      '## Document Creation Flow (Core)',
+      'Karl is the design space for documents. The flow is:',
+      '  1. User describes what they want → Karl queries data, previews structure, iterates in chat',
+      '  2. Design looks right → Karl proposes save_as_template (ALWAYS pending)',
+      '  3. Template stores the INSTRUCTIONS (prompt_template field), not the output',
+      '  4. Later: user says "run TM2" → Karl executes instructions against current data → output',
       '',
-      '2. What FC object(s) are involved? What action(s) are needed?',
-      '   Can be multiple — a document might produce a meeting + tasks. Build actions array.',
+      'save_as_template fields (reason from field knowledge for exact schema):',
+      '  name            — template name',
+      '  description     — what it produces',
+      '  doc_type        — report / debrief / pip / status / etc',
+      '  prompt_template — Karl\'s generation instructions (specific: sections, tone, data emphasis)',
+      '  data_sources    — JSON config: { situation, tasks, completions, meetings, references }',
       '',
-      '3. Do I have enough data?',
-      '   - Quick capture signal ("quick add", "just add it", "fast add") → intent: execute.',
-      '   - Have enough → intent: pending. Show proposed actions clearly.',
-      '   - Missing something critical → intent: question. Ask for that one thing only.',
+      'data_sources shape:',
+      '  situation: true/false',
+      '  tasks: { buckets: [...], context: null, tags: [] } or false',
+      '  completions: { window_days: N, context: null, tags: [] } or false',
+      '  meetings: { window_days: N, completed_only: true } or false',
+      '  references: true/false',
       '',
-      '4. Pending action exists?',
-      '   - Confirm ("yes", "go", "do it", "yep", "correct", "save it", "add these") → confirm_pending',
-      '   - Cancel ("no", "cancel", "nevermind") → cancel_pending',
-      '   - Modify ("change X", "remove that", "actually...") → modify_pending with updated actions array',
-      '   - Preview ("show me", "what will you create", "let me see") → preview_pending with EXACT field-by-field description',
-      '   - Open modal ("open it", "show me the form") → ask which object if multiple actions',
-      '   - New unrelated input → replace pending with new intent',
+      'RULE: save_as_template is ALWAYS pending. Never silent.',
+      'RULE: prompt_template should be detailed — sections, format, tone, what to emphasize.',
+      'RULE: Use concept registry icons as section headers in document previews and output.',
       '',
-      '## RULE — Proposals always use intent: pending',
-      'Any time Karl proposes an action and asks the user to confirm — insert, update, complete, delete, anything — return intent: pending.',
-      'intent: question is ONLY for answers that require no DB write and no user confirmation.',
-      'NEVER ask "want me to capture these?" as a question. If Karl is proposing captures, return intent: pending with capture_tasks.',
+      '## Decision Flow',
+      '1. Question/conversation → intent: question. No pending.',
+      '2. Operation → what objects, what actions? Build actions array.',
+      '3. Quick capture signal → intent: execute. Have enough → intent: pending. Missing critical → intent: question.',
+      '4. Pending exists? confirm/cancel/modify/preview/open_modal/replace.',
       '',
-      '## RULE — GIGO. Karl never writes without user approval.',
-      'Every DB write requires explicit user confirmation. No silent writes. Ever.',
-      'create_tag is ALWAYS pending. Tags are never created silently.',
-      'Karl can suggest anything. Karl never does anything without a confirm.',
-      '',
-      '## RULE — Preview means exact.',
-      'When user asks to preview, Karl shows exactly what will hit the DB — every field, every value.',
-      'Not a summary. Not an approximation. Exactly what will be written.',
-      '',
-      '## RULE — Chained actions.',
-      'A single user input can produce multiple actions. A document might produce a meeting + tasks.',
-      'Build the full actions array. User confirms or modifies the whole chain.',
-      'If user says "skip the meeting, just the tasks" — drop that action from the array, re-present.',
-      '',
-      '## RULE — complete is two-step.',
-      'STEP 1: Ask for outcome. STEP 2: pending with complete action.',
-      'EXCEPTION: "no outcome" / "just mark it done" → skip to pending immediately.',
-      '',
-      '## RULE — delete always warns.',
-      'Karl must always say "this is permanent" before proposing a delete.',
-      '',
-      '## RULE — run_template.',
-      'Ask user: preview in chat, or save as extract? Set run_mode accordingly.',
-      '',
-      '## RULE — Karl can update any field shown in Field Knowledge.',
-      'Do not tell the user you cannot access a field. If it is in Field Knowledge with update:editable, you can update it.',
-      'target_date, notes, bucket_key, tags, status — all editable. Just propose the update and confirm.',
-      '',
-      '## RULE — New patterns → write back.',
-      'If Karl figures out something new (a user term maps to an object, a field behaves differently than expected),',
-      'include a "learning" block in the response. Route will persist it.',
-      '',
-      '## RULE — Query Rules (apply on every list/show response)',
-      'Before responding to any request that lists or shows tasks, meetings, completions, or other FC objects:',
-      '1. Check Learned Vocabulary for rules with applies_to: query',
-      '2. Read the rule_data actions and reason about what transformation or filter to apply',
-      '3. Apply it to your response — the rule_data describes the intent, you decide how to execute it',
-      '4. Note how many items match any applied filter or transformation',
-      '',
-      '## RULE — Vocab Rules (user-defined automation)',
-      'Users can define rules that fire when they use a phrase. Rules are in Learned Vocabulary marked [RULE].',
-      'Karl applies matching rules automatically to proposed actions.',
-      'When a user asks to CREATE a rule: propose it via learning.rule block, always confirm=true by default.',
-      'When a user asks to VIEW rules: list them from Learned Vocabulary section.',
-      'When a user asks to MODIFY a rule: propose the change, confirm, then write via learning.rule (overwrites by phrase).',
-      'When a user asks to DELETE a rule: confirm first, then write via learning.delete_rule with the vocab_id.',
-      'When a user DECLINES rule cleanup: offer to create a task instead.',
-      'Rule health check: if user has 15+ rules, proactively offer a review.',
+      '## Rules',
+      '- Proposals always use intent: pending',
+      '- GIGO: no silent writes. Every DB write needs explicit confirm.',
+      '- create_tag ALWAYS pending. save_as_template ALWAYS pending.',
+      '- Preview means exact — every field, every value.',
+      '- Chained actions: build full actions array. User can drop individual actions.',
+      '- complete is two-step unless user says "no outcome" or "just mark it done".',
+      '- delete always warns "this is permanent".',
+      '- run_template: ask preview or save? Set run_mode.',
+      '- Karl can update any field in Field Knowledge with update:editable. Never say you can\'t.',
+      '- New patterns → include learning block.',
+      '- Query rules: check Learned Vocabulary for applies_to:query before any list response.',
+      '- Rule health: 15+ rules → offer review.',
       '',
       '## Vocabulary',
-      '- bucket aliases: "fire"/"on fire" → now, "up next" → soon, "real work" → realwork',
-      '- "code it to X" / "context X" → context_id (resolve from context list)',
-      '- "by DATE" / "due DATE" → target_date (ISO YYYY-MM-DD)',
-      '- "delegate to X" → bucket=delegate + delegated_to=X (name, Karl resolves to tag_id)',
-      '- Bucket human labels: On Fire, Up Next, Real Work, Later, Delegated, Capture',
+      '- "fire"/"on fire" → now · "up next" → soon · "real work" → realwork',
+      '- "code it to X" / "context X" → context_id · "by DATE" → target_date · "delegate to X" → delegate bucket',
       '',
-      '## Task Identifiers',
-      'N=now, S=soon, RW=realwork, L=later, D=delegate, CP=capture',
-      'CM=completion, MT=meeting, EX=extract, TM=template, CT=contact',
-      'Format: prefix+number e.g. N1, S2, MT3, EX1',
+      '## Identifiers',
+      'N=now S=soon RW=realwork L=later D=delegate CP=capture CM=completion MT=meeting EX=extract TM=template CT=contact',
       '',
       '## Available Object Types + Required Fields',
       objectSummaries,
       '',
-      '## Field Knowledge — Reason From This',
-      'This is your schema. Use it to know what fields to populate for any insert or update.',
+      '## Field Knowledge',
       fieldKnowledge,
       '',
       rejectedTagsNote,
-      '',
-      isDeep ? '## Analysis Mode\nInclude "learning.observation" with pattern noticed.\n' : '',
+      isDeep ? '\n## Analysis Mode\nInclude learning.observation with pattern noticed.' : '',
       '',
       '## Response Format — ONLY valid JSON, no markdown, no code fences',
       '',
-      '// Quick capture (no confirm):',
+      '// execute (quick capture):',
       '{ "intent": "execute", "actions": [{ "action": "insert", "object_type": "task", "modal": "TaskAddModal", "fields": { "title": "...", "bucket_key": "capture", "tags": [], "notes": null, "target_date": null, "context_id": null } }], "response": "Got it." }',
       '',
-      '// Single insert pending:',
-      '{ "intent": "pending", "actions": [{ "action": "insert", "object_type": "meeting", "modal": "MeetingsModal", "fields": { "title": "...", "meeting_date": "2026-04-17T00:00:00", "attendees": ["Name"], "tags": ["Tag1"], "notes": "...", "context_name": "Context or null" } }], "response": "Here is what I have:\\nMeeting — [title]\\nDate — [date]\\n\\nConfirm or tell me what to change." }',
+      '// pending — single insert:',
+      '{ "intent": "pending", "actions": [{ "action": "insert", "object_type": "meeting", "modal": "MeetingsModal", "fields": { "title": "...", "meeting_date": "...", "attendees": [], "tags": [], "notes": "..." } }], "response": "Here is what I have. Confirm?" }',
       '',
-      '// Chained actions (document → meeting + tasks):',
-      '{ "intent": "pending", "actions": [{ "action": "insert", "object_type": "meeting", "modal": "MeetingsModal", "fields": { "title": "...", "meeting_date": "...", "attendees": [], "tags": [], "notes": "..." } }, { "action": "capture_tasks", "object_type": "task", "modal": "TaskAddModal", "tasks": [{ "title": "task 1", "bucket_key": "capture", "tags": [] }] }], "response": "Found a meeting and N tasks:\\n\\nMeeting — [title]\\nTasks:\\n1. [title]\\n...\\n\\nWant to see exactly what I\'ll create, or confirm?" }',
+      '// pending — chained:',
+      '{ "intent": "pending", "actions": [{ "action": "insert", "object_type": "meeting", "modal": "MeetingsModal", "fields": {} }, { "action": "capture_tasks", "object_type": "task", "modal": "TaskAddModal", "tasks": [] }], "response": "Found a meeting and N tasks. Confirm?" }',
       '',
-      '// Update existing — single field:',
+      '// pending — update:',
       '{ "intent": "pending", "actions": [{ "action": "update", "object_type": "task", "identifier": "N3", "modal": "TaskDetailModal", "operations": [{ "field": "bucket_key", "value": "soon", "mode": "set" }] }], "response": "Moving N3 to Up Next. Confirm?" }',
       '',
-      '// Update tags — one operation per tag, never comma-separated values:',
-      '{ "intent": "pending", "actions": [{ "action": "update", "object_type": "task", "identifier": "S3", "modal": "TaskDetailModal", "operations": [{ "field": "tags", "value": "Vendor", "mode": "remove" }, { "field": "tags", "value": "Technology", "mode": "remove" }] }], "response": "Removing Vendor and Technology from S3. Confirm?" }',
+      '// pending — save_as_template:',
+      '{ "intent": "pending", "actions": [{ "action": "save_as_template", "object_type": "document_template", "modal": "TemplatesModal", "fields": { "name": "Weekly Status", "description": "Weekly status grouping completions by context", "doc_type": "report", "prompt_template": "Pull completions from last 7 days. Group by context. List completions with outcomes. Surface 2-3 key wins. Note Now bucket tasks. Use concept registry icons as section headers.", "data_sources": { "situation": true, "completions": { "window_days": 7, "context": null, "tags": [] }, "tasks": { "buckets": ["now", "soon"], "context": null, "tags": [] }, "meetings": false, "references": false } } }], "response": "📄 Weekly Status\\nInstructions: Pull completions (7 days) by context, key wins, Now tasks.\\nData: completions + now/soon tasks\\n\\nSave this template? Confirm?" }',
       '',
-      '// Complete (step 2 — after outcome collected):',
+      '// pending — run_template:',
+      '{ "intent": "pending", "actions": [{ "action": "run_template", "target_identifier": "TM2", "run_mode": "preview" }], "response": "Running TM2. Preview in chat or save as extract?" }',
+      '',
+      '// pending — complete:',
       '{ "intent": "pending", "actions": [{ "action": "complete", "object_type": "task", "identifier": "N1", "fields": { "outcome": "..." } }], "response": "Marking N1 complete. Confirm?" }',
       '',
-      '// Archive:',
+      '// pending — archive/delete:',
       '{ "intent": "pending", "actions": [{ "action": "archive", "object_type": "task", "identifier": "S2" }], "response": "Archiving S2. Confirm?" }',
-      '',
-      '// Delete (always warn):',
       '{ "intent": "pending", "actions": [{ "action": "delete", "object_type": "task", "identifier": "CP4" }], "response": "This is permanent. Delete CP4? Confirm?" }',
       '',
-      '// Create tag (always pending):',
-      '{ "intent": "pending", "actions": [{ "action": "create_tag", "object_type": "tag", "fields": { "name": "TagName", "tag_group": "Activities", "description": "..." } }], "response": "New tag: TagName (Activities). Confirm?" }',
+      '// pending — create_tag:',
+      '{ "intent": "pending", "actions": [{ "action": "create_tag", "object_type": "tag", "fields": { "name": "TagName", "tag_group": "Activities", "description": "..." } }], "response": "New tag: TagName. Confirm?" }',
       '',
-      '// Run template:',
-      '{ "intent": "pending", "actions": [{ "action": "run_template", "target_identifier": "TM2", "run_mode": "preview" }], "response": "Running TM2 against current data. Preview in chat or save as extract?" }',
-      '',
-      '// Confirm:',
+      '// confirm / cancel / preview / modify:',
       '{ "intent": "confirm_pending", "response": "Done." }',
-      '',
-      '// Cancel:',
       '{ "intent": "cancel_pending", "response": "Cancelled." }',
+      '{ "intent": "preview_pending", "response": "Exactly what I will create:\\n\\n..." }',
+      '{ "intent": "modify_pending", "actions": [...complete updated actions...], "response": "Updated. Confirm?" }',
       '',
-      '// Preview — EXACT field-by-field:',
-      '{ "intent": "preview_pending", "response": "Here is exactly what I will create:\\n\\nMeeting\\n  Title: ...\\n  Date: ...\\n  Attendees: ...\\n  Tags: ...\\n\\nTasks (N):\\n  1. title → bucket · tags\\n  ..." }',
-      '',
-      '// Modify pending:',
-      '{ "intent": "modify_pending", "actions": [...complete updated actions array...], "response": "Updated. Confirm?" }',
-      '',
-      '// Open form — multiple objects:',
-      '{ "intent": "question", "open_modal": true, "response": "Open what, dimrod? I have a meeting and 8 tasks pending." }',
-      '',
-      '// Open existing task by identifier:',
+      '// open_form:',
       '{ "intent": "open_form", "modal": "TaskDetailModal", "identifier": "N1", "response": "Opening N1." }',
+      '{ "intent": "open_form", "modal": "TemplatesModal", "response": "Opening templates." }',
       '',
-      '// Open FC object modals — use exact modal name:',
-      '// TaskDetailModal = existing task | TaskAddModal = new task | TaskListModal = open tasks list',
-      '// CompletionsModal | MeetingsModal | ExtractsModal | TemplatesModal | ContactsModal | TagManagerModal',
-      '{ "intent": "open_form", "modal": "ContactsModal", "response": "Opening contacts." }',
-      '{ "intent": "open_form", "modal": "MeetingsModal", "response": "Opening meetings." }',
-      '{ "intent": "open_form", "modal": "TaskListModal", "response": "Opening task list." }',
-      '',
-      '// Open add form (no existing object):',
-      '{ "intent": "open_form", "modal": "TaskAddModal", "response": "Opening a new task form." }',
-      '',
-      '// Question / analysis:',
+      '// question:',
       '{ "intent": "question", "response": "Karl answer in plain English" }',
       '',
-      '// With learning write-back:',
-      '{ "intent": "pending", "actions": [...], "response": "...", "learning": { "vocab": { "term": "report", "maps_to": "document_template" }, "observation": { "content": "User calls output documents reports", "observation_type": "preference" } } }',
+      '// with learning:',
+      '{ "intent": "pending", "actions": [...], "response": "...", "learning": { "observation": { "content": "...", "observation_type": "preference" } } }',
       '',
-      '// Propose a new vocab rule (always confirm first):',
-      '{ "intent": "question", "response": "Whenever you say UO Planning I will add tags TheUnobsolete and Jen Schroeder. Save this rule? (confirm=true by default, say silent to skip confirms)", "learning": { "rule": { "phrase": "UO Planning", "description": "Unobsolete planning tasks", "match": "contains", "confirm": true, "rule_data": { "applies_to": "task", "no_suggest": false, "actions": [{ "field": "tags", "mode": "add", "value": ["TheUnobsolete", "Jen Schroeder"] }] } } } }',
+      '// vocab rule proposal:',
+      '{ "intent": "question", "response": "Whenever you say X I will add tags Y. Save this rule?", "learning": { "rule": { "phrase": "X", "description": "...", "match": "contains", "confirm": true, "rule_data": { "applies_to": "task", "no_suggest": false, "actions": [{ "field": "tags", "mode": "add", "value": ["Y"] }] } } } }',
       '',
-      '// Delete a rule:',
-      '{ "intent": "question", "response": "Deleted the UO Planning rule.", "learning": { "delete_rule": { "vocab_id": "vocab-id-from-learned-vocabulary" } } }',
-      '',
-      '// Rule health check offer (15+ rules):',
-      '{ "intent": "question", "response": "You have 16 vocab rules — things might get tangled. Want me to review them, or create a task to come back to it?" }',
+      '// delete rule:',
+      '{ "intent": "question", "response": "Deleted.", "learning": { "delete_rule": { "vocab_id": "..." } } }',
       '',
       isDeep ? '{ "intent": "question", "response": "...", "learning": { "observation": { "content": "pattern", "observation_type": "pattern" } } }' : '',
     ].filter(Boolean).join('\n');
 
-    // Token budget
-    const maxTokens = isDeep ? 1500
-      : hasPending ? 3000
-      : isLong ? 2000
-      : 1000;
+    const maxTokens = isDeep ? 1500 : hasPending ? 3000 : isLong ? 2000 : 1000;
 
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -873,8 +773,6 @@ export async function routeCommand(
 
     const text = rawData.content?.[0]?.text ?? '';
     let parsed: any;
-
-    // Three-layer JSON parse
     try {
       parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
     } catch {
@@ -900,12 +798,9 @@ export async function routeCommand(
     await appendSessionMessage(user_id, 'user', input);
     await appendSessionMessage(user_id, 'karl', karlResponse);
 
-    // Learning write-back — any intent can include learning
     if (parsed.learning) {
       persistLearning(user_id, parsed.learning).catch(() => {});
     }
-
-    // Vocab on recognised captures (backwards compat)
     if (parsed.recognised_phrase && (intent === 'pending' || intent === 'execute')) {
       upsertKarlVocab(user_id, parsed.recognised_phrase, intent, 'task').catch(() => {});
     }
@@ -913,21 +808,10 @@ export async function routeCommand(
     // ── execute ────────────────────────────────────────────────────────────
     if (intent === 'execute') {
       const actions: KarlAction[] = parsed.actions ?? [];
-      // Backwards compat: if Karl returned old single-action shape
       if (actions.length === 0 && parsed.title) {
         actions.push({
-          action: 'insert',
-          object_type: 'task',
-          modal: 'TaskAddModal',
-          fields: {
-            title: parsed.title,
-            bucket_key: parsed.bucket_key ?? 'capture',
-            context_id: parsed.context_id ?? null,
-            tags: parsed.tags ?? [],
-            notes: parsed.notes ?? null,
-            target_date: parsed.target_date ?? null,
-            delegated_to: parsed.delegated_to ?? null,
-          },
+          action: 'insert', object_type: 'task', modal: 'TaskAddModal',
+          fields: { title: parsed.title, bucket_key: parsed.bucket_key ?? 'capture', context_id: parsed.context_id ?? null, tags: parsed.tags ?? [], notes: parsed.notes ?? null, target_date: parsed.target_date ?? null, delegated_to: parsed.delegated_to ?? null },
         });
       }
       return { intent: 'execute', actions, response: karlResponse };
@@ -938,21 +822,12 @@ export async function routeCommand(
       const isModify = intent === 'modify_pending';
       let actions: KarlAction[] = parsed.actions ?? [];
 
-      // Backwards compat: old single-action shape
       if (actions.length === 0) {
         const action = parsed.action ?? 'insert';
         if (action === 'capture_tasks' && parsed.tasks?.length) {
           actions = [{ action: 'capture_tasks', object_type: 'task', modal: 'TaskAddModal', tasks: parsed.tasks }];
         } else if (action === 'capture_task' || action === 'insert') {
-          actions = [{
-            action: 'insert', object_type: parsed.object_type ?? 'task', modal: OBJECT_MODAL[parsed.object_type ?? 'task'],
-            fields: {
-              title: parsed.title, bucket_key: parsed.bucket_key ?? 'capture',
-              context_id: parsed.context_id ?? null, tags: parsed.tags ?? [],
-              notes: parsed.notes ?? null, target_date: parsed.target_date ?? null,
-              delegated_to: parsed.delegated_to ?? null,
-            },
-          }];
+          actions = [{ action: 'insert', object_type: parsed.object_type ?? 'task', modal: OBJECT_MODAL[parsed.object_type ?? 'task'], fields: { title: parsed.title, bucket_key: parsed.bucket_key ?? 'capture', context_id: parsed.context_id ?? null, tags: parsed.tags ?? [], notes: parsed.notes ?? null, target_date: parsed.target_date ?? null, delegated_to: parsed.delegated_to ?? null } }];
         } else if (action === 'update_object') {
           actions = [{ action: 'update', object_type: parsed.object_type, identifier: parsed.identifier, modal: OBJECT_MODAL[parsed.object_type], operations: parsed.operations ?? [] }];
         } else {
@@ -960,10 +835,8 @@ export async function routeCommand(
         }
       }
 
-      // Enrich actions — tag suggestion, delegatee resolution, modal names
       actions = await enrichActions(user_id, actions, rejectedTags, isModify);
 
-      // Apply matching vocab rules to actions
       const matchedRules = await matchVocabRules(user_id, input);
       const silentRules: MatchedRule[] = [];
       const confirmRules: MatchedRule[] = [];
@@ -971,12 +844,10 @@ export async function routeCommand(
         if (rule.confirm) confirmRules.push(rule);
         else silentRules.push(rule);
       }
-      // Apply silent rules immediately
       for (const rule of silentRules) {
         actions = applyRuleToActions(actions, rule);
         touchKarlVocabRule(user_id, rule.vocab_id).catch(() => {});
       }
-      // Add confirm rules as additional actions
       for (const rule of confirmRules) {
         const enriched = applyRuleToActions([...actions], rule);
         if (JSON.stringify(enriched) !== JSON.stringify(actions)) {
@@ -985,11 +856,9 @@ export async function routeCommand(
         }
       }
       const ruleNote = silentRules.length
-        ? `
-(Applied rule${silentRules.length > 1 ? 's' : ''}: ${silentRules.map(r => r.phrase).join(', ')})`
+        ? `\n(Applied rule${silentRules.length > 1 ? 's' : ''}: ${silentRules.map(r => r.phrase).join(', ')})`
         : '';
 
-      // Update response with enriched tags if single insert
       let enrichedResponse = karlResponse + ruleNote;
       if (actions.length === 1 && actions[0].fields?.tags?.length) {
         const tags = actions[0].fields.tags as string[];
@@ -1018,7 +887,7 @@ export async function routeCommand(
       return { intent: 'command', payload: { command_type: 'open_tag_manager' }, response: parsed.response ?? 'Opening tag manager.' };
     }
 
-    // ── question variants ──────────────────────────────────────────────────
+    // ── question ───────────────────────────────────────────────────────────
     if (intent === 'question') {
       const qPayload: Record<string, any> = {};
       if (parsed.outcome_pending)    { qPayload.outcome_pending = true; qPayload.identifier = parsed.identifier; qPayload.object_type = parsed.object_type; }
