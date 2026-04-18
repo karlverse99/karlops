@@ -208,12 +208,21 @@ async function applyFieldOperation(
     return `delegated to ${op.value}`;
   }
 
-  // Notes — append mode
-  if (op.field === 'notes' && op.mode === 'append') {
-    const { data: current } = await db.from(table).select('notes').eq(pk, record_id).single();
-    const existing = (current as any)?.notes ?? '';
-    const newNotes = existing ? `${existing}\n${op.value}` : String(op.value);
-    const { error } = await db.from(table).update({ notes: newNotes }).eq(pk, record_id).eq('user_id', user_id);
+  // Notes — append or set
+  // Handles op.mode === 'append' AND legacy "append:text" value prefix from old Karl shape
+  if (op.field === 'notes') {
+    const rawValue = String(op.value);
+    const isAppend = op.mode === 'append' || rawValue.toLowerCase().startsWith('append:');
+    const noteValue = rawValue.replace(/^append:/i, '').trim();
+    if (isAppend) {
+      const { data: current } = await db.from(table).select('notes').eq(pk, record_id).single();
+      const existing = (current as any)?.notes ?? '';
+      const newNotes = existing ? `${existing}\n${noteValue}` : noteValue;
+      const { error } = await db.from(table).update({ notes: newNotes }).eq(pk, record_id).eq('user_id', user_id);
+      if (error) throw new Error(error.message);
+      return `notes updated`;
+    }
+    const { error } = await db.from(table).update({ notes: noteValue }).eq(pk, record_id).eq('user_id', user_id);
     if (error) throw new Error(error.message);
     return `notes updated`;
   }

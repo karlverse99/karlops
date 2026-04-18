@@ -809,6 +809,7 @@ export default function WorkspacePage() {
     if (isNaN(idx) || idx < 0) return null;
     const bucketTasks = tasks
       .filter(t => t.bucket_key === bucketKey)
+      .filter(t => !contextFilter || t.context_id === contextFilter)
       .sort((a, b) => {
         if (a.sort_order !== null && b.sort_order !== null) return a.sort_order - b.sort_order;
         if (a.sort_order !== null) return -1;
