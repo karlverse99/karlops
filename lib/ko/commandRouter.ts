@@ -493,12 +493,16 @@ async function matchVocabRules(user_id: string, input: string): Promise<MatchedR
   const matched: MatchedRule[] = [];
 
   for (const rule of rules) {
-    const phrase = rule.phrase.toLowerCase();
-    const match  = rule.match ?? 'contains';
+    // Support pipe-delimited multiple triggers e.g. "ko|karlops"
+    const phrases = rule.phrase.toLowerCase().split('|').map((p: string) => p.trim()).filter(Boolean);
+    const match   = rule.match ?? 'contains';
     let hit = false;
-    if (match === 'exact')       hit = lower === phrase;
-    else if (match === 'starts_with') hit = lower.startsWith(phrase);
-    else                         hit = lower.includes(phrase); // contains (default)
+    for (const phrase of phrases) {
+      if (match === 'exact')            hit = lower === phrase;
+      else if (match === 'starts_with') hit = lower.startsWith(phrase);
+      else                              hit = lower.includes(phrase); // contains (default)
+      if (hit) break;
+    }
     if (hit) matched.push(rule as MatchedRule);
   }
   return matched;
@@ -519,10 +523,13 @@ function applyRuleToActions(actions: KarlAction[], rule: MatchedRule): KarlActio
           const existing = (a.fields.tags ?? []) as string[];
           const toAdd = Array.isArray(ra.value) ? ra.value : [ra.value];
           a.fields.tags = Array.from(new Set([...existing, ...toAdd])).slice(0, 5);
-        } else if (ra.field === 'context_id' && ra.mode === 'set') {
-          // Store as context_name for resolution at execution time
+        } else if ((ra.field === 'context_id' || ra.field === 'context_name') && ra.mode === 'set') {
+          // If value looks like a UUID, store as context_id directly
+          // If it's a name string, store as context_name for resolution at execution time
+          const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(ra.value));
           if (!a.fields.context_id && !a.fields.context_name) {
-            a.fields.context_name = ra.value;
+            if (isUuid) a.fields.context_id = ra.value;
+            else a.fields.context_name = ra.value;
           }
         } else if (ra.field === 'bucket_key' && ra.mode === 'set') {
           if (!a.fields.bucket_key || a.fields.bucket_key === 'capture') {
@@ -539,8 +546,12 @@ function applyRuleToActions(actions: KarlAction[], rule: MatchedRule): KarlActio
             const existing = (t.tags ?? []) as string[];
             const toAdd = Array.isArray(ra.value) ? ra.value : [ra.value];
             t.tags = Array.from(new Set([...existing, ...toAdd])).slice(0, 5);
-          } else if (ra.field === 'context_name' && ra.mode === 'set') {
-            if (!t.context_name) t.context_name = ra.value;
+          } else if ((ra.field === 'context_id' || ra.field === 'context_name') && ra.mode === 'set') {
+            const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(ra.value));
+            if (!t.context_id && !t.context_name) {
+              if (isUuid) t.context_id = ra.value;
+              else t.context_name = ra.value;
+            }
           }
         }
         return t;
