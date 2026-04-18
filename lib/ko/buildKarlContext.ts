@@ -115,7 +115,7 @@ export async function buildKarlContext(user_id: string, context_filter: string |
       .eq('user_id', user_id).eq('is_archived', false).eq('is_visible', true)
       .order('name'),
     db.from('karl_vocab')
-      .select('phrase, intent, object_type, use_count')
+      .select('vocab_id, phrase, intent, object_type, use_count, rule_data, match, confirm, last_used')
       .eq('user_id', user_id).eq('is_active', true)
       .order('use_count', { ascending: false }).limit(100),
     db.from('meeting')
@@ -290,7 +290,19 @@ export async function buildKarlContext(user_id: string, context_filter: string |
     : 'none';
 
   const vocab = vocabRes.data?.length
-    ? vocabRes.data.map(v => `"${v.phrase}" → ${v.intent} (${v.object_type})`).join('\n')
+    ? vocabRes.data.map(v => {
+        const base = `"${v.phrase}" → ${v.intent} (${v.object_type}) · used ${v.use_count}x`;
+        if (v.rule_data) {
+          const rule = v.rule_data as any;
+          const match = v.match ?? 'contains';
+          const confirm = v.confirm ? 'confirm' : 'silent';
+          const actions = (rule.actions ?? []).map((a: any) =>
+            `${a.field} ${a.mode} ${Array.isArray(a.value) ? a.value.join(', ') : a.value}`
+          ).join(' | ');
+          return `${base} · [RULE match:${match} ${confirm}] ${actions}`;
+        }
+        return base;
+      }).join('\n')
     : '';
 
   const fieldKnowledge = await buildFieldKnowledge(user_id);
@@ -378,7 +390,12 @@ export function formatContextForPrompt(bundle: KarlContextBundle): string {
   parts.push(`## Available Contexts\nFormat: Name|context_id. Use the UUID when returning context_id in JSON.\n${bundle.availableContexts}`);
 
   if (bundle.vocab) {
-    parts.push(`## Learned Vocabulary\n${bundle.vocab}`);
+    parts.push(`## Learned Vocabulary & Rules
+Phrases and rules this user has defined. Rules marked [RULE] have structured actions that fire automatically.
+When input matches a rule trigger, apply the rule actions to the pending payload.
+Rules with confirm:true → show in pending for user approval.
+Rules with confirm:false (silent) → apply automatically, mention briefly in response.
+\n${bundle.vocab}`);
   }
 
   if (bundle.fieldKnowledge) {
@@ -442,7 +459,7 @@ export async function updateFieldLlmNotes(
   else console.log(`[updateFieldLlmNotes] updated ${object_type}.${field}`);
 }
 
-// ── Upsert karl_vocab ─────────────────────────────────────────────────────────
+// ── Upsert karl_vocab — simple phrase/intent tracking ────────────────────────
 export async function upsertKarlVocab(
   user_id: string,
   phrase: string,
@@ -456,11 +473,95 @@ export async function upsertKarlVocab(
     .eq('user_id', user_id).eq('phrase', normalised).maybeSingle();
   if (existing) {
     await db.from('karl_vocab')
-      .update({ use_count: existing.use_count + 1, updated_at: new Date().toISOString() })
+      .update({ use_count: existing.use_count + 1, last_used: new Date().toISOString() })
       .eq('vocab_id', existing.vocab_id);
   } else {
     await db.from('karl_vocab').insert({ user_id, phrase: normalised, intent, object_type, use_count: 1 });
   }
+}
+
+// ── Write a full vocab rule — with rule_data, match, confirm ──────────────────
+export async function writeKarlVocabRule(
+  user_id: string,
+  phrase: string,
+  description: string,
+  rule_data: Record<string, any>,
+  match: 'contains' | 'exact' | 'starts_with' = 'contains',
+  confirm: boolean = true
+): Promise<{ vocab_id: string } | null> {
+  const db = createSupabaseAdmin();
+  const normalised = phrase.toLowerCase().trim();
+
+  // Check for existing rule with same phrase
+  const { data: existing } = await db
+    .from('karl_vocab').select('vocab_id')
+    .eq('user_id', user_id).eq('phrase', normalised).maybeSingle();
+
+  if (existing) {
+    // Update existing
+    await db.from('karl_vocab')
+      .update({ rule_data, match, confirm, description, last_used: new Date().toISOString() })
+      .eq('vocab_id', existing.vocab_id);
+    return { vocab_id: existing.vocab_id };
+  }
+
+  const { data } = await db.from('karl_vocab').insert({
+    user_id,
+    phrase: normalised,
+    intent: 'rule',
+    object_type: rule_data.applies_to ?? 'task',
+    rule_data,
+    match,
+    confirm,
+    use_count: 0,
+  }).select('vocab_id').single();
+
+  return data ? { vocab_id: data.vocab_id } : null;
+}
+
+// ── Delete/deactivate a vocab rule ────────────────────────────────────────────
+export async function deleteKarlVocabRule(
+  user_id: string,
+  vocab_id: string
+): Promise<void> {
+  const db = createSupabaseAdmin();
+  await db.from('karl_vocab')
+    .update({ is_active: false })
+    .eq('vocab_id', vocab_id)
+    .eq('user_id', user_id);
+}
+
+// ── Touch last_used on rule fire ──────────────────────────────────────────────
+export async function touchKarlVocabRule(
+  user_id: string,
+  vocab_id: string
+): Promise<void> {
+  const db = createSupabaseAdmin();
+  const { data: existing } = await db
+    .from('karl_vocab').select('use_count')
+    .eq('vocab_id', vocab_id).maybeSingle();
+  await db.from('karl_vocab')
+    .update({ use_count: (existing?.use_count ?? 0) + 1, last_used: new Date().toISOString() })
+    .eq('vocab_id', vocab_id).eq('user_id', user_id);
+}
+
+// ── Load active rules for matching ───────────────────────────────────────────
+export async function loadActiveVocabRules(user_id: string): Promise<Array<{
+  vocab_id: string;
+  phrase: string;
+  match: string;
+  confirm: boolean;
+  rule_data: Record<string, any>;
+}>> {
+  const db = createSupabaseAdmin();
+  const { data } = await db
+    .from('karl_vocab')
+    .select('vocab_id, phrase, match, confirm, rule_data')
+    .eq('user_id', user_id)
+    .eq('is_active', true)
+    .not('rule_data', 'is', null)
+    .order('use_count', { ascending: false });
+  return (data ?? []).filter(r => r.rule_data) as any;
 }
 
 // ── Append a message to session history ──────────────────────────────────────

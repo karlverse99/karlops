@@ -11,6 +11,10 @@ import {
   writeKarlObservation,
   upsertKarlVocab,
   updateFieldLlmNotes,
+  loadActiveVocabRules,
+  writeKarlVocabRule,
+  deleteKarlVocabRule,
+  touchKarlVocabRule,
 } from '@/lib/ko/buildKarlContext';
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -39,6 +43,9 @@ export type ActionType =
   | 'capture_tasks'    // bulk task insert (kept named — special bulk flow)
   | 'create_tag'       // propose a new tag (always pending, never silent)
   | 'summarize'        // no DB write — Karl summarizes content in chat
+  | 'propose_rule'     // Karl proposes a new vocab rule — always pending, user approves
+  | 'update_rule'      // Karl proposes updating an existing rule
+  | 'delete_rule'      // Karl proposes deleting a rule
 
 export interface KarlAction {
   action: ActionType;
@@ -372,9 +379,25 @@ function formatPendingForPrompt(pending: Record<string, any> | null): string {
 
 // ─── LEARNING WRITE-BACK ──────────────────────────────────────────────────────
 
-async function persistLearning(user_id: string, learning: KarlLearning): Promise<void> {
+async function persistLearning(user_id: string, learning: KarlLearning & {
+  rule?: { phrase: string; description: string; rule_data: Record<string,any>; match?: 'contains'|'exact'|'starts_with'; confirm?: boolean };
+  delete_rule?: { vocab_id: string };
+}): Promise<void> {
   if (learning.vocab?.term && learning.vocab?.maps_to) {
     upsertKarlVocab(user_id, learning.vocab.term, 'pending', learning.vocab.maps_to).catch(() => {});
+  }
+  if (learning.rule?.phrase && learning.rule?.rule_data) {
+    writeKarlVocabRule(
+      user_id,
+      learning.rule.phrase,
+      learning.rule.description ?? '',
+      learning.rule.rule_data,
+      learning.rule.match ?? 'contains',
+      learning.rule.confirm ?? true
+    ).catch(() => {});
+  }
+  if (learning.delete_rule?.vocab_id) {
+    deleteKarlVocabRule(user_id, learning.delete_rule.vocab_id).catch(() => {});
   }
   if (learning.field_notes?.object_type && learning.field_notes?.field && learning.field_notes?.llm_notes) {
     updateFieldLlmNotes(
@@ -451,6 +474,81 @@ async function enrichActions(
 
     return a;
   }));
+}
+
+// ─── RULE MATCHING ───────────────────────────────────────────────────────────
+// Check input against active vocab rules. Apply matching rules to actions.
+// Silent rules apply automatically. Confirm rules get added to pending.
+
+interface MatchedRule {
+  vocab_id: string;
+  phrase: string;
+  confirm: boolean;
+  rule_data: Record<string, any>;
+}
+
+async function matchVocabRules(user_id: string, input: string): Promise<MatchedRule[]> {
+  const rules = await loadActiveVocabRules(user_id);
+  const lower = input.toLowerCase();
+  const matched: MatchedRule[] = [];
+
+  for (const rule of rules) {
+    const phrase = rule.phrase.toLowerCase();
+    const match  = rule.match ?? 'contains';
+    let hit = false;
+    if (match === 'exact')       hit = lower === phrase;
+    else if (match === 'starts_with') hit = lower.startsWith(phrase);
+    else                         hit = lower.includes(phrase); // contains (default)
+    if (hit) matched.push(rule as MatchedRule);
+  }
+  return matched;
+}
+
+function applyRuleToActions(actions: KarlAction[], rule: MatchedRule): KarlAction[] {
+  const ruleData = rule.rule_data as any;
+  const ruleActions: Array<{ field: string; mode: string; value: any }> = ruleData.actions ?? [];
+  const appliesTo = ruleData.applies_to ?? 'task';
+
+  return actions.map(a => {
+    if (a.object_type !== appliesTo) return a;
+    if (a.action !== 'insert' && a.action !== 'capture_tasks') return a;
+
+    if (a.action === 'insert' && a.fields) {
+      for (const ra of ruleActions) {
+        if (ra.field === 'tags' && ra.mode === 'add') {
+          const existing = (a.fields.tags ?? []) as string[];
+          const toAdd = Array.isArray(ra.value) ? ra.value : [ra.value];
+          a.fields.tags = Array.from(new Set([...existing, ...toAdd])).slice(0, 5);
+        } else if (ra.field === 'context_id' && ra.mode === 'set') {
+          // Store as context_name for resolution at execution time
+          if (!a.fields.context_id && !a.fields.context_name) {
+            a.fields.context_name = ra.value;
+          }
+        } else if (ra.field === 'bucket_key' && ra.mode === 'set') {
+          if (!a.fields.bucket_key || a.fields.bucket_key === 'capture') {
+            a.fields.bucket_key = ra.value;
+          }
+        }
+      }
+    }
+
+    if (a.action === 'capture_tasks' && a.tasks?.length) {
+      a.tasks = a.tasks.map((t: any) => {
+        for (const ra of ruleActions) {
+          if (ra.field === 'tags' && ra.mode === 'add') {
+            const existing = (t.tags ?? []) as string[];
+            const toAdd = Array.isArray(ra.value) ? ra.value : [ra.value];
+            t.tags = Array.from(new Set([...existing, ...toAdd])).slice(0, 5);
+          } else if (ra.field === 'context_name' && ra.mode === 'set') {
+            if (!t.context_name) t.context_name = ra.value;
+          }
+        }
+        return t;
+      });
+    }
+
+    return a;
+  });
 }
 
 // ─── MAIN ROUTER ──────────────────────────────────────────────────────────────
@@ -602,6 +700,16 @@ export async function routeCommand(
       'If Karl figures out something new (a user term maps to an object, a field behaves differently than expected),',
       'include a "learning" block in the response. Route will persist it.',
       '',
+      '## RULE — Vocab Rules (user-defined automation)',
+      'Users can define rules that fire when they use a phrase. Rules are in Learned Vocabulary marked [RULE].',
+      'Karl applies matching rules automatically to proposed actions.',
+      'When a user asks to CREATE a rule: propose it via learning.rule block, always confirm=true by default.',
+      'When a user asks to VIEW rules: list them from Learned Vocabulary section.',
+      'When a user asks to MODIFY a rule: propose the change, confirm, then write via learning.rule (overwrites by phrase).',
+      'When a user asks to DELETE a rule: confirm first, then write via learning.delete_rule with the vocab_id.',
+      'When a user DECLINES rule cleanup: offer to create a task instead.',
+      'Rule health check: if user has 15+ rules, proactively offer a review.',
+      '',
       '## Vocabulary',
       '- bucket aliases: "fire"/"on fire" → now, "up next" → soon, "real work" → realwork',
       '- "code it to X" / "context X" → context_id (resolve from context list)',
@@ -686,6 +794,15 @@ export async function routeCommand(
       '',
       '// With learning write-back:',
       '{ "intent": "pending", "actions": [...], "response": "...", "learning": { "vocab": { "term": "report", "maps_to": "document_template" }, "observation": { "content": "User calls output documents reports", "observation_type": "preference" } } }',
+      '',
+      '// Propose a new vocab rule (always confirm first):',
+      '{ "intent": "question", "response": "Whenever you say UO Planning I will add tags TheUnobsolete and Jen Schroeder. Save this rule? (confirm=true by default, say silent to skip confirms)", "learning": { "rule": { "phrase": "UO Planning", "description": "Unobsolete planning tasks", "match": "contains", "confirm": true, "rule_data": { "applies_to": "task", "actions": [{ "field": "tags", "mode": "add", "value": ["TheUnobsolete", "Jen Schroeder"] }] } } } }',
+      '',
+      '// Delete a rule:',
+      '{ "intent": "question", "response": "Deleted the UO Planning rule.", "learning": { "delete_rule": { "vocab_id": "vocab-id-from-learned-vocabulary" } } }',
+      '',
+      '// Rule health check offer (15+ rules):',
+      '{ "intent": "question", "response": "You have 16 vocab rules — things might get tangled. Want me to review them, or create a task to come back to it?" }',
       '',
       isDeep ? '{ "intent": "question", "response": "...", "learning": { "observation": { "content": "pattern", "observation_type": "pattern" } } }' : '',
     ].filter(Boolean).join('\n');
@@ -812,8 +929,34 @@ export async function routeCommand(
       // Enrich actions — tag suggestion, delegatee resolution, modal names
       actions = await enrichActions(user_id, actions, rejectedTags, isModify);
 
+      // Apply matching vocab rules to actions
+      const matchedRules = await matchVocabRules(user_id, input);
+      const silentRules: MatchedRule[] = [];
+      const confirmRules: MatchedRule[] = [];
+      for (const rule of matchedRules) {
+        if (rule.confirm) confirmRules.push(rule);
+        else silentRules.push(rule);
+      }
+      // Apply silent rules immediately
+      for (const rule of silentRules) {
+        actions = applyRuleToActions(actions, rule);
+        touchKarlVocabRule(user_id, rule.vocab_id).catch(() => {});
+      }
+      // Add confirm rules as additional actions
+      for (const rule of confirmRules) {
+        const enriched = applyRuleToActions([...actions], rule);
+        if (JSON.stringify(enriched) !== JSON.stringify(actions)) {
+          actions = enriched;
+          touchKarlVocabRule(user_id, rule.vocab_id).catch(() => {});
+        }
+      }
+      const ruleNote = silentRules.length
+        ? `
+(Applied rule${silentRules.length > 1 ? 's' : ''}: ${silentRules.map(r => r.phrase).join(', ')})`
+        : '';
+
       // Update response with enriched tags if single insert
-      let enrichedResponse = karlResponse;
+      let enrichedResponse = karlResponse + ruleNote;
       if (actions.length === 1 && actions[0].fields?.tags?.length) {
         const tags = actions[0].fields.tags as string[];
         const tagMention = `\nTags — ${tags.map(t => `#${t}`).join(' ')}`;
