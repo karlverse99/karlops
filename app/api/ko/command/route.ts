@@ -159,18 +159,28 @@ async function applyFieldOperation(
 
   // Tags — add/remove
   // Handles: op.mode ('remove'/'add') AND legacy op.tag_op ('remove'/'add')
-  // Also handles comma-separated tag values e.g. "TheUnobsolete,Operations" → split to individual tags
+  // Splits comma-separated values. Validates against tag table before adding.
   if (op.field === 'tags') {
     const isRemove = op.mode === 'remove' || (op as any).tag_op === 'remove';
-    // Split comma-separated values into individual tag names
     const tagNames = String(op.value).split(',').map((t: string) => t.trim()).filter(Boolean);
     const { data: current } = await db.from(table).select('tags').eq(pk, record_id).single();
     let currentTags: string[] = (current as any)?.tags ?? [];
     if (isRemove) {
       currentTags = currentTags.filter(t => !tagNames.includes(t));
     } else {
+      // Validate tag names exist in tag table before adding — GIGO
+      const { data: validTagRows } = await db.from('tag')
+        .select('name')
+        .eq('user_id', user_id)
+        .in('name', tagNames)
+        .eq('is_archived', false);
+      const validNames = new Set((validTagRows ?? []).map((t: any) => t.name));
+      const invalid = tagNames.filter(t => !validNames.has(t));
+      if (invalid.length) {
+        console.warn(`[applyFieldOperation] rejected invalid tags: ${invalid.join(', ')}`);
+      }
       for (const tagName of tagNames) {
-        if (!currentTags.includes(tagName)) currentTags.push(tagName);
+        if (validNames.has(tagName) && !currentTags.includes(tagName)) currentTags.push(tagName);
       }
       currentTags = currentTags.slice(0, 5);
     }
@@ -178,7 +188,7 @@ async function applyFieldOperation(
     if (error) throw new Error(error.message);
     return isRemove
       ? `removed ${tagNames.map(t => `#${t}`).join(', ')}`
-      : `added ${tagNames.map(t => `#${t}`).join(', ')}`;
+      : `added ${tagNames.filter(t => currentTags.includes(t)).map(t => `#${t}`).join(', ')}`;
   }
 
   // Status label → id
