@@ -219,7 +219,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const [editName, setEditName]           = useState('');
   const [editDesc, setEditDesc]           = useState('');
   const [editDocType, setEditDocType]     = useState('');
-  const [editFormat, setEditFormat]       = useState('markdown');
+  const [editFormat, setEditFormat]       = useState('md');
   const [editDs, setEditDs]               = useState<DataSources>(DEFAULT_DS);
   const [editInstructions, setEditInstructions] = useState('');
   const [showInstructions, setShowInstructions] = useState(false);
@@ -347,7 +347,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const selectTemplate = (t: Template) => {
     setSelected(t); setIsNew(false); setDeleteConfirm(false);
     setEditName(t.name); setEditDesc(t.description ?? ''); setEditDocType(t.doc_type ?? '');
-    setEditFormat(t.output_format ?? 'markdown'); setEditDs(t.data_sources ?? DEFAULT_DS);
+    setEditFormat(t.output_format === 'markdown' ? 'md' : (t.output_format ?? 'md')); setEditDs(t.data_sources ?? DEFAULT_DS);
     setEditInstructions(t.prompt_template ?? '');
     setShowInstructions(!!t.prompt_template);
     setRunOutput(null); setRunErr(''); setSaveErr(''); setAssistHistory([]);
@@ -371,7 +371,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
           user_id:         userId,
           name:            editName.trim(),
           description:     editDesc.trim() || null,
-          doc_type:        editDocType.trim() || null,
+          doc_type:        editDocType.trim() || '',
           output_format:   editFormat,
           data_sources:    editDs,
           prompt_template: editInstructions.trim() || '',
@@ -383,7 +383,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
         const { error } = await supabase.from('document_template').update({
           name:            editName.trim(),
           description:     editDesc.trim() || null,
-          doc_type:        editDocType.trim() || null,
+          doc_type:        editDocType.trim() || '',
           output_format:   editFormat,
           data_sources:    editDs,
           prompt_template: editInstructions.trim() || '',
@@ -638,6 +638,18 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                     <div style={labelSt}>Description</div>
                     <input value={editDesc} onChange={e => setEditDesc(e.target.value)} disabled={isSystem}
                       style={inputSt(isSystem)} placeholder="What this template produces..." />
+                  </div>
+
+                  <div style={{ marginBottom: '0.75rem' }}>
+                    <div style={labelSt}>Output Format <span style={{ color: '#ef4444' }}>*</span></div>
+                    <select value={editFormat} onChange={e => setEditFormat(e.target.value)} disabled={isSystem}
+                      style={{ ...inputSt(isSystem), cursor: isSystem ? 'not-allowed' : 'pointer', width: 180 } as any}>
+                      <option value="md">Markdown (.md)</option>
+                      <option value="html">HTML (.html)</option>
+                      <option value="pdf">PDF (.pdf)</option>
+                      <option value="txt">Plain text (.txt)</option>
+                      <option value="docx">Word (.docx)</option>
+                    </select>
                   </div>
 
                   {!isSystem && (
