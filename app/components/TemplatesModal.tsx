@@ -212,6 +212,9 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   // ← NEW: extract counts per template
   const [extractCounts, setExtractCounts] = useState<Record<string, number>>({});
 
+  // Inline delete confirm — avoids system dialog
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
+
   // Edit state
   const [editName, setEditName]           = useState('');
   const [editDesc, setEditDesc]           = useState('');
@@ -342,7 +345,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   // ── Handlers ───────────────────────────────────────────────────────────────
 
   const selectTemplate = (t: Template) => {
-    setSelected(t); setIsNew(false);
+    setSelected(t); setIsNew(false); setDeleteConfirm(false);
     setEditName(t.name); setEditDesc(t.description ?? ''); setEditDocType(t.doc_type ?? '');
     setEditFormat(t.output_format ?? 'markdown'); setEditDs(t.data_sources ?? DEFAULT_DS);
     setEditInstructions(t.prompt_template ?? '');
@@ -352,7 +355,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   };
 
   const startNew = () => {
-    setSelected(null); setIsNew(true);
+    setSelected(null); setIsNew(true); setDeleteConfirm(false);
     setEditName(''); setEditDesc(''); setEditDocType(''); setEditFormat('markdown');
     setEditDs(DEFAULT_DS); setEditInstructions(''); setShowInstructions(false);
     setRunOutput(null); setRunErr(''); setSaveErr(''); setAssistHistory([]);
@@ -395,9 +398,8 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
 
   const handleDelete = async () => {
     if (!selected || selected.is_system) return;
-    if (!confirm(`Delete "${selected.name}"? This cannot be undone.`)) return;
     await supabase.from('document_template').update({ is_active: false }).eq('document_template_id', selected.document_template_id);
-    setSelected(null); setIsNew(false);
+    setSelected(null); setIsNew(false); setDeleteConfirm(false);
     await loadTemplates();
   };
 
@@ -756,11 +758,25 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                   {saveErr && <span style={{ color: '#ef4444', fontSize: '0.7rem', flex: 1 }}>{saveErr}</span>}
                   {!saveErr && <span style={{ flex: 1 }} />}
 
-                  {!isSystem && selected && (
-                    <button onClick={handleDelete}
+                  {!isSystem && selected && !deleteConfirm && (
+                    <button onClick={() => setDeleteConfirm(true)}
                       style={{ background: 'transparent', border: '1px solid #3a1a1a', color: '#ef4444', padding: '0.35rem 0.75rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer' }}>
                       delete
                     </button>
+                  )}
+
+                  {!isSystem && selected && deleteConfirm && (
+                    <>
+                      <span style={{ fontSize: '0.7rem', color: '#ef4444' }}>Delete "{selected.name}"?</span>
+                      <button onClick={() => setDeleteConfirm(false)}
+                        style={{ background: 'transparent', border: '1px solid #ddd', color: '#666', padding: '0.35rem 0.6rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer' }}>
+                        cancel
+                      </button>
+                      <button onClick={handleDelete}
+                        style={{ background: '#ef4444', border: 'none', color: '#fff', padding: '0.35rem 0.75rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer', fontWeight: 700 }}>
+                        yes, delete
+                      </button>
+                    </>
                   )}
 
                   {!isSystem && (

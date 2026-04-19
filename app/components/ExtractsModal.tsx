@@ -177,6 +177,7 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
   const [editDescription, setEditDescription] = useState('');
   const [editErr, setEditErr]             = useState('');
   const [editSaving, setEditSaving]       = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
 
   // ── Drag/resize ────────────────────────────────────────────────────────────
   const initX = Math.max(20, Math.round(window.innerWidth  / 2 - 600));
@@ -268,6 +269,7 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
     setEditNotes(r.notes ?? '');
     setEditDescription(r.description ?? '');
     setEditErr('');
+    setDeleteConfirm(false);
     setRightMode('edit');
     setSaveErr('');
   };
@@ -416,6 +418,18 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
       setRightMode('empty'); setSelected(null);
     } catch (e: any) { setEditErr(e.message); }
     finally { setEditSaving(false); }
+  };
+
+  const handleDelete = async () => {
+    if (!selected) return;
+    const { error } = await supabase
+      .from('external_reference')
+      .delete()
+      .eq('external_reference_id', selected.external_reference_id)
+      .eq('user_id', userId);
+    if (error) { setEditErr(error.message); return; }
+    await loadAll();
+    setRightMode('empty'); setSelected(null); setDeleteConfirm(false);
   };
 
   const selectedTemplate = templates.find(t => t.document_template_id === selectedTemplateId);
@@ -594,12 +608,31 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
 
         {editErr && <div style={{ color: '#ef4444', fontSize: '0.72rem', marginBottom: '0.75rem' }}>{editErr}</div>}
         <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: 'auto', paddingTop: '1rem' }}>
-          <button onClick={() => { setRightMode('empty'); setSelected(null); }}
-            style={{ background: 'none', border: '1px solid #ddd', color: '#666', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer' }}>cancel</button>
-          <button onClick={handleEditSave} disabled={editSaving}
-            style={{ background: ACCENT, border: 'none', color: '#fff', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer', fontWeight: 600 }}>
-            {editSaving ? '...' : 'save changes'}
-          </button>
+          {!deleteConfirm && (
+            <button onClick={() => setDeleteConfirm(true)}
+              style={{ background: 'transparent', border: '1px solid #3a1a1a', color: '#ef4444', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer', marginRight: 'auto' }}>
+              delete
+            </button>
+          )}
+          {deleteConfirm && (
+            <>
+              <span style={{ fontSize: '0.7rem', color: '#ef4444', marginRight: 'auto', alignSelf: 'center' }}>Delete this extract?</span>
+              <button onClick={() => setDeleteConfirm(false)}
+                style={{ background: 'none', border: '1px solid #ddd', color: '#666', padding: '0.4rem 0.7rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer' }}>cancel</button>
+              <button onClick={handleDelete}
+                style={{ background: '#ef4444', border: 'none', color: '#fff', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer', fontWeight: 700 }}>yes, delete</button>
+            </>
+          )}
+          {!deleteConfirm && (
+            <>
+              <button onClick={() => { setRightMode('empty'); setSelected(null); }}
+                style={{ background: 'none', border: '1px solid #ddd', color: '#666', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer' }}>cancel</button>
+              <button onClick={handleEditSave} disabled={editSaving}
+                style={{ background: ACCENT, border: 'none', color: '#fff', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer', fontWeight: 600 }}>
+                {editSaving ? '...' : 'save changes'}
+              </button>
+            </>
+          )}
         </div>
       </div>
     );
