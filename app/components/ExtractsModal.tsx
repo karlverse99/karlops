@@ -607,7 +607,27 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
         </div>
 
         {editErr && <div style={{ color: '#ef4444', fontSize: '0.72rem', marginBottom: '0.75rem' }}>{editErr}</div>}
-        <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: 'auto', paddingTop: '1rem' }}>
+
+        {/* Download row — only shown when there's content */}
+        {editNotes && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', paddingBottom: '0.75rem', borderBottom: `1px solid ${ACCENT_BORDER}`, marginBottom: '0.75rem' }}>
+            <span style={{ color: '#aaa', fontSize: '0.6rem', textTransform: 'uppercase', letterSpacing: '0.05em', marginRight: '0.25rem' }}>Download</span>
+            {(['MD', 'TXT', 'PDF', 'DOCX'] as const).map(fmt => (
+              <button key={fmt} onClick={() => {
+                const c = editNotes; const t = editTitle || selected?.title || 'extract';
+                if (fmt === 'MD')   downloadMD(c, t);
+                if (fmt === 'TXT')  downloadTXT(c, t);
+                if (fmt === 'PDF')  downloadPDF(c, t);
+                if (fmt === 'DOCX') downloadDOCX(c, t);
+              }} style={{ background: 'transparent', border: `1px solid ${ACCENT_BORDER}`, color: ACCENT, padding: '0.2rem 0.5rem', borderRadius: 3, fontSize: '0.68rem', fontFamily: 'monospace', cursor: 'pointer' }}
+                onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BG)}
+                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+              >.{fmt.toLowerCase()}</button>
+            ))}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: 'auto', paddingTop: '0' }}>
           {!deleteConfirm && (
             <button onClick={() => setDeleteConfirm(true)}
               style={{ background: 'transparent', border: '1px solid #3a1a1a', color: '#ef4444', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer', marginRight: 'auto' }}>
