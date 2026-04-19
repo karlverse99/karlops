@@ -40,6 +40,8 @@ interface ExtractsModalProps {
   accessToken: string;
   onClose: () => void;
   onCountChange: (count: number) => void;
+  // Optional: open directly filtered to a template (e.g. from TemplatesModal)
+  initialTemplateFilter?: string | null;
 }
 
 type CreatePath = 'choose' | 'template' | 'manual';
@@ -48,7 +50,6 @@ type RightMode  = 'empty' | 'view' | 'edit' | 'create';
 const ACCENT        = '#8b5cf6';
 const ACCENT_BG     = '#f5f3ff';
 const ACCENT_BORDER = '#ddd6fe';
-const ACCENT_DARK   = '#7c3aed';
 
 // ─── DOWNLOAD HELPERS ─────────────────────────────────────────────────────────
 
@@ -91,7 +92,6 @@ async function downloadPDF(content: string, title: string) {
     }
     doc.save(`${slugify(title)}.pdf`);
   } catch {
-    // fallback — open print dialog
     const win = window.open('', '_blank');
     if (win) { win.document.write(`<pre style="font-family:monospace;font-size:12px;padding:2rem">${content}</pre>`); win.print(); }
   }
@@ -115,14 +115,13 @@ async function downloadDOCX(content: string, title: string) {
     a.href = url; a.download = `${slugify(title)}.docx`; a.click();
     URL.revokeObjectURL(url);
   } catch {
-    // fallback — download as txt
     downloadTXT(content, title);
   }
 }
 
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
 
-export default function ExtractsModal({ userId, accessToken, onClose, onCountChange }: ExtractsModalProps) {
+export default function ExtractsModal({ userId, accessToken, onClose, onCountChange, initialTemplateFilter = null }: ExtractsModalProps) {
 
   // ── Data ───────────────────────────────────────────────────────────────────
   const [extracts, setExtracts]   = useState<Extract[]>([]);
@@ -138,6 +137,7 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
   const [selected, setSelected]           = useState<Extract | null>(null);
   const [search, setSearch]               = useState('');
   const [filterContext, setFilterContext] = useState('');
+  const [filterTemplate, setFilterTemplate] = useState<string>(initialTemplateFilter ?? ''); // ← NEW
   const [filterType, setFilterType]       = useState<'all' | 'generated' | 'manual'>('all');
   const [sortBy, setSortBy]               = useState<'date' | 'title' | 'template'>('date');
 
@@ -245,7 +245,8 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
   const filtered = extracts
     .filter(r => {
       if (search && !r.title.toLowerCase().includes(search.toLowerCase()) && !(r.filename ?? '').toLowerCase().includes(search.toLowerCase())) return false;
-      if (filterContext && r.context?.context_id !== filterContext) return false;
+      if (filterContext  && r.context?.context_id !== filterContext) return false;
+      if (filterTemplate && r.document_template_id !== filterTemplate) return false; // ← NEW
       if (filterType === 'generated' && !r.document_template_id) return false;
       if (filterType === 'manual'    &&  r.document_template_id) return false;
       return true;
@@ -398,7 +399,6 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
     setSaveErr('');
   };
 
-
   const handleEditSave = async () => {
     if (!selected || !editTitle.trim()) { setEditErr('Title is required'); return; }
     setEditSaving(true); setEditErr('');
@@ -413,14 +413,18 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
       }).eq('external_reference_id', selected.external_reference_id).eq('user_id', userId);
       if (error) throw error;
       await loadAll();
-      // Update selected with new values so view reflects changes
-      setSelected(s => s ? { ...s, title: editTitle.trim(), filename: editFilename.trim() || null, tags: editTags.length > 0 ? editTags : null, notes: editNotes.trim() || null, description: editDescription.trim() || null } : null);
       setRightMode('empty'); setSelected(null);
     } catch (e: any) { setEditErr(e.message); }
     finally { setEditSaving(false); }
   };
 
-  const selectedTemplate   = templates.find(t => t.document_template_id === selectedTemplateId);
+  const selectedTemplate = templates.find(t => t.document_template_id === selectedTemplateId);
+
+  // ── Derived: extract counts per template (for filter dropdown labels) ──────
+  const extractCountByTemplate = extracts.reduce<Record<string, number>>((acc, r) => {
+    if (r.document_template_id) acc[r.document_template_id] = (acc[r.document_template_id] ?? 0) + 1;
+    return acc;
+  }, {});
 
   // ─── RENDER ────────────────────────────────────────────────────────────────
 
@@ -429,24 +433,55 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
       <div style={{ padding: '0.75rem', borderBottom: `1px solid ${ACCENT_BORDER}`, display: 'flex', flexDirection: 'column', gap: '0.35rem', flexShrink: 0 }}>
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search extracts..."
           style={inputSt} onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} />
+
+        {/* Row 1: context + type */}
         <div style={{ display: 'flex', gap: '0.3rem' }}>
           <select value={filterContext} onChange={e => setFilterContext(e.target.value)} style={{ ...inputSt, flex: 1, fontSize: '0.68rem', padding: '0.3rem 0.4rem' } as any}>
             <option value="">All contexts</option>
             {contexts.map(c => <option key={c.context_id} value={c.context_id}>{c.name}</option>)}
           </select>
           <select value={filterType} onChange={e => setFilterType(e.target.value as any)} style={{ ...inputSt, flex: 1, fontSize: '0.68rem', padding: '0.3rem 0.4rem' } as any}>
-            <option value="all">All</option>
+            <option value="all">All types</option>
             <option value="generated">Generated</option>
             <option value="manual">Manual</option>
           </select>
+        </div>
+
+        {/* Row 2: template filter + sort — NEW */}
+        <div style={{ display: 'flex', gap: '0.3rem' }}>
+          <select value={filterTemplate} onChange={e => setFilterTemplate(e.target.value)} style={{ ...inputSt, flex: 2, fontSize: '0.68rem', padding: '0.3rem 0.4rem' } as any}>
+            <option value="">All templates</option>
+            {templates
+              .filter(t => extractCountByTemplate[t.document_template_id])
+              .map(t => (
+                <option key={t.document_template_id} value={t.document_template_id}>
+                  {t.name} ({extractCountByTemplate[t.document_template_id]})
+                </option>
+              ))
+            }
+          </select>
           <select value={sortBy} onChange={e => setSortBy(e.target.value as any)} style={{ ...inputSt, flex: 1, fontSize: '0.68rem', padding: '0.3rem 0.4rem' } as any}>
-            <option value="date">Date</option>
+            <option value="date">Date ↓</option>
             <option value="title">Title</option>
             <option value="template">Template</option>
           </select>
         </div>
-        <div style={{ color: '#aaa', fontSize: '0.62rem' }}>{filtered.length} of {extracts.length}</div>
+
+        {/* Active filter indicator */}
+        {(filterTemplate || filterContext || filterType !== 'all') && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+            <span style={{ color: '#aaa', fontSize: '0.6rem' }}>{filtered.length} of {extracts.length} shown</span>
+            <button onClick={() => { setFilterTemplate(''); setFilterContext(''); setFilterType('all'); }}
+              style={{ background: 'none', border: 'none', color: ACCENT, fontSize: '0.6rem', cursor: 'pointer', padding: 0, textDecoration: 'underline' }}>
+              clear filters
+            </button>
+          </div>
+        )}
+        {!(filterTemplate || filterContext || filterType !== 'all') && (
+          <div style={{ color: '#ccc', fontSize: '0.6rem' }}>{extracts.length} total</div>
+        )}
       </div>
+
       <div style={{ flex: 1, overflowY: 'auto', scrollbarWidth: 'thin', scrollbarColor: `${ACCENT_BORDER} transparent` }}>
         {loading
           ? <div style={{ padding: '1rem', color: '#aaa', fontSize: '0.75rem' }}>Loading...</div>
@@ -487,108 +522,17 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
     </div>
   );
 
-  const renderView = () => {
-    if (!selected) return null;
-    const tmplNm = selected.document_template_id ? templates.find(t => t.document_template_id === selected.document_template_id)?.name : null;
-    return (
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem 1.5rem', scrollbarWidth: 'thin', scrollbarColor: `${ACCENT_BORDER} transparent` }}>
-
-          {/* Title row */}
-          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '1rem', marginBottom: '1rem' }}>
-            <div style={{ fontSize: '1.05rem', fontWeight: 700, color: '#111', wordBreak: 'break-word', fontFamily: 'monospace', lineHeight: 1.3 }}>{selected.title}</div>
-            {selected.document_template_id && (
-              <button onClick={() => handleNewVersion(selected)}
-                style={{ flexShrink: 0, background: ACCENT, border: 'none', color: '#fff', padding: '0.3rem 0.75rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer', fontWeight: 600 }}>
-                ▶ new version
-              </button>
-            )}
-          </div>
-
-          {/* Metadata fields */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '1.25rem' }}>
-            {selected.context && (
-              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                <span style={{ fontSize: '0.6rem', color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, width: '80px', flexShrink: 0 }}>Context</span>
-                <span style={{ fontSize: '0.78rem', color: '#444', fontFamily: 'monospace' }}>{selected.context.name}</span>
-              </div>
-            )}
-            {tmplNm && (
-              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                <span style={{ fontSize: '0.6rem', color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, width: '80px', flexShrink: 0 }}>Template</span>
-                <span style={{ fontSize: '0.78rem', color: ACCENT, fontFamily: 'monospace' }}>{tmplNm}</span>
-              </div>
-            )}
-            {selected.filename && (
-              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                <span style={{ fontSize: '0.6rem', color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, width: '80px', flexShrink: 0 }}>File</span>
-                <span style={{ fontSize: '0.78rem', color: '#444', fontFamily: 'monospace' }}>{selected.filename}</span>
-              </div>
-            )}
-            {selected.ref_type && (
-              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                <span style={{ fontSize: '0.6rem', color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, width: '80px', flexShrink: 0 }}>Type</span>
-                <span style={{ fontSize: '0.78rem', color: '#444', fontFamily: 'monospace' }}>{selected.ref_type}</span>
-              </div>
-            )}
-            {selected.tags && selected.tags.length > 0 && (
-              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-                <span style={{ fontSize: '0.6rem', color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, width: '80px', flexShrink: 0 }}>Tags</span>
-                <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
-                  {selected.tags.map(t => (
-                    <span key={t} style={{ fontSize: '0.72rem', color: ACCENT, background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, borderRadius: 3, padding: '0.1rem 0.4rem', fontFamily: 'monospace' }}>#{t}</span>
-                  ))}
-                </div>
-              </div>
-            )}
-            {selected.description && (
-              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
-                <span style={{ fontSize: '0.6rem', color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, width: '80px', flexShrink: 0, paddingTop: '0.15rem' }}>Description</span>
-                <span style={{ fontSize: '0.78rem', color: '#444', fontFamily: 'monospace', lineHeight: 1.5 }}>{selected.description}</span>
-              </div>
-            )}
-            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-              <span style={{ fontSize: '0.6rem', color: '#aaa', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, width: '80px', flexShrink: 0 }}>Created</span>
-              <span style={{ fontSize: '0.78rem', color: '#aaa', fontFamily: 'monospace' }}>{fmtDate(selected.created_at)}</span>
-            </div>
-          </div>
-
-          {/* Content */}
-          {selected.notes && (
-            <>
-              <div style={{ borderTop: `1px solid ${ACCENT_BORDER}`, marginBottom: '1rem' }} />
-              <pre style={{ color: '#333', fontSize: '0.8rem', lineHeight: 1.7, whiteSpace: 'pre-wrap', fontFamily: 'monospace', margin: 0 }}>{selected.notes}</pre>
-            </>
-          )}
-        </div>
-        {selected.notes && (
-          <div style={{ padding: '0.6rem 1.25rem', borderTop: `1px solid ${ACCENT_BORDER}`, background: '#fafafa', display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
-            <span style={{ color: '#bbb', fontSize: '0.63rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Download</span>
-            {(['MD', 'TXT', 'PDF', 'DOCX'] as const).map(fmt => (
-              <button key={fmt} onClick={() => {
-                const c = selected.notes!; const t = selected.title;
-                if (fmt === 'MD')   downloadMD(c, t);
-                if (fmt === 'TXT')  downloadTXT(c, t);
-                if (fmt === 'PDF')  downloadPDF(c, t);
-                if (fmt === 'DOCX') downloadDOCX(c, t);
-              }} style={{ background: 'transparent', border: `1px solid ${ACCENT_BORDER}`, color: ACCENT, padding: '0.2rem 0.5rem', borderRadius: 3, fontSize: '0.68rem', fontFamily: 'monospace', cursor: 'pointer' }}
-                onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BG)}
-                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-              >.{fmt.toLowerCase()}</button>
-            ))}
-          </div>
-        )}
-      </div>
-    );
-  };
-
   const renderEdit = () => {
     if (!selected) return null;
     const identifier = `EX${extracts.findIndex(r => r.external_reference_id === selected.external_reference_id) + 1}`;
+    const tmplNm = selected.document_template_id ? templates.find(t => t.document_template_id === selected.document_template_id)?.name : null;
     return (
-      <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem', display: 'flex', flexDirection: 'column', scrollbarWidth: 'thin', scrollbarColor: `${ACCENT_BORDER} transparent` }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
-          <div style={{ color: '#888', fontSize: '0.7rem', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Editing {identifier}</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <div style={{ color: '#888', fontSize: '0.7rem', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Editing {identifier}</div>
+            {tmplNm && <span style={{ fontSize: '0.6rem', color: ACCENT, background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, borderRadius: 2, padding: '0.02rem 0.35rem' }}>via {tmplNm}</span>}
+          </div>
           {selected.document_template_id && (
             <button onClick={() => handleNewVersion(selected)}
               style={{ background: ACCENT, border: 'none', color: '#fff', padding: '0.25rem 0.7rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer', fontWeight: 600 }}>
@@ -662,7 +606,6 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
   };
 
   const renderCreate = () => {
-    // Choose path
     if (createPath === 'choose') return (
       <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: '1.5rem' }}>
         <div style={{ color: '#888', fontSize: '0.82rem' }}>How do you want to create this extract?</div>
@@ -686,7 +629,6 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
       </div>
     );
 
-    // Template: setup
     if (createPath === 'template' && !previewContent && !generating) return (
       <div style={{ flex: 1, padding: '1.5rem', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
         <div style={labelSt}>From Template</div>
@@ -696,7 +638,11 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
           <select value={selectedTemplateId} onChange={e => setSelectedTemplateId(e.target.value)} style={{ ...inputSt, cursor: 'pointer' } as any}
             onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')}>
             <option value="">— select a template —</option>
-            {templates.map(t => <option key={t.document_template_id} value={t.document_template_id}>{t.name}{t.doc_type ? ` · ${t.doc_type}` : ''}</option>)}
+            {templates.map(t => (
+              <option key={t.document_template_id} value={t.document_template_id}>
+                {t.name}{t.doc_type ? ` · ${t.doc_type}` : ''}{extractCountByTemplate[t.document_template_id] ? ` · ${extractCountByTemplate[t.document_template_id]} runs` : ''}
+              </option>
+            ))}
           </select>
         </div>
 
@@ -731,7 +677,6 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
       </div>
     );
 
-    // Generating
     if (createPath === 'template' && generating) return (
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '1.25rem' }}>
         <KarlSpinner size="lg" color={ACCENT} />
@@ -740,11 +685,8 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
       </div>
     );
 
-    // Template: preview + refine
     if (createPath === 'template' && previewContent) return (
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-
-        {/* Preview toolbar */}
         <div style={{ padding: '0.5rem 1rem', borderBottom: `1px solid ${ACCENT_BORDER}`, background: '#fafafa', display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
           <span style={{ color: ACCENT, fontSize: '0.68rem', fontWeight: 600 }}>PREVIEW</span>
           <span style={{ color: '#ccc', fontSize: '0.68rem' }}>— edit directly or refine with Karl →</span>
@@ -755,14 +697,10 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
           </button>
         </div>
 
-        {/* Split: editable preview LEFT | Karl refine RIGHT */}
         <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-
-          {/* Editable textarea */}
           <textarea value={previewContent} onChange={e => setPreviewContent(e.target.value)}
             style={{ flex: 3, background: '#fff', border: 'none', borderRight: `1px solid ${ACCENT_BORDER}`, outline: 'none', padding: '1rem', fontFamily: 'monospace', fontSize: '0.8rem', lineHeight: 1.7, color: '#222', resize: 'none' }} />
 
-          {/* Karl Refine panel */}
           <div style={{ flex: 1, minWidth: 200, display: 'flex', flexDirection: 'column', background: '#fafafa', overflow: 'hidden' }}>
             <div style={{ padding: '0.45rem 0.75rem', borderBottom: `1px solid ${ACCENT_BORDER}`, flexShrink: 0 }}>
               <span style={{ color: ACCENT, fontSize: '0.63rem', fontWeight: 600 }}>KARL REFINE</span>
@@ -791,7 +729,6 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
           </div>
         </div>
 
-        {/* Save bar */}
         <div style={{ padding: '0.65rem 1rem', borderTop: `1px solid ${ACCENT_BORDER}`, background: '#fafafa', flexShrink: 0 }}>
           <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '0.35rem' }}>
             <input value={saveTitle} onChange={e => setSaveTitle(e.target.value)} placeholder="Title *"
@@ -816,7 +753,7 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
             userId={userId}
             label="Tags"
           />
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'flex-end' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', justifyContent: 'flex-end', marginTop: '0.35rem' }}>
             {saveErr && <span style={{ color: '#ef4444', fontSize: '0.7rem', flex: 1 }}>{saveErr}</span>}
             <button onClick={() => setRightMode('empty')} style={{ background: 'none', border: '1px solid #ddd', color: '#888', padding: '0.35rem 0.7rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.72rem', cursor: 'pointer' }}>cancel</button>
             <button onClick={handleSaveGenerated} disabled={saving}
@@ -880,7 +817,6 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
               onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} />
           </div>
 
-          {/* Karl Assist */}
           <div style={{ border: `1px solid ${ACCENT_BORDER}`, borderRadius: 6, overflow: 'hidden' }}>
             <div style={{ padding: '0.4rem 0.75rem', background: ACCENT_BG, borderBottom: `1px solid ${ACCENT_BORDER}`, display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
               <span style={{ color: ACCENT, fontSize: '0.63rem', fontWeight: 600 }}>KARL ASSIST</span>
@@ -928,24 +864,29 @@ export default function ExtractsModal({ userId, accessToken, onClose, onCountCha
         <div onMouseDown={e => { dragging.current = true; dragStart.current = { mx: e.clientX, my: e.clientY, px: pos.x, py: pos.y }; }}
           style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.85rem 1.25rem', background: ACCENT, cursor: 'grab', userSelect: 'none', flexShrink: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <span style={{ color: '#000', fontSize: '0.85rem', fontWeight: 700 }}>Extracts</span>
-            <span style={{ color: '#000', fontSize: '0.7rem', opacity: 0.5 }}>{extracts.length} total</span>
+            <span style={{ color: '#fff', fontSize: '0.85rem', fontWeight: 700 }}>Extracts</span>
+            <span style={{ color: '#fff', fontSize: '0.7rem', opacity: 0.6 }}>{extracts.length} total</span>
+            {filterTemplate && (
+              <span style={{ color: '#fff', fontSize: '0.65rem', opacity: 0.8, background: 'rgba(255,255,255,0.15)', padding: '0.1rem 0.4rem', borderRadius: 3 }}>
+                ↳ {templates.find(t => t.document_template_id === filterTemplate)?.name}
+              </span>
+            )}
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
             <button onClick={openCreate}
-              style={{ background: '#000', border: 'none', color: ACCENT, padding: '0.25rem 0.75rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer', fontWeight: 600 }}
-              onMouseEnter={e => (e.currentTarget.style.background = '#222')} onMouseLeave={e => (e.currentTarget.style.background = '#000')}>
+              style={{ background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.3)', color: '#fff', padding: '0.25rem 0.75rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer', fontWeight: 600 }}
+              onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.25)')}
+              onMouseLeave={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.15)')}>
               + new extract
             </button>
-            <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#000', cursor: 'pointer', fontSize: '1rem', lineHeight: 1, opacity: 0.6 }}
-              onMouseEnter={e => (e.currentTarget.style.opacity = '1')} onMouseLeave={e => (e.currentTarget.style.opacity = '0.6')}>✕</button>
+            <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer', fontSize: '1rem', lineHeight: 1, opacity: 0.7 }}
+              onMouseEnter={e => (e.currentTarget.style.opacity = '1')} onMouseLeave={e => (e.currentTarget.style.opacity = '0.7')}>✕</button>
           </div>
         </div>
 
         <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
           {renderLeft()}
           {rightMode === 'empty'  && renderEmpty()}
-          {rightMode === 'view'   && renderView()}
           {rightMode === 'edit'   && renderEdit()}
           {rightMode === 'create' && renderCreate()}
         </div>

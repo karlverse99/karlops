@@ -1,6 +1,6 @@
 // lib/ko/commandRouter.ts
 // KarlOps L — Intent classification and enrichment
-// v0.8.0 — Generic action map, chained actions, modal-ready pending, learning write-back
+// v1.0.0 — Document system tightened: save_as_template triggers, document queries, extract linkage
 
 import { createSupabaseAdmin } from '@/lib/supabase-server';
 import {
@@ -597,7 +597,7 @@ export async function routeCommand(
       : '';
 
     const systemPrompt = [
-      `You are Karl, an operational assistant inside KarlOps — a personal pressure system for getting things done. [v0.8.0]`,
+      `You are Karl, an operational assistant inside KarlOps — a personal pressure system for getting things done. [v1.0.0]`,
       `Today's date: ${new Date().toISOString().slice(0, 10)}. When a user gives a date without a year, infer from today.`,
       '',
       contextBlock,
@@ -633,7 +633,31 @@ export async function routeCommand(
       '  1. User describes what they want → Karl queries data, previews structure, iterates in chat',
       '  2. Design looks right → Karl proposes save_as_template (ALWAYS pending)',
       '  3. Template stores the INSTRUCTIONS (prompt_template field), not the output',
-      '  4. Later: user says "run TM2" → Karl executes instructions against current data → output',
+      '  4. Later: user says "run TM2" → Karl executes instructions against current data → output in chat',
+      '  5. Output saved as Extract with template_id FK — shows up in Extracts as a run of that template',
+      '',
+      '## When to propose save_as_template',
+      'Trigger save_as_template ONLY when document design is clearly settled. Signals:',
+      '  - User explicitly says "save this", "make this a template", "keep this recipe", "yes save it"',
+      '  - User says "I want to run this again" or "can I reuse this"',
+      '  - Karl has previewed structure 2+ times and user has not pushed back on direction',
+      '  - User says "that looks good", "perfect", "exactly right" after seeing a document preview',
+      'DO NOT trigger save_as_template when:',
+      '  - User is still asking what the document should contain — design is not settled',
+      '  - Karl has only shown one preview with no user confirmation of direction',
+      '  - User is asking Karl to run an existing template (that is run_template, not save_as_template)',
+      '  - User is describing the general concept without a concrete structure yet',
+      '',
+      '## Document queries — "show me docs about X"',
+      'When user asks to see their documents, reports, or extracts:',
+      '  - Return intent: question with a formatted list inline in the response',
+      '  - Use context: tags, template names, doc_type, context names, date ranges to filter',
+      '  - Format: "You have N documents about X:\\n- [Apr 12] Title (via Template Name)\\n- [Apr 5] ..."',
+      '  - Close with: "Open Extracts to view, edit, or rerun any of them."',
+      '  - Examples:',
+      '      "show me my PIP docs" → list extracts with pip doc_type or PIP-related tags',
+      '      "what reports ran this month" → list generated extracts from last 30 days',
+      '      "docs about Johnson" → extracts with context or title matching Johnson',
       '',
       'save_as_template fields (reason from field knowledge for exact schema):',
       '  name            — template name',
@@ -668,6 +692,8 @@ export async function routeCommand(
       '- complete is two-step unless user says "no outcome" or "just mark it done".',
       '- delete always warns "this is permanent".',
       '- run_template: ask preview or save? Set run_mode.',
+      '- Document queries (show me docs / reports / extracts) → intent: question, list extracts inline.',
+      '- save_as_template: propose ONLY when design is settled (2+ iterations or explicit user confirm). Never on first preview.',
       '- Karl can update any field in Field Knowledge with update:editable. Never say you can\'t.',
       '- New patterns → include learning block.',
       '- Query rules: check Learned Vocabulary for applies_to:query before any list response.',
@@ -704,10 +730,13 @@ export async function routeCommand(
       '{ "intent": "pending", "actions": [{ "action": "update", "object_type": "task", "identifier": "N3", "modal": "TaskDetailModal", "operations": [{ "field": "bucket_key", "value": "soon", "mode": "set" }] }], "response": "Moving N3 to Up Next. Confirm?" }',
       '',
       '// pending — save_as_template:',
-      '{ "intent": "pending", "actions": [{ "action": "save_as_template", "object_type": "document_template", "modal": "TemplatesModal", "fields": { "name": "Weekly Status", "description": "Weekly status grouping completions by context", "doc_type": "report", "prompt_template": "Pull completions from last 7 days. Group by context. List completions with outcomes. Surface 2-3 key wins. Note Now bucket tasks. Use concept registry icons as section headers.", "data_sources": { "situation": true, "completions": { "window_days": 7, "context": null, "tags": [] }, "tasks": { "buckets": ["now", "soon"], "context": null, "tags": [] }, "meetings": false, "references": false } } }], "response": "Save this template? Confirm?" }',
+      '{ "intent": "pending", "actions": [{ "action": "save_as_template", "object_type": "document_template", "modal": "TemplatesModal", "fields": { "name": "Weekly Status", "description": "Weekly status grouping completions by context", "doc_type": "report", "prompt_template": "Pull completions from last 7 days. Group by context. List completions with outcomes. Surface 2-3 key wins. Note Now bucket tasks. Use concept registry icons as section headers.", "data_sources": { "situation": true, "completions": { "window_days": 7, "context": null, "tags": [] }, "tasks": { "buckets": ["now", "soon"], "context": null, "tags": [] }, "meetings": false, "references": false } } }], "response": "Save this as a reusable template? Confirm?" }',
       '',
       '// pending — run_template:',
       '{ "intent": "pending", "actions": [{ "action": "run_template", "target_identifier": "TM2", "run_mode": "preview" }], "response": "Running TM2. Preview in chat or save as extract?" }',
+      '',
+      '// question — document query:',
+      '{ "intent": "question", "response": "You have 3 documents about your PIP:\\n- [Apr 12] PIP Response Week 3 (via PIP Weekly)\\n- [Apr 5] PIP Response Week 2 (via PIP Weekly)\\n- [Mar 22] Initial PIP Response (manual)\\nOpen Extracts to view, edit, or rerun any of them." }',
       '',
       '// pending — complete:',
       '{ "intent": "pending", "actions": [{ "action": "complete", "object_type": "task", "identifier": "N1", "fields": { "outcome": "..." } }], "response": "Marking N1 complete. Confirm?" }',

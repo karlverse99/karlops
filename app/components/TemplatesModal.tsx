@@ -32,7 +32,6 @@ interface DataSources {
 
 interface AssistMessage { role: 'user' | 'assistant'; content: string; }
 
-// Concept registry entry — matches ConceptEntry from buildKarlContext
 interface ConceptEntry {
   concept_key: string;
   concept_type: string;
@@ -47,6 +46,7 @@ interface TemplatesModalProps {
   accessToken: string;
   onClose: () => void;
   onCountChange?: (count: number) => void;
+  onOpenExtracts?: (templateId: string) => void; // ← NEW: opens ExtractsModal filtered to this template
 }
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
@@ -55,7 +55,6 @@ const ACCENT        = '#14b8a6';
 const ACCENT_BG     = '#f0fdfa';
 const ACCENT_BORDER = '#99f6e4';
 
-// Fallback bucket keys if registry not loaded yet
 const BUCKET_KEYS_FALLBACK = ['now', 'soon', 'realwork', 'later', 'delegate', 'capture'];
 
 const DEFAULT_DS: DataSources = {
@@ -103,7 +102,6 @@ function DataSourcesEditor({
   const hasCompletions = !!ds.completions;
   const hasMeetings    = !!ds.meetings;
 
-  // Use registry bucket order/labels if available, fallback to hardcoded keys
   const bucketOpts = concepts.filter(c => c.concept_type === 'bucket').map(c => ({
     key:   c.concept_key.replace('bucket_', ''),
     label: c.label,
@@ -199,7 +197,7 @@ function DataSourcesEditor({
 
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
 
-export default function TemplatesModal({ userId, accessToken, onClose, onCountChange }: TemplatesModalProps) {
+export default function TemplatesModal({ userId, accessToken, onClose, onCountChange, onOpenExtracts }: TemplatesModalProps) {
 
   // ── State ──────────────────────────────────────────────────────────────────
   const [templates, setTemplates]   = useState<Template[]>([]);
@@ -209,8 +207,10 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const [search, setSearch]         = useState('');
   const [filterType, setFilterType] = useState<'all' | 'system' | 'mine'>('all');
 
-  // Concept registry — loaded once on mount
   const [concepts, setConcepts] = useState<ConceptEntry[]>([]);
+
+  // ← NEW: extract counts per template
+  const [extractCounts, setExtractCounts] = useState<Record<string, number>>({});
 
   // Edit state
   const [editName, setEditName]           = useState('');
@@ -257,6 +257,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   useEffect(() => {
     loadTemplates();
     loadConceptRegistry();
+    loadExtractCounts(); // ← NEW
   }, []);
 
   useEffect(() => {
@@ -276,18 +277,14 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     setLoading(false);
   };
 
-  // Load concept registry — join through ko_user to get implementation_type
   const loadConceptRegistry = async () => {
     try {
-      // Get implementation_type for this user
       const { data: koUser } = await supabase
         .from('ko_user')
         .select('implementation_type')
         .eq('id', userId)
         .maybeSingle();
-
       const implType = koUser?.implementation_type ?? 'personal';
-
       const { data } = await supabase
         .from('concept_registry')
         .select('concept_key, concept_type, label, icon, description, display_order')
@@ -295,11 +292,29 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
         .eq('is_active', true)
         .order('concept_type')
         .order('display_order');
-
       if (data) setConcepts(data as ConceptEntry[]);
     } catch (err) {
       console.error('[TemplatesModal] concept registry load failed:', err);
-      // Non-fatal — modal works fine without it, just no icons
+    }
+  };
+
+  // ← NEW: load how many extracts each template has generated
+  const loadExtractCounts = async () => {
+    try {
+      const { data } = await supabase
+        .from('external_reference')
+        .select('document_template_id')
+        .eq('user_id', userId)
+        .not('document_template_id', 'is', null);
+      const counts: Record<string, number> = {};
+      for (const row of data ?? []) {
+        if (row.document_template_id) {
+          counts[row.document_template_id] = (counts[row.document_template_id] ?? 0) + 1;
+        }
+      }
+      setExtractCounts(counts);
+    } catch (err) {
+      console.error('[TemplatesModal] extract counts load failed:', err);
     }
   };
 
@@ -424,6 +439,8 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
       });
       if (error) throw error;
       setSavedToRefs(true); setSavePrompt(false);
+      // refresh extract counts so the badge updates immediately
+      loadExtractCounts();
     } catch (err: any) { setRunErr(err.message ?? 'Save failed'); setSavePrompt(false); }
     finally { setSavingToRefs(false); }
   };
@@ -479,10 +496,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const isEditing = isNew || !!selected;
   const isSystem  = selected?.is_system ?? false;
 
-  // Concept registry derived helpers
-  const templateIcon = getObjectIcon(concepts, 'document_template') || '📄';
-
-  // Build assist placeholder using registry vocabulary
+  const templateIcon    = getObjectIcon(concepts, 'document_template') || '📄';
   const completionVocab = getObjectLabel(concepts, 'completion') || 'completions';
   const contextVocab    = concepts.find(c => c.concept_key === 'context')?.label || 'context';
   const assistPlaceholder = assistHistory.length > 0
@@ -540,7 +554,8 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                 : filtered.length === 0
                   ? <div style={{ padding: '1rem', color: '#888', fontSize: '0.75rem' }}>No templates found</div>
                   : filtered.map((t, idx) => {
-                      const isActive = selected?.document_template_id === t.document_template_id;
+                      const isActive   = selected?.document_template_id === t.document_template_id;
+                      const runCount   = extractCounts[t.document_template_id] ?? 0; // ← NEW
                       return (
                         <div key={t.document_template_id} onClick={() => selectTemplate(t)}
                           style={{ padding: '0.6rem 0.75rem', borderBottom: '1px solid #e5e7eb', cursor: 'pointer', background: isActive ? ACCENT_BG : 'transparent', borderLeft: isActive ? `2px solid ${ACCENT}` : '2px solid transparent', transition: 'background 0.1s' }}
@@ -551,12 +566,17 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                             <span style={{ color: ACCENT, fontSize: '0.6rem', opacity: 0.5, fontWeight: 600 }}>TM{idx + 1}</span>
                             <span style={{ fontSize: '0.75rem' }}>{templateIcon}</span>
                             <span style={{ color: '#222', fontSize: '0.78rem', flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.name}</span>
+                            {/* ← NEW: extract run count badge */}
+                            {runCount > 0 && (
+                              <span style={{ fontSize: '0.58rem', color: '#0f766e', background: '#f0fdfa', border: '1px solid #99f6e4', padding: '0.02rem 0.3rem', borderRadius: 2, flexShrink: 0 }}>
+                                {runCount} run{runCount !== 1 ? 's' : ''}
+                              </span>
+                            )}
                           </div>
                           <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
                             {t.is_system && <span style={{ fontSize: '0.6rem', color: ACCENT, background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, padding: '0.05rem 0.3rem', borderRadius: 2 }}>system</span>}
                             {t.implementation_type && <span style={{ fontSize: '0.6rem', color: '#8b5cf6', background: '#120a1a', border: '1px solid #3a1a5a', padding: '0.05rem 0.3rem', borderRadius: 2 }}>{t.implementation_type}</span>}
                             {t.doc_type && <span style={{ fontSize: '0.6rem', color: '#666', background: '#e5e5e5', border: '1px solid #e5e7eb', padding: '0.05rem 0.3rem', borderRadius: 2 }}>{t.doc_type}</span>}
-                            {/* Show data source icons from registry */}
                             {t.data_sources?.completions && <span style={{ fontSize: '0.65rem' }} title={`${completionVocab}`}>{getObjectIcon(concepts, 'completion')}</span>}
                             {t.data_sources?.meetings    && <span style={{ fontSize: '0.65rem' }} title="meetings">{getObjectIcon(concepts, 'meeting')}</span>}
                             {t.data_sources?.tasks       && <span style={{ fontSize: '0.65rem' }} title="tasks">✅</span>}
@@ -606,21 +626,18 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                     </div>
                   )}
 
-                  {/* Name */}
                   <div style={{ marginBottom: '0.75rem' }}>
                     <div style={labelSt}>Name {!isSystem && <span style={{ color: '#ef4444' }}>*</span>}</div>
                     <input value={editName} onChange={e => setEditName(e.target.value)} disabled={isSystem}
                       style={inputSt(isSystem)} placeholder="Weekly Status Report" />
                   </div>
 
-                  {/* Description */}
                   <div style={{ marginBottom: '0.75rem' }}>
                     <div style={labelSt}>Description</div>
                     <input value={editDesc} onChange={e => setEditDesc(e.target.value)} disabled={isSystem}
                       style={inputSt(isSystem)} placeholder="What this template produces..." />
                   </div>
 
-                  {/* Category + Format */}
                   <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '0.75rem' }}>
                     <div style={{ flex: 1 }}>
                       <div style={labelSt}>Category</div>
@@ -637,7 +654,6 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                     </div>
                   </div>
 
-                  {/* Data Sources — passes concepts for registry-aware labels */}
                   <div style={{ marginBottom: '0.75rem' }}>
                     <div style={labelSt}>Data Sources</div>
                     <div style={{ padding: '0.75rem', background: '#fafafa', border: '1px solid #e5e7eb', borderRadius: 4 }}>
@@ -648,14 +664,11 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                     </div>
                   </div>
 
-                  {/* KARL ASSIST */}
                   {!isSystem && (
                     <div style={{ border: `1px solid ${ACCENT_BORDER}`, borderRadius: 6, overflow: 'hidden', marginBottom: '0.75rem' }}>
-
                       <div style={{ padding: '0.5rem 0.75rem', background: ACCENT_BG, borderBottom: `1px solid ${ACCENT_BORDER}`, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                         <span style={{ color: ACCENT, fontSize: '0.68rem', fontWeight: 700 }}>KARL ASSIST</span>
                         <span style={{ color: '#2d6e65', fontSize: '0.65rem' }}>— describe what you want, Karl drafts the generation instructions</span>
-                        {/* Show registry vocabulary hint */}
                         {concepts.length > 0 && (
                           <span style={{ marginLeft: 'auto', color: '#2d6e65', fontSize: '0.6rem', opacity: 0.7 }}>
                             {concepts.filter(c => c.concept_type === 'bucket').slice(0, 3).map(c => `${c.icon} ${c.label}`).join(' · ')}
@@ -708,7 +721,6 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                     </div>
                   )}
 
-                  {/* GENERATION INSTRUCTIONS */}
                   <div style={{ marginBottom: '0.5rem' }}>
                     <div
                       onClick={() => setShowInstructions(v => !v)}
@@ -731,7 +743,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                         onChange={e => setEditInstructions(e.target.value)}
                         disabled={isSystem}
                         rows={8}
-                        placeholder="Use Karl Assist above to draft these instructions, or write them manually. Be specific about document format, sections, tone, and what data to emphasize..."
+                        placeholder="Use Karl Assist above to draft these instructions, or write them manually..."
                         style={{ ...inputSt(isSystem), resize: 'vertical', minHeight: 160, lineHeight: 1.5 } as any}
                       />
                     )}
@@ -758,6 +770,18 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                     </button>
                   )}
 
+                  {/* ← NEW: view extracts button — only shows when template has runs and onOpenExtracts is wired */}
+                  {selected && (extractCounts[selected.document_template_id] ?? 0) > 0 && onOpenExtracts && (
+                    <button
+                      onClick={() => { onOpenExtracts(selected.document_template_id); onClose(); }}
+                      style={{ background: 'transparent', border: `1px solid ${ACCENT_BORDER}`, color: ACCENT, padding: '0.35rem 0.75rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer' }}
+                      onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BG)}
+                      onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+                    >
+                      {extractCounts[selected.document_template_id]} extract{extractCounts[selected.document_template_id] !== 1 ? 's' : ''} →
+                    </button>
+                  )}
+
                   {selected && (
                     <button onClick={handleRun}
                       style={{ background: ACCENT, border: 'none', color: '#000', padding: '0.35rem 1rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer', fontWeight: 700 }}>
@@ -768,7 +792,6 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
               </div>
             )}
 
-            {/* Running state */}
             {running && (
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '1.25rem' }}>
                 <KarlSpinner size="lg" color={ACCENT} />
@@ -777,10 +800,8 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
               </div>
             )}
 
-            {/* Preview output */}
             {runOutput && !running && (
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-
                 <div style={{ padding: '0.5rem 1rem', borderBottom: '1px solid #e5e7eb', background: '#fafafa', display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
                   <span style={{ color: ACCENT, fontSize: '0.7rem', fontWeight: 600 }}>{templateIcon} PREVIEW</span>
                   <span style={{ color: '#555', fontSize: '0.65rem' }}>· test run · nothing saved</span>
@@ -836,7 +857,6 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
               </div>
             )}
 
-            {/* Run error */}
             {runErr && !running && (
               <div style={{ padding: '1rem', color: '#ef4444', fontSize: '0.75rem' }}>
                 Error: {runErr}
@@ -847,7 +867,6 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
           </div>
         </div>
 
-        {/* RESIZE HANDLE */}
         <div
           onMouseDown={e => { resizing.current = true; resizeStart.current = { x: e.clientX, y: e.clientY, w: size.w, h: size.h }; }}
           style={{ position: 'absolute', bottom: 0, right: 0, width: 16, height: 16, cursor: 'nwse-resize' }}

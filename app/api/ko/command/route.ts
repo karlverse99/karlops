@@ -1,5 +1,5 @@
 // app/api/ko/command/route.ts
-// KarlOps L — Command execution route v0.8.0
+// KarlOps L — Command execution route v1.0.0
 // Generic executor. Karl decides. Route executes. No hardcoded action maps.
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -422,7 +422,7 @@ async function executeCreateTag(user_id: string, action: KarlAction): Promise<{ 
 }
 
 // save_as_template — saves chat-designed document as a reusable document_template
-async function executeSaveAsTemplate(user_id: string, action: KarlAction): Promise<{ response: string; refresh: boolean }> {
+async function executeSaveAsTemplate(user_id: string, action: KarlAction): Promise<{ response: string; refresh: boolean; offer_open_templates: boolean }> {
   const db     = createSupabaseAdmin();
   const fields = action.fields ?? {};
   const name   = fields.name;
@@ -443,14 +443,18 @@ async function executeSaveAsTemplate(user_id: string, action: KarlAction): Promi
   if (error) throw new Error(error.message);
 
   writeKarlObservation(user_id, `Saved template: "${name}" (${fields.doc_type ?? 'no type'}) — designed in chat`, 'pattern').catch(() => {});
-  return { response: `📄 Template **${name}** saved. Run it anytime from Templates.`, refresh: true };
+
+  return {
+    response: `📄 Template **${name}** saved. Run it anytime — say "run TM" followed by its number, or open Templates to preview first.`,
+    refresh: true,
+    offer_open_templates: true, // ← signal to frontend to show "Open Templates →" button
+  };
 }
 
 // run_template — executes template instructions against current user data → generates output
 async function executeRunTemplate(user_id: string, action: KarlAction, context_filter?: string | null): Promise<{ response: string; refresh: boolean; template_output?: string }> {
   const db = createSupabaseAdmin();
 
-  // Resolve template — by target_identifier (e.g. TM2) or fields.template_id
   let templateId = action.fields?.template_id ?? null;
 
   if (!templateId && action.target_identifier) {
@@ -478,17 +482,14 @@ async function executeRunTemplate(user_id: string, action: KarlAction, context_f
   if (!template) throw new Error('Template not found');
   if (!template.prompt_template) throw new Error('Template has no generation instructions. Use Karl Assist in Templates to build them.');
 
-  // Build data bundle from data_sources config
   const ds = (template.data_sources ?? {}) as any;
   const dataParts: string[] = [];
 
-  // Situation
   if (ds.situation !== false) {
     const { data: sit } = await db.from('user_situation').select('brief').eq('user_id', user_id).eq('is_active', true).maybeSingle();
     if (sit?.brief) dataParts.push(`## User Situation\n${sit.brief}`);
   }
 
-  // Tasks
   if (ds.tasks !== false) {
     const buckets: string[] = ds.tasks?.buckets ?? ['now', 'soon', 'realwork'];
     let q = db.from('task').select('title, bucket_key, tags, notes, target_date, context:context_id(name)')
@@ -513,7 +514,6 @@ async function executeRunTemplate(user_id: string, action: KarlAction, context_f
     }
   }
 
-  // Completions
   if (ds.completions !== false) {
     const windowDays = ds.completions?.window_days ?? 7;
     const windowStart = new Date();
@@ -538,7 +538,6 @@ async function executeRunTemplate(user_id: string, action: KarlAction, context_f
     }
   }
 
-  // Meetings
   if (ds.meetings !== false) {
     const windowDays = ds.meetings?.window_days ?? 30;
     const windowStart = new Date();
@@ -562,7 +561,6 @@ async function executeRunTemplate(user_id: string, action: KarlAction, context_f
     }
   }
 
-  // References / Extracts
   if (ds.references === true) {
     const { data: refs } = await db.from('external_reference').select('title, description, notes').eq('user_id', user_id).order('created_at', { ascending: false }).limit(10);
     if (refs?.length) {
@@ -573,7 +571,6 @@ async function executeRunTemplate(user_id: string, action: KarlAction, context_f
 
   const dataBlock = dataParts.join('\n\n') || 'No data available for the configured sources.';
 
-  // Build concept registry for output formatting
   const bundle = await buildKarlContext(user_id, context_filter);
   const conceptHints = bundle.conceptRegistry.length
     ? 'Icons to use in output: ' + bundle.conceptRegistry.filter(c => c.concept_type !== 'action').map(c => `${c.icon ?? ''} = ${c.label}`).join(' · ')
@@ -623,7 +620,6 @@ ${dataBlock}`;
   const output = data.content?.[0]?.text ?? '';
   if (!output) throw new Error('Template run produced no output');
 
-  // If save mode — create an Extract
   if (action.run_mode === 'save') {
     const dateStr  = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
     const { error } = await db.from('external_reference').insert({
@@ -642,26 +638,25 @@ ${dataBlock}`;
     return { response: `📄 **${template.name}** generated and saved to Extracts.`, refresh: true, template_output: output };
   }
 
-  // Preview mode — return output for display in chat
   writeKarlObservation(user_id, `Ran template "${template.name}" → previewed in chat`, 'pattern').catch(() => {});
   return { response: `Here is your **${template.name}** preview:`, refresh: false, template_output: output };
 }
 
 // ─── DISPATCH SINGLE ACTION ───────────────────────────────────────────────────
 
-async function dispatchAction(user_id: string, action: KarlAction, context_filter?: string | null): Promise<{ response: string; refresh: boolean; task_id?: string; offer_preview?: boolean; template_output?: string }> {
+async function dispatchAction(user_id: string, action: KarlAction, context_filter?: string | null): Promise<{ response: string; refresh: boolean; task_id?: string; offer_preview?: boolean; template_output?: string; offer_open_templates?: boolean }> {
   switch (action.action) {
-    case 'insert':          return executeInsert(user_id, action, context_filter);
-    case 'capture_tasks':   return executeCaptureTasksBulk(user_id, action.tasks ?? []);
-    case 'update':          return executeUpdate(user_id, action, context_filter);
-    case 'complete':        return executeComplete(user_id, action, context_filter);
-    case 'archive':         return executeArchive(user_id, action, context_filter);
-    case 'delete':          return executeDelete(user_id, action, context_filter);
-    case 'create_tag':      return executeCreateTag(user_id, action);
-    case 'save_as_template':return executeSaveAsTemplate(user_id, action);
-    case 'run_template':    return executeRunTemplate(user_id, action, context_filter);
-    case 'refine':          return { response: 'Refine flow active.', refresh: false };
-    case 'summarize':       return { response: '', refresh: false };
+    case 'insert':           return executeInsert(user_id, action, context_filter);
+    case 'capture_tasks':    return executeCaptureTasksBulk(user_id, action.tasks ?? []);
+    case 'update':           return executeUpdate(user_id, action, context_filter);
+    case 'complete':         return executeComplete(user_id, action, context_filter);
+    case 'archive':          return executeArchive(user_id, action, context_filter);
+    case 'delete':           return executeDelete(user_id, action, context_filter);
+    case 'create_tag':       return executeCreateTag(user_id, action);
+    case 'save_as_template': return executeSaveAsTemplate(user_id, action);
+    case 'run_template':     return executeRunTemplate(user_id, action, context_filter);
+    case 'refine':           return { response: 'Refine flow active.', refresh: false };
+    case 'summarize':        return { response: '', refresh: false };
     default:
       throw new Error(`Unknown action: ${(action as any).action}`);
   }
@@ -670,7 +665,7 @@ async function dispatchAction(user_id: string, action: KarlAction, context_filte
 // ─── EXECUTE ACTIONS ARRAY ────────────────────────────────────────────────────
 
 async function executeActions(user_id: string, actions: KarlAction[], context_filter?: string | null): Promise<NextResponse> {
-  const results: Array<{ response: string; refresh: boolean; task_id?: string; offer_preview?: boolean; template_output?: string }> = [];
+  const results: Array<{ response: string; refresh: boolean; task_id?: string; offer_preview?: boolean; template_output?: string; offer_open_templates?: boolean }> = [];
   const errors: string[] = [];
 
   for (const action of actions) {
@@ -691,23 +686,25 @@ async function executeActions(user_id: string, actions: KarlAction[], context_fi
     }
   }
 
-  const refresh        = results.some(r => r.refresh);
-  const task_id        = results.find(r => r.task_id)?.task_id;
-  const offerPreview   = results.some(r => r.offer_preview) && actions.length === 1;
-  const templateOutput = results.find(r => r.template_output)?.template_output;
-  const responses      = results.map(r => r.response).filter(Boolean);
-  const responseText   = errors.length
+  const refresh             = results.some(r => r.refresh);
+  const task_id             = results.find(r => r.task_id)?.task_id;
+  const offerPreview        = results.some(r => r.offer_preview) && actions.length === 1;
+  const templateOutput      = results.find(r => r.template_output)?.template_output;
+  const offerOpenTemplates  = results.some(r => r.offer_open_templates); // ← NEW
+  const responses           = results.map(r => r.response).filter(Boolean);
+  const responseText        = errors.length
     ? [...responses, `Errors: ${errors.join(', ')}`].join('\n')
     : responses.join('\n');
 
   return NextResponse.json({
-    success:         errors.length === 0,
-    intent:          'executed',
-    response:        responseText,
+    success:              errors.length === 0,
+    intent:               'executed',
+    response:             responseText,
     refresh,
     task_id,
-    offer_preview:   offerPreview,
-    template_output: templateOutput ?? null,
+    offer_preview:        offerPreview,
+    template_output:      templateOutput ?? null,
+    offer_open_templates: offerOpenTemplates, // ← NEW: frontend shows "Open Templates →" button when true
   });
 }
 
