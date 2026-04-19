@@ -640,32 +640,6 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                       style={inputSt(isSystem)} placeholder="What this template produces..." />
                   </div>
 
-                  <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '0.75rem' }}>
-                    <div style={{ flex: 1 }}>
-                      <div style={labelSt}>Category</div>
-                      <input value={editDocType} onChange={e => setEditDocType(e.target.value)} disabled={isSystem}
-                        style={inputSt(isSystem)} placeholder="report / debrief / pip..." />
-                    </div>
-                    <div style={{ width: 140 }}>
-                      <div style={labelSt}>Output Format</div>
-                      <select value={editFormat} onChange={e => setEditFormat(e.target.value)} disabled={isSystem}
-                        style={{ ...inputSt(isSystem), cursor: isSystem ? 'not-allowed' : 'pointer' } as any}>
-                        <option value="markdown">Markdown</option>
-                        <option value="docx">Word (.docx)</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  <div style={{ marginBottom: '0.75rem' }}>
-                    <div style={labelSt}>Data Sources</div>
-                    <div style={{ padding: '0.75rem', background: '#fafafa', border: '1px solid #e5e7eb', borderRadius: 4 }}>
-                      {isSystem
-                        ? <div style={{ color: '#888', fontSize: '0.7rem', whiteSpace: 'pre-wrap' }}>{JSON.stringify(editDs, null, 2)}</div>
-                        : <DataSourcesEditor ds={editDs} onChange={setEditDs} concepts={concepts} />
-                      }
-                    </div>
-                  </div>
-
                   {!isSystem && (
                     <div style={{ border: `1px solid ${ACCENT_BORDER}`, borderRadius: 6, overflow: 'hidden', marginBottom: '0.75rem' }}>
                       <div style={{ padding: '0.5rem 0.75rem', background: ACCENT_BG, borderBottom: `1px solid ${ACCENT_BORDER}`, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
