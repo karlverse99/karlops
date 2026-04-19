@@ -492,7 +492,7 @@ async function executeRunTemplate(user_id: string, action: KarlAction, context_f
 
   if (ds.tasks !== false) {
     const buckets: string[] = ds.tasks?.buckets ?? ['now', 'soon', 'realwork'];
-    let q = db.from('task').select('title, bucket_key, tags, notes, target_date, context:context_id(name)')
+    let q = db.from('task').select('title, bucket_key, tags, notes, target_date, delegated_to, context:context_id(name), delegatee:delegated_to(name)')
       .eq('user_id', user_id).eq('is_completed', false).eq('is_archived', false)
       .in('bucket_key', buckets)
       .order('sort_order', { ascending: true, nullsFirst: false });
@@ -503,11 +503,13 @@ async function executeRunTemplate(user_id: string, action: KarlAction, context_f
       const byBucket: Record<string, string[]> = {};
       for (const t of tasks) {
         if (!byBucket[t.bucket_key]) byBucket[t.bucket_key] = [];
-        const tagStr = t.tags?.length ? ` [${t.tags.join(', ')}]` : '';
-        const dateStr = t.target_date ? ` · due ${t.target_date.slice(0, 10)}` : '';
-        const ctxName = (t.context as any)?.name;
-        const ctxStr = ctxName ? ` · ${ctxName}` : '';
-        byBucket[t.bucket_key].push(`- ${t.title}${tagStr}${dateStr}${ctxStr}`);
+        const tagStr      = t.tags?.length ? ` [${t.tags.join(', ')}]` : '';
+        const dateStr     = t.target_date ? ` · due ${t.target_date.slice(0, 10)}` : '';
+        const ctxName     = (t.context as any)?.name;
+        const ctxStr      = ctxName ? ` · ${ctxName}` : '';
+        const delegateName = (t.delegatee as any)?.name;
+        const delegateStr  = delegateName ? ` · delegated_to:${delegateName}` : '';
+        byBucket[t.bucket_key].push(`- ${t.title}${tagStr}${dateStr}${ctxStr}${delegateStr}`);
       }
       const taskLines = Object.entries(byBucket).map(([b, items]) => `${BUCKET_LABEL[b] ?? b}:\n${items.join('\n')}`).join('\n\n');
       dataParts.push(`## Open Tasks\n${taskLines}`);
