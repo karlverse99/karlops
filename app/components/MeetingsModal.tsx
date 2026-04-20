@@ -114,6 +114,11 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
   const [err, setErr]               = useState('');
   const [showExportMenu, setShowExportMenu] = useState(false);
 
+  // ─── Delete state ──────────────────────────────────────────────────────────
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
+  const [deleting, setDeleting]           = useState(false);
+  const [allowDelete, setAllowDelete]     = useState(false);
+
   // ─── Search/filter ─────────────────────────────────────────────────────────
   const [search, setSearch]               = useState('');
   const [filterTag, setFilterTag]         = useState('');
@@ -144,7 +149,7 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
 
   // ─── Complete form state ───────────────────────────────────────────────────
   const [completeOutcome, setCompleteOutcome]     = useState('');
-  const [completeNotes, setCompleteNotes]         = useState('');  // ← NEW: saves to meeting.notes
+  const [completeNotes, setCompleteNotes]         = useState('');
   const [completeTags, setCompleteTags]           = useState<string[]>([]);
   const [completeContextId, setCompleteContextId] = useState('');
   const [completeSaving, setCompleteSaving]       = useState(false);
@@ -187,6 +192,14 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
       .lt('display_order', 999)
       .order('display_order');
     if (data) setFieldMeta(data);
+
+    const { data: cfg } = await supabase
+      .from('ko_list_view_configuration')
+      .select('allow_delete')
+      .eq('user_id', userId)
+      .eq('object_type', 'meeting')
+      .maybeSingle();
+    setAllowDelete(cfg?.allow_delete ?? false);
   };
 
   useEffect(() => { loadMeetings(); loadContexts(); loadTags(); loadFieldMeta(); }, []);
@@ -234,19 +247,22 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
     setFormAttendees(m.attendees ?? []);
     setFormTags(m.tags ?? []);
     setFormContextId(m.context?.context_id ?? '');
-    setErr(''); setSelected(m); setMode('edit');
+    setErr('');
+    setDeleteConfirm(false);
+    setSelected(m);
+    setMode('edit');
   };
 
   const openAdd = () => {
     setEditId(null); setFormTitle(''); setFormMeetingDate(new Date().toISOString().slice(0, 16));
     setFormOutcome(''); setFormDescription(''); setFormNotes('');
     setFormAttendees([]); setFormTags([]); setFormContextId('');
-    setErr(''); setSelected(null); setMode('add');
+    setErr(''); setDeleteConfirm(false); setSelected(null); setMode('add');
   };
 
   const openComplete = (m: Meeting) => {
     setCompleteOutcome(m.outcome ?? '');
-    setCompleteNotes(m.notes ?? '');          // ← pre-populate from existing notes
+    setCompleteNotes(m.notes ?? '');
     setCompleteTags(m.tags ?? []);
     setCompleteContextId(m.context?.context_id ?? '');
     setCompleteErr('');
@@ -288,24 +304,22 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
     setCompleteSaving(true); setCompleteErr('');
 
     try {
-      // 1. Create completion record
       const { error: compErr } = await supabase.from('completion').insert({
-        user_id:    userId,
-        title:      selected.title,
-        outcome:    completeOutcome.trim(),
+        user_id:      userId,
+        title:        selected.title,
+        outcome:      completeOutcome.trim(),
         completed_at: new Date().toISOString(),
-        tags:       completeTags.length > 0 ? completeTags : null,
-        context_id: completeContextId || null,
-        meeting_id: selected.meeting_id,
+        tags:         completeTags.length > 0 ? completeTags : null,
+        context_id:   completeContextId || null,
+        meeting_id:   selected.meeting_id,
       });
       if (compErr) throw compErr;
 
-      // 2. Update meeting record — mark complete, save outcome AND notes
       const { error: meetErr } = await supabase.from('meeting')
         .update({
           is_completed: true,
           outcome:      completeOutcome.trim(),
-          notes:        completeNotes.trim() || null,   // ← FIX: save notes to meeting record
+          notes:        completeNotes.trim() || null,
         })
         .eq('meeting_id', selected.meeting_id)
         .eq('user_id', userId);
@@ -317,7 +331,29 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
     finally { setCompleteSaving(false); }
   };
 
-  // ─── People tags for attendees picker ────────────────────────────────────────
+  const handleDelete = async () => {
+    if (!editId) return;
+    setDeleting(true);
+    try {
+      const { error } = await supabase
+        .from('meeting')
+        .delete()
+        .eq('meeting_id', editId)
+        .eq('user_id', userId);
+      if (error) throw error;
+      await loadMeetings();
+      setMode('empty');
+      setSelected(null);
+      setDeleteConfirm(false);
+    } catch (e: any) {
+      setErr(e.message);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  // ─── People tags for attendees picker ─────────────────────────────────────
+
   const peopleTagGroups = tagGroups.filter(g => g.name === 'People');
   const peopleTags      = allTags.filter(t => peopleTagGroups.some(g => g.tag_group_id === t.tag_group_id));
 
@@ -479,11 +515,54 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
             >complete meeting</button>
           )}
         </div>
+
         {visibleFields.map(f => renderField(f))}
+
         {err && <div style={{ color: '#ef4444', fontSize: '0.72rem', marginBottom: '0.75rem' }}>{err}</div>}
-        <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: 'auto', paddingTop: '1rem' }}>
-          <button onClick={() => { setMode('empty'); setSelected(null); }} style={{ background: 'none', border: '1px solid #ddd', color: '#666', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer' }}>cancel</button>
-          <button onClick={handleSave} disabled={saving} style={{ background: ACCENT, border: `1px solid ${ACCENT}`, color: '#fff', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer', fontWeight: 600 }}>{saving ? '...' : isAdd ? 'save meeting' : 'save changes'}</button>
+
+        <div style={{ marginTop: 'auto', paddingTop: '1rem' }}>
+          {/* Delete row — only shown in edit mode */}
+          {!isAdd && (
+            <div style={{ marginBottom: '0.75rem' }}>
+              {!allowDelete ? (
+                <span style={{ color: '#bbb', fontSize: '0.68rem', fontFamily: 'monospace' }}>
+                  Delete on meeting disabled by administrator.
+                </span>
+              ) : !deleteConfirm ? (
+                <button
+                  onClick={() => setDeleteConfirm(true)}
+                  style={{ background: 'none', border: 'none', color: '#ef4444', fontSize: '0.68rem', fontFamily: 'monospace', cursor: 'pointer', padding: 0, textDecoration: 'underline' }}
+                >
+                  delete
+                </button>
+              ) : (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  <span style={{ color: '#ef4444', fontSize: '0.72rem', fontFamily: 'monospace' }}>
+                    Delete this meeting? This is permanent.
+                  </span>
+                  <button
+                    onClick={() => setDeleteConfirm(false)}
+                    style={{ background: 'none', border: '1px solid #ddd', color: '#666', padding: '0.2rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.68rem', cursor: 'pointer' }}
+                  >
+                    cancel
+                  </button>
+                  <button
+                    onClick={handleDelete}
+                    disabled={deleting}
+                    style={{ background: '#ef4444', border: '1px solid #ef4444', color: '#fff', padding: '0.2rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.68rem', cursor: 'pointer', fontWeight: 600 }}
+                  >
+                    {deleting ? '...' : 'yes, delete'}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Save / cancel row */}
+          <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+            <button onClick={() => { setMode('empty'); setSelected(null); }} style={{ background: 'none', border: '1px solid #ddd', color: '#666', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer' }}>cancel</button>
+            <button onClick={handleSave} disabled={saving} style={{ background: ACCENT, border: `1px solid ${ACCENT}`, color: '#fff', padding: '0.4rem 0.8rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer', fontWeight: 600 }}>{saving ? '...' : isAdd ? 'save meeting' : 'save changes'}</button>
+          </div>
         </div>
       </div>
     );
@@ -499,7 +578,6 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
       </div>
       <div style={{ color: '#333', fontSize: '0.82rem', fontFamily: 'monospace', marginBottom: '1rem', fontWeight: 600 }}>{selected?.title}</div>
 
-      {/* Outcome — short summary line */}
       <div style={{ marginBottom: '0.85rem' }}>
         <div style={formLabelStyle}>Outcome <span style={{ color: '#ef4444' }}>*</span></div>
         <textarea
@@ -513,7 +591,6 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
         />
       </div>
 
-      {/* Notes — full summary, saves to meeting.notes */}
       <div style={{ marginBottom: '0.85rem' }}>
         <div style={formLabelStyle}>Notes / Summary</div>
         <textarea

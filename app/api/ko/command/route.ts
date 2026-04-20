@@ -1,5 +1,5 @@
 // app/api/ko/command/route.ts
-// KarlOps L — Command execution route v1.0.0
+// KarlOps L — Command execution route v1.1.0
 // Generic executor. Karl decides. Route executes. No hardcoded action maps.
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -401,6 +401,48 @@ async function executeDelete(user_id: string, action: KarlAction, context_filter
   return { response: `${identifier} deleted.`, refresh: true };
 }
 
+// executeDeleteObject — metadata-gated hard delete, used for chat-triggered deletes
+async function executeDeleteObject(
+  user_id: string,
+  action: KarlAction,
+  context_filter?: string | null
+): Promise<{ response: string; refresh: boolean }> {
+  const db           = createSupabaseAdmin();
+  const object_type  = action.object_type ?? '';
+  const identifier   = action.identifier;
+  const display_name = action.fields?.display_name ?? identifier;
+
+  if (!object_type || !identifier) throw new Error('delete_object missing object_type or identifier');
+
+  // Re-verify allow_delete at execution time — double gate
+  const { data: cfg } = await db
+    .from('ko_list_view_configuration')
+    .select('allow_delete')
+    .eq('user_id', user_id)
+    .eq('object_type', object_type)
+    .maybeSingle();
+
+  if (!cfg?.allow_delete) {
+    return {
+      response: `Delete on ${object_type} disabled by administrator.`,
+      refresh: false,
+    };
+  }
+
+  const table = OBJECT_TABLE[object_type];
+  const pk    = OBJECT_PK[object_type];
+  if (!table || !pk) throw new Error(`Unknown object type: ${object_type}`);
+
+  const record_id = await resolveIdentifier(user_id, identifier, object_type, context_filter);
+  if (!record_id) return { response: `Couldn't find ${identifier}.`, refresh: false };
+
+  const { error } = await db.from(table).delete().eq(pk, record_id).eq('user_id', user_id);
+  if (error) throw new Error(error.message);
+
+  writeKarlObservation(user_id, `Deleted ${object_type} ${identifier} ("${display_name}") via chat`, 'pattern').catch(() => {});
+  return { response: `🗑️ **${display_name}** deleted.`, refresh: true };
+}
+
 async function executeCreateTag(user_id: string, action: KarlAction): Promise<{ response: string; refresh: boolean }> {
   const db     = createSupabaseAdmin();
   const fields = action.fields ?? {};
@@ -421,7 +463,6 @@ async function executeCreateTag(user_id: string, action: KarlAction): Promise<{ 
   return { response: `Tag **${name}** created.`, refresh: true };
 }
 
-// save_as_template — saves chat-designed document as a reusable document_template
 async function executeSaveAsTemplate(user_id: string, action: KarlAction): Promise<{ response: string; refresh: boolean; offer_open_templates: boolean }> {
   const db     = createSupabaseAdmin();
   const fields = action.fields ?? {};
@@ -447,11 +488,10 @@ async function executeSaveAsTemplate(user_id: string, action: KarlAction): Promi
   return {
     response: `📄 Template **${name}** saved. Run it anytime — say "run TM" followed by its number, or open Templates to preview first.`,
     refresh: true,
-    offer_open_templates: true, // ← signal to frontend to show "Open Templates →" button
+    offer_open_templates: true,
   };
 }
 
-// run_template — executes template instructions against current user data → generates output
 async function executeRunTemplate(user_id: string, action: KarlAction, context_filter?: string | null): Promise<{ response: string; refresh: boolean; template_output?: string }> {
   const db = createSupabaseAdmin();
 
@@ -654,6 +694,7 @@ async function dispatchAction(user_id: string, action: KarlAction, context_filte
     case 'complete':         return executeComplete(user_id, action, context_filter);
     case 'archive':          return executeArchive(user_id, action, context_filter);
     case 'delete':           return executeDelete(user_id, action, context_filter);
+    case 'delete_object':    return executeDeleteObject(user_id, action, context_filter);
     case 'create_tag':       return executeCreateTag(user_id, action);
     case 'save_as_template': return executeSaveAsTemplate(user_id, action);
     case 'run_template':     return executeRunTemplate(user_id, action, context_filter);
@@ -692,7 +733,7 @@ async function executeActions(user_id: string, actions: KarlAction[], context_fi
   const task_id             = results.find(r => r.task_id)?.task_id;
   const offerPreview        = results.some(r => r.offer_preview) && actions.length === 1;
   const templateOutput      = results.find(r => r.template_output)?.template_output;
-  const offerOpenTemplates  = results.some(r => r.offer_open_templates); // ← NEW
+  const offerOpenTemplates  = results.some(r => r.offer_open_templates);
   const responses           = results.map(r => r.response).filter(Boolean);
   const responseText        = errors.length
     ? [...responses, `Errors: ${errors.join(', ')}`].join('\n')
@@ -706,7 +747,7 @@ async function executeActions(user_id: string, actions: KarlAction[], context_fi
     task_id,
     offer_preview:        offerPreview,
     template_output:      templateOutput ?? null,
-    offer_open_templates: offerOpenTemplates, // ← NEW: frontend shows "Open Templates →" button when true
+    offer_open_templates: offerOpenTemplates,
   });
 }
 

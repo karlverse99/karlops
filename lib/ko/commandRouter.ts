@@ -1,6 +1,6 @@
 // lib/ko/commandRouter.ts
 // KarlOps L — Intent classification and enrichment
-// v1.0.0 — Document system tightened: save_as_template triggers, document queries, extract linkage
+// v1.1.0 — delete_object intent + allow_delete gate from ko_list_view_configuration
 
 import { createSupabaseAdmin } from '@/lib/supabase-server';
 import {
@@ -37,6 +37,7 @@ export type ActionType =
   | 'complete'
   | 'archive'
   | 'delete'
+  | 'delete_object'
   | 'refine'
   | 'run_template'
   | 'save_as_template'
@@ -139,6 +140,19 @@ function isAnalysisRequest(input: string): boolean {
 
 function isLongInput(input: string): boolean {
   return input.length > 500 || input.split('\n').length > 15;
+}
+
+// ─── ALLOW_DELETE GATE ────────────────────────────────────────────────────────
+
+async function checkAllowDelete(user_id: string, object_type: string): Promise<boolean> {
+  const db = createSupabaseAdmin();
+  const { data } = await db
+    .from('ko_list_view_configuration')
+    .select('allow_delete')
+    .eq('user_id', user_id)
+    .eq('object_type', object_type)
+    .maybeSingle();
+  return data?.allow_delete ?? false;
 }
 
 // ─── PEOPLE TAG RESOLUTION ────────────────────────────────────────────────────
@@ -597,7 +611,7 @@ export async function routeCommand(
       : '';
 
     const systemPrompt = [
-      `You are Karl, an operational assistant inside KarlOps — a personal pressure system for getting things done. [v1.0.0]`,
+      `You are Karl, an operational assistant inside KarlOps — a personal pressure system for getting things done. [v1.1.0]`,
       `Today's date: ${new Date().toISOString().slice(0, 10)}. When a user gives a date without a year, infer from today.`,
       '',
       contextBlock,
@@ -620,13 +634,20 @@ export async function routeCommand(
       '- update           — update any FC object via identifier + operations array',
       '- complete         — complete a task or meeting (two-step: outcome first)',
       '- archive          — set is_archived = true',
-      '- delete           — hard delete (always warn: permanent)',
+      '- delete_object    — hard delete any FC object. ALWAYS check allow_delete first (see rules below). Always warn: permanent.',
       '- refine           — iterate on extract content in chat, no DB write',
       '- run_template     — run a template (run_mode: preview or save)',
       '- save_as_template — save a chat-designed document as a reusable document_template',
       '- capture_tasks    — bulk task insert',
       '- create_tag       — propose new tag (ALWAYS pending, never silent)',
       '- summarize        — no DB write, Karl summarizes in chat',
+      '',
+      '## Delete Rules — CRITICAL',
+      'Before proposing delete_object for any object type, you MUST reason about allow_delete.',
+      'The system will enforce it, but Karl should not propose deletes for objects where deletion is disabled.',
+      'If you are uncertain whether deletion is allowed, propose it as pending and the system will gate it.',
+      'If deletion is NOT allowed, respond: "Delete on [object type] disabled by administrator." — never propose the action.',
+      'delete_object is ALWAYS pending. Never silent. Always include display_name in fields so the user sees what will be deleted.',
       '',
       '## Document Creation Flow (Core)',
       'Karl is the design space for documents. The flow is:',
@@ -654,10 +675,6 @@ export async function routeCommand(
       '  - Use context: tags, template names, doc_type, context names, date ranges to filter',
       '  - Format: "You have N documents about X:\\n- [Apr 12] Title (via Template Name)\\n- [Apr 5] ..."',
       '  - Close with: "Open Extracts to view, edit, or rerun any of them."',
-      '  - Examples:',
-      '      "show me my PIP docs" → list extracts with pip doc_type or PIP-related tags',
-      '      "what reports ran this month" → list generated extracts from last 30 days',
-      '      "docs about Johnson" → extracts with context or title matching Johnson',
       '',
       'save_as_template fields (reason from field knowledge for exact schema):',
       '  name            — template name',
@@ -687,11 +704,11 @@ export async function routeCommand(
       '## Rules',
       '- Proposals always use intent: pending',
       '- GIGO: no silent writes. Every DB write needs explicit confirm.',
-      '- create_tag ALWAYS pending. save_as_template ALWAYS pending.',
+      '- create_tag ALWAYS pending. save_as_template ALWAYS pending. delete_object ALWAYS pending.',
       '- Preview means exact — every field, every value.',
       '- Chained actions: build full actions array. User can drop individual actions.',
       '- complete is two-step unless user says "no outcome" or "just mark it done".',
-      '- delete always warns "this is permanent".',
+      '- delete_object always warns "this is permanent" and includes display_name.',
       '- run_template: ask preview or save? Set run_mode.',
       '- Document queries (show me docs / reports / extracts) → intent: question, list extracts inline.',
       '- save_as_template: propose ONLY when design is settled (2+ iterations or explicit user confirm). Never on first preview.',
@@ -730,6 +747,12 @@ export async function routeCommand(
       '// pending — update:',
       '{ "intent": "pending", "actions": [{ "action": "update", "object_type": "task", "identifier": "N3", "modal": "TaskDetailModal", "operations": [{ "field": "bucket_key", "value": "soon", "mode": "set" }] }], "response": "Moving N3 to Up Next. Confirm?" }',
       '',
+      '// pending — delete_object (metadata-gated, ALWAYS pending):',
+      '{ "intent": "pending", "actions": [{ "action": "delete_object", "object_type": "meeting", "identifier": "MT2", "fields": { "display_name": "Sync with Jen — Apr 18" } }], "response": "This is permanent. Delete \\"Sync with Jen — Apr 18\\"? Confirm?" }',
+      '',
+      '// delete blocked by administrator:',
+      '{ "intent": "question", "response": "Delete on meeting disabled by administrator." }',
+      '',
       '// pending — save_as_template:',
       '{ "intent": "pending", "actions": [{ "action": "save_as_template", "object_type": "document_template", "modal": "TemplatesModal", "fields": { "name": "Weekly Status", "description": "Weekly status grouping completions by context", "doc_type": "", "output_format": "md", "prompt_template": "Pull completions from last 7 days. Group by context. List completions with outcomes. Surface 2-3 key wins. Note Now bucket tasks. Use concept registry icons as section headers.", "data_sources": { "situation": true, "completions": { "window_days": 7, "context": null, "tags": [] }, "tasks": { "buckets": ["now", "soon"], "context": null, "tags": [] }, "meetings": false, "references": false } } }], "response": "Save this as a reusable template? Confirm?" }',
       '',
@@ -742,9 +765,8 @@ export async function routeCommand(
       '// pending — complete:',
       '{ "intent": "pending", "actions": [{ "action": "complete", "object_type": "task", "identifier": "N1", "fields": { "outcome": "..." } }], "response": "Marking N1 complete. Confirm?" }',
       '',
-      '// pending — archive/delete:',
+      '// pending — archive:',
       '{ "intent": "pending", "actions": [{ "action": "archive", "object_type": "task", "identifier": "S2" }], "response": "Archiving S2. Confirm?" }',
-      '{ "intent": "pending", "actions": [{ "action": "delete", "object_type": "task", "identifier": "CP4" }], "response": "This is permanent. Delete CP4? Confirm?" }',
       '',
       '// pending — create_tag:',
       '{ "intent": "pending", "actions": [{ "action": "create_tag", "object_type": "tag", "fields": { "name": "TagName", "tag_group": "Activities", "description": "..." } }], "response": "New tag: TagName. Confirm?" }',
@@ -872,6 +894,19 @@ export async function routeCommand(
           actions = [{ action: 'update', object_type: parsed.object_type, identifier: parsed.identifier, modal: OBJECT_MODAL[parsed.object_type], operations: parsed.operations ?? [] }];
         } else {
           actions = [{ ...parsed, action }];
+        }
+      }
+
+      // ── allow_delete gate — check before enriching ─────────────────────
+      for (const a of actions) {
+        if ((a.action === 'delete_object' || a.action === 'delete') && a.object_type) {
+          const allowed = await checkAllowDelete(user_id, a.object_type);
+          if (!allowed) {
+            return {
+              intent: 'question',
+              response: `Delete on ${a.object_type} disabled by administrator.`,
+            };
+          }
         }
       }
 
