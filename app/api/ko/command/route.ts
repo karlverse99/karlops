@@ -827,7 +827,9 @@ export async function POST(req: NextRequest) {
     writeKarlObservation(user.id, `File drop: user said "${userHint || 'nothing'}", Karl classified as "${classifiedAction}". Files: ${extracted.map(f => f.name).join(', ')}.`, 'preference').catch(() => {});
     if (errors.length && result.response) result.response = result.response + `\n\n(Skipped: ${errors.join(', ')})`;
 
-    return NextResponse.json({ success: true, intent: result.intent, response: result.response ?? null, actions: result.actions ?? null, payload: null });
+    // File drops should never silent-execute — always surface as pending for confirm
+const safeIntent = result.intent === 'execute' ? 'pending' : result.intent;
+return NextResponse.json({ success: true, intent: safeIntent, response: result.response ?? null, actions: result.actions ?? null, payload: null });
   }
 
   // ── Normal text path ───────────────────────────────────────────────────────
