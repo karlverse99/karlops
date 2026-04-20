@@ -1,6 +1,6 @@
 // app/api/ko/command/route.ts
-// KarlOps L — Command execution route v1.2.0
-// Parameter system wired into executeRunTemplate. Backwards compat with data_sources.
+// KarlOps L — Command execution route v1.3.0
+// executeRunTemplate: stores run_data (full prompt) not output. No parameters. Clean model.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createSupabaseAdmin } from '@/lib/supabase-server';
@@ -8,11 +8,6 @@ import { routeCommand, OBJECT_TABLE, OBJECT_PK, KarlAction } from '@/lib/ko/comm
 import { captureTask } from '@/lib/ko/commands/captureTask';
 import { captureCompletion } from '@/lib/ko/commands/captureCompletion';
 import { writeKarlObservation, buildKarlContext } from '@/lib/ko/buildKarlContext';
-import {
-  buildDataBundle,
-  injectParameters,
-  TemplateParameter,
-} from '@/lib/ko/templateParameters';
 
 // ─── ERROR HANDLING ──────────────────────────────────────────────────────────
 
@@ -484,7 +479,6 @@ async function executeDelete(
   return { response: `${identifier} deleted.`, refresh: true };
 }
 
-// executeDeleteObject — metadata-gated hard delete, used for chat-triggered deletes
 async function executeDeleteObject(
   user_id: string,
   action: KarlAction,
@@ -497,7 +491,6 @@ async function executeDeleteObject(
 
   if (!object_type || !identifier) throw new Error('delete_object missing object_type or identifier');
 
-  // Re-verify allow_delete at execution time — double gate
   const { data: cfg } = await db
     .from('ko_list_view_config')
     .select('allow_delete')
@@ -559,7 +552,6 @@ async function executeSaveAsTemplate(
     doc_type:        fields.doc_type?.trim() ?? '',
     prompt_template: fields.prompt_template?.trim() ?? '',
     data_sources:    fields.data_sources ?? {},
-    parameters:      fields.parameters ?? [],
     output_format:   fields.output_format ?? 'md',
     tags:            fields.tags ?? [],
     is_system:       false,
@@ -567,7 +559,7 @@ async function executeSaveAsTemplate(
   });
   if (error) throw new Error(error.message);
 
-  writeKarlObservation(user_id, `Saved template: "${name}" (${fields.doc_type ?? 'no type'}) — designed in chat`, 'pattern').catch(() => {});
+  writeKarlObservation(user_id, `Saved template: "${name}"`, 'pattern').catch(() => {});
 
   return {
     response: `📄 Template **${name}** saved. Run it anytime — say "run TM" followed by its number, or open Templates to preview first.`,
@@ -577,8 +569,11 @@ async function executeSaveAsTemplate(
 }
 
 // ─── EXECUTE RUN TEMPLATE ─────────────────────────────────────────────────────
-// v1.2.0 — uses parameter system when parameters[] is populated.
-// Falls back to legacy data_sources when parameters is empty (backwards compat).
+// v1.3.0 — Clean model:
+// - Template = display instructions only (prompt_template + data_sources scope)
+// - Extract = stores the full prompt used (run_data) — NOT the output
+// - Output shown in chat only. Regenerate anytime from run_data.
+// - No parameters column. No output storage. Recipe-based reproducibility.
 
 async function executeRunTemplate(
   user_id: string,
@@ -608,155 +603,155 @@ async function executeRunTemplate(
 
   const { data: template } = await db
     .from('document_template')
-    .select('name, description, doc_type, prompt_template, data_sources, parameters, output_format')
+    .select('name, description, doc_type, prompt_template, data_sources, output_format')
     .eq('document_template_id', templateId)
     .single();
 
   if (!template) throw new Error('Template not found');
-  if (!template.prompt_template) throw new Error('Template has no generation instructions. Use Karl Assist in Templates to build them.');
+  if (!template.prompt_template) throw new Error('Template has no generation instructions. Open Templates to add them.');
 
-  const parameters: TemplateParameter[] = Array.isArray(template.parameters) && template.parameters.length > 0
-    ? template.parameters as TemplateParameter[]
-    : [];
+  // ── Pull data from data_sources ───────────────────────────────────────────
+  const ds = (template.data_sources ?? {}) as any;
+  const dataParts: string[] = [];
+  const bucketLabels = await resolveBucketLabels(user_id);
 
-  // ── Build data block ──────────────────────────────────────────────────────
-  let dataBlock: string;
-  let promptForKarl: string;
-
-  if (parameters.length > 0) {
-    // ── NEW PATH: parameter system ──────────────────────────────────────────
-    console.log(`[executeRunTemplate] using parameter system (${parameters.length} params)`);
-    const { keyed, block } = await buildDataBundle(user_id, parameters, context_filter);
-    dataBlock = block;
-
-    // Inject {{key}} placeholders into prompt_template
-    promptForKarl = injectParameters(template.prompt_template, keyed);
-
-  } else {
-    // ── LEGACY PATH: data_sources blunt pull ────────────────────────────────
-    console.log('[executeRunTemplate] using legacy data_sources path');
-    const ds = (template.data_sources ?? {}) as any;
-    const dataParts: string[] = [];
-    const bucketLabels = await resolveBucketLabels(user_id);
-
-    if (ds.situation !== false) {
-      const { data: sit } = await db.from('user_situation').select('brief').eq('user_id', user_id).eq('is_active', true).maybeSingle();
-      if (sit?.brief) dataParts.push(`## User Situation\n${sit.brief}`);
-    }
-
-    if (ds.tasks !== false) {
-      const buckets: string[] = ds.tasks?.buckets ?? Object.keys(bucketLabels);
-      let q = db.from('task')
-        .select('title, bucket_key, tags, notes, target_date, delegated_to, context:context_id(name), delegatee:delegated_to(name)')
-        .eq('user_id', user_id).eq('is_completed', false).eq('is_archived', false)
-        .in('bucket_key', buckets)
-        .order('sort_order', { ascending: true, nullsFirst: false });
-      if (ds.tasks?.context) q = (q as any).eq('context_id', ds.tasks.context);
-      if (context_filter)    q = (q as any).eq('context_id', context_filter);
-      const { data: tasks } = await q;
-      if (tasks?.length) {
-        const byBucket: Record<string, string[]> = {};
-        for (const t of tasks) {
-          if (!byBucket[t.bucket_key]) byBucket[t.bucket_key] = [];
-          const tagStr       = t.tags?.length ? ` [${t.tags.join(', ')}]` : '';
-          const dateStr      = t.target_date ? ` · due ${String(t.target_date).slice(0, 10)}` : '';
-          const ctxStr       = (t.context as any)?.name ? ` · ${(t.context as any).name}` : '';
-          const delegateStr  = (t.delegatee as any)?.name ? ` · delegated_to:${(t.delegatee as any).name}` : '';
-          byBucket[t.bucket_key].push(`- ${t.title}${tagStr}${dateStr}${ctxStr}${delegateStr}`);
-        }
-        const taskLines = Object.entries(byBucket)
-          .map(([b, items]) => `${bucketLabels[b] ?? b}:\n${items.join('\n')}`)
-          .join('\n\n');
-        dataParts.push(`## Open Tasks\n${taskLines}`);
-      }
-    }
-
-    if (ds.completions !== false) {
-      const windowDays = ds.completions?.window_days ?? 7;
-      const windowStart = new Date();
-      windowStart.setDate(windowStart.getDate() - windowDays);
-      let q = db.from('completion')
-        .select('title, completed_at, outcome, description, tags, context:context_id(name)')
-        .eq('user_id', user_id).gte('completed_at', windowStart.toISOString())
-        .order('completed_at', { ascending: false });
-      if (ds.completions?.context) q = (q as any).eq('context_id', ds.completions.context);
-      const { data: completions } = await q;
-      if (completions?.length) {
-        const lines = completions.map(c => {
-          const date   = String(c.completed_at ?? '').slice(0, 10);
-          const ctx    = (c.context as any)?.name;
-          const tags   = c.tags?.length ? ` [${c.tags.join(', ')}]` : '';
-          const ctxStr = ctx ? ` · ${ctx}` : '';
-          let line = `- [${date}] ${c.title}${tags}${ctxStr}`;
-          if (c.outcome)     line += `\n  Outcome: ${c.outcome}`;
-          if (c.description) line += `\n  Notes: ${c.description}`;
-          return line;
-        }).join('\n');
-        dataParts.push(`## Completions (last ${windowDays} days)\n${lines}`);
-      }
-    }
-
-    if (ds.meetings !== false) {
-      const windowDays = ds.meetings?.window_days ?? 30;
-      const windowStart = new Date();
-      windowStart.setDate(windowStart.getDate() - windowDays);
-      const completedOnly = ds.meetings?.completed_only ?? false;
-      let q = db.from('meeting')
-        .select('title, meeting_date, attendees, tags, outcome, notes')
-        .eq('user_id', user_id).gte('meeting_date', windowStart.toISOString().slice(0, 10))
-        .order('meeting_date', { ascending: false }).limit(20);
-      if (completedOnly) q = (q as any).eq('is_completed', true);
-      const { data: meetings } = await q;
-      if (meetings?.length) {
-        const lines = meetings.map(m => {
-          const date = String(m.meeting_date ?? '').slice(0, 10);
-          const att  = m.attendees?.length ? ` · ${m.attendees.join(', ')}` : '';
-          let line = `- [${date}] ${m.title}${att}`;
-          if (m.outcome) line += `\n  Outcome: ${m.outcome}`;
-          if (m.notes)   line += `\n  Notes: ${m.notes.slice(0, 500)}`;
-          return line;
-        }).join('\n');
-        dataParts.push(`## Meetings (last ${windowDays} days)\n${lines}`);
-      }
-    }
-
-    if (ds.references === true) {
-      const { data: refs } = await db.from('external_reference').select('title, description, notes').eq('user_id', user_id).order('created_at', { ascending: false }).limit(10);
-      if (refs?.length) {
-        const lines = refs.map(r => `- ${r.title}${r.description ? ` — ${r.description}` : ''}`).join('\n');
-        dataParts.push(`## References\n${lines}`);
-      }
-    }
-
-    dataBlock    = dataParts.join('\n\n') || 'No data available for the configured sources.';
-    promptForKarl = template.prompt_template;
+  if (ds.situation !== false) {
+    const { data: sit } = await db
+      .from('user_situation').select('brief')
+      .eq('user_id', user_id).eq('is_active', true).maybeSingle();
+    if (sit?.brief) dataParts.push(`## Situation\n${sit.brief}`);
   }
 
-  // ── Generate output ───────────────────────────────────────────────────────
+  if (ds.tasks !== false) {
+    const buckets: string[] = ds.tasks?.buckets ?? Object.keys(bucketLabels);
+    let q = db.from('task')
+      .select('title, bucket_key, tags, target_date, context:context_id(name), delegatee:delegated_to(name)')
+      .eq('user_id', user_id).eq('is_completed', false).eq('is_archived', false)
+      .in('bucket_key', buckets)
+      .order('sort_order', { ascending: true, nullsFirst: false });
+    if (ds.tasks?.context)       q = (q as any).eq('context_id', ds.tasks.context);
+    if (context_filter)          q = (q as any).eq('context_id', context_filter);
+    if (ds.tasks?.tags?.length)  q = (q as any).contains('tags', ds.tasks.tags);
+    if (ds.tasks?.delegated_to)  q = (q as any).eq('delegated_to', ds.tasks.delegated_to);
+    const { data: tasks } = await q;
+    if (tasks?.length) {
+      const byBucket: Record<string, string[]> = {};
+      for (const t of tasks) {
+        if (!byBucket[t.bucket_key]) byBucket[t.bucket_key] = [];
+        const tagStr      = t.tags?.length ? ` [${t.tags.join(', ')}]` : '';
+        const dateStr     = t.target_date ? ` · due ${String(t.target_date).slice(0, 10)}` : '';
+        const ctxStr      = (t.context as any)?.name ? ` · ${(t.context as any).name}` : '';
+        const delegateStr = (t.delegatee as any)?.name ? ` · delegated_to:${(t.delegatee as any).name}` : '';
+        byBucket[t.bucket_key].push(`- ${t.title}${tagStr}${dateStr}${ctxStr}${delegateStr}`);
+      }
+      const taskLines = Object.entries(byBucket)
+        .map(([b, items]) => `${bucketLabels[b] ?? b}:\n${items.join('\n')}`)
+        .join('\n\n');
+      dataParts.push(`## Tasks\n${taskLines}`);
+    }
+  }
+
+  if (ds.completions !== false) {
+    const windowDays = ds.completions?.window_days ?? 7;
+    const windowStart = new Date();
+    windowStart.setDate(windowStart.getDate() - windowDays);
+    let q = db.from('completion')
+      .select('title, completed_at, outcome, description, tags, context:context_id(name)')
+      .eq('user_id', user_id).gte('completed_at', windowStart.toISOString())
+      .order('completed_at', { ascending: false });
+    if (ds.completions?.context)      q = (q as any).eq('context_id', ds.completions.context);
+    if (context_filter)               q = (q as any).eq('context_id', context_filter);
+    if (ds.completions?.tags?.length) q = (q as any).contains('tags', ds.completions.tags);
+    const { data: completions } = await q;
+    if (completions?.length) {
+      const lines = completions.map(c => {
+        const date   = String(c.completed_at ?? '').slice(0, 10);
+        const ctx    = (c.context as any)?.name;
+        const tags   = c.tags?.length ? ` [${c.tags.join(', ')}]` : '';
+        const ctxStr = ctx ? ` · ${ctx}` : '';
+        let line = `- [${date}] ${c.title}${tags}${ctxStr}`;
+        if (c.outcome)     line += `\n  Outcome: ${c.outcome}`;
+        if (c.description) line += `\n  Notes: ${c.description}`;
+        return line;
+      }).join('\n');
+      dataParts.push(`## Completions (last ${windowDays} days)\n${lines}`);
+    }
+  }
+
+  if (ds.meetings !== false) {
+    const windowDays    = ds.meetings?.window_days ?? 30;
+    const windowStart   = new Date();
+    windowStart.setDate(windowStart.getDate() - windowDays);
+    const completedOnly = ds.meetings?.completed_only ?? false;
+    let q = db.from('meeting')
+      .select('title, meeting_date, attendees, tags, outcome, notes, context:context_id(name)')
+      .eq('user_id', user_id)
+      .gte('meeting_date', windowStart.toISOString().slice(0, 10))
+      .order('meeting_date', { ascending: false }).limit(20);
+    if (completedOnly)             q = (q as any).eq('is_completed', true);
+    if (ds.meetings?.context)      q = (q as any).eq('context_id', ds.meetings.context);
+    if (context_filter)            q = (q as any).eq('context_id', context_filter);
+    if (ds.meetings?.attendee)     q = (q as any).contains('attendees', [ds.meetings.attendee]);
+    if (ds.meetings?.tags?.length) q = (q as any).contains('tags', ds.meetings.tags);
+    const { data: meetings } = await q;
+    if (meetings?.length) {
+      const lines = meetings.map(m => {
+        const date   = String(m.meeting_date ?? '').slice(0, 10);
+        const att    = m.attendees?.length ? ` · ${m.attendees.join(', ')}` : '';
+        const ctx    = (m.context as any)?.name;
+        const ctxStr = ctx ? ` · ${ctx}` : '';
+        let line = `- [${date}] ${m.title}${att}${ctxStr}`;
+        if (m.outcome) line += `\n  Outcome: ${m.outcome}`;
+        if (m.notes)   line += `\n  Notes: ${m.notes.slice(0, 500)}`;
+        return line;
+      }).join('\n');
+      dataParts.push(`## Meetings (last ${windowDays} days)\n${lines}`);
+    }
+  }
+
+  if (ds.references === true) {
+    const { data: refs } = await db.from('external_reference')
+      .select('title, description')
+      .eq('user_id', user_id)
+      .order('created_at', { ascending: false }).limit(10);
+    if (refs?.length) {
+      const lines = refs.map(r => `- ${r.title}${r.description ? ` — ${r.description}` : ''}`).join('\n');
+      dataParts.push(`## References\n${lines}`);
+    }
+  }
+
+  const dataBlock = dataParts.join('\n\n') || 'No data available.';
+
+  // ── Assemble the full prompt ───────────────────────────────────────────────
+  // This is the complete recipe — stored as run_data in the extract
   const bundle = await buildKarlContext(user_id, context_filter);
   const conceptHints = bundle.conceptRegistry.length
-    ? 'Concept registry (use labels from here, not your own): ' +
+    ? 'Concept registry (use these labels and icons only — never your own):\n' +
       bundle.conceptRegistry
         .filter(c => c.concept_type !== 'action')
-        .map(c => `${c.icon ?? ''} = ${c.label} (key: ${c.concept_key})`)
-        .join(' · ')
+        .map(c => `  ${c.icon ?? ''} = ${c.label} (key: ${c.concept_key})`)
+        .join('\n')
     : '';
 
+  const fullPrompt = [
+    `Template: ${template.name}`,
+    template.description ? `Purpose: ${template.description}` : '',
+    '',
+    'Generation Instructions:',
+    template.prompt_template,
+    '',
+    conceptHints,
+    '',
+    'Data:',
+    dataBlock,
+  ].filter(Boolean).join('\n');
+
+  // ── Generate ──────────────────────────────────────────────────────────────
   const systemPrompt = `You are Karl, generating a document for a KarlOps user.
 Follow the generation instructions exactly. Use only the data provided — do not invent data.
 Format the output in ${template.output_format ?? 'md'}.
-${conceptHints}
-Use concept registry labels and icons for section headers where appropriate. Never use your own hardcoded labels.
+Use concept registry labels and icons for section headers. Never use hardcoded labels or icons.
 Return ONLY the document content — no preamble, no explanation, no code fences.`;
-
-  const userMessage = `Template: ${template.name}
-${template.description ? `Purpose: ${template.description}` : ''}
-
-Generation Instructions:
-${promptForKarl}
-
-Data:
-${dataBlock}`;
 
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -770,7 +765,7 @@ ${dataBlock}`;
       model: 'claude-sonnet-4-20250514',
       max_tokens: 2000,
       system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
-      messages: [{ role: 'user', content: userMessage }],
+      messages: [{ role: 'user', content: fullPrompt }],
     }),
   });
 
@@ -785,6 +780,7 @@ ${dataBlock}`;
   const output = data.content?.[0]?.text ?? '';
   if (!output) throw new Error('Template run produced no output');
 
+  // ── Save extract — run_data only, no output stored ────────────────────────
   if (action.run_mode === 'save') {
     const dateStr = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
     const { error } = await db.from('external_reference').insert({
@@ -793,14 +789,18 @@ ${dataBlock}`;
       description:          template.description ?? null,
       filename:             `${template.name.toLowerCase().replace(/\s+/g, '-')}-${new Date().toISOString().slice(0, 10)}.md`,
       location:             'generated',
-      notes:                output,
+      run_data:             fullPrompt,
       document_template_id: templateId,
       ref_type:             'generated',
       tags:                 [],
     });
     if (error) throw new Error(error.message);
-    writeKarlObservation(user_id, `Ran template "${template.name}" → saved as Extract`, 'pattern').catch(() => {});
-    return { response: `📄 **${template.name}** generated and saved to Extracts.`, refresh: true, template_output: output };
+    writeKarlObservation(user_id, `Ran template "${template.name}" → saved extract (run_data only, no output stored)`, 'pattern').catch(() => {});
+    return {
+      response: `📄 **${template.name}** generated and saved to Extracts. Output shown below — regenerate anytime from the saved prompt.`,
+      refresh: true,
+      template_output: output,
+    };
   }
 
   writeKarlObservation(user_id, `Ran template "${template.name}" → previewed in chat`, 'pattern').catch(() => {});
