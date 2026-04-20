@@ -416,7 +416,7 @@ async function executeDeleteObject(
 
   // Re-verify allow_delete at execution time — double gate
   const { data: cfg } = await db
-    .from('ko_list_view_configuration')
+    .from('ko_list_view_config')
     .select('allow_delete')
     .eq('user_id', user_id)
     .eq('object_type', object_type)

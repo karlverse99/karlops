@@ -194,7 +194,7 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
     if (data) setFieldMeta(data);
 
     const { data: cfg } = await supabase
-      .from('ko_list_view_configuration')
+      .from('ko_list_view_config')
       .select('allow_delete')
       .eq('user_id', userId)
       .eq('object_type', 'meeting')
