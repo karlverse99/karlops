@@ -1,6 +1,6 @@
 // app/api/ko/command/route.ts
-// KarlOps L — Command execution route v1.1.0
-// Generic executor. Karl decides. Route executes. No hardcoded action maps.
+// KarlOps L — Command execution route v1.2.0
+// Parameter system wired into executeRunTemplate. Backwards compat with data_sources.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createSupabaseAdmin } from '@/lib/supabase-server';
@@ -8,6 +8,11 @@ import { routeCommand, OBJECT_TABLE, OBJECT_PK, KarlAction } from '@/lib/ko/comm
 import { captureTask } from '@/lib/ko/commands/captureTask';
 import { captureCompletion } from '@/lib/ko/commands/captureCompletion';
 import { writeKarlObservation, buildKarlContext } from '@/lib/ko/buildKarlContext';
+import {
+  buildDataBundle,
+  injectParameters,
+  TemplateParameter,
+} from '@/lib/ko/templateParameters';
 
 // ─── ERROR HANDLING ──────────────────────────────────────────────────────────
 
@@ -27,10 +32,20 @@ function isKnowledgeFailure(message: string): boolean {
   return KNOWLEDGE_FAILURE_PATTERNS.some(p => lower.includes(p));
 }
 
-async function logError(user_id: string, route: string, action: string, error_type: 'knowledge' | 'system', message: string, payload?: Record<string, any>): Promise<void> {
+async function logError(
+  user_id: string,
+  route: string,
+  action: string,
+  error_type: 'knowledge' | 'system',
+  message: string,
+  payload?: Record<string, any>
+): Promise<void> {
   try {
     const db = createSupabaseAdmin();
-    await db.from('ko_error_log').insert({ user_id, route, action, error_type, message, payload: payload ?? null, resolved: false });
+    await db.from('ko_error_log').insert({
+      user_id, route, action, error_type, message,
+      payload: payload ?? null, resolved: false,
+    });
   } catch { /* never let logging break response */ }
 }
 
@@ -47,7 +62,12 @@ If you cannot determine a specific field lesson, return only the observation blo
 
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY!, 'anthropic-version': '2023-06-01', 'anthropic-beta': 'prompt-caching-2024-07-31' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY!,
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'prompt-caching-2024-07-31',
+      },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: 300,
@@ -62,7 +82,11 @@ If you cannot determine a specific field lesson, return only the observation blo
     const db = createSupabaseAdmin();
 
     if (parsed.field_notes?.object_type && parsed.field_notes?.field && parsed.field_notes?.llm_notes) {
-      await db.from('ko_field_metadata').update({ llm_notes: parsed.field_notes.llm_notes }).eq('user_id', user_id).eq('object_type', parsed.field_notes.object_type).eq('field', parsed.field_notes.field);
+      await db.from('ko_field_metadata')
+        .update({ llm_notes: parsed.field_notes.llm_notes })
+        .eq('user_id', user_id)
+        .eq('object_type', parsed.field_notes.object_type)
+        .eq('field', parsed.field_notes.field);
     }
     if (parsed.observation?.content) {
       const { writeKarlObservation } = await import('@/lib/ko/buildKarlContext');
@@ -85,11 +109,6 @@ async function getUser(req: NextRequest) {
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
-const BUCKET_LABEL: Record<string, string> = {
-  now: 'On Fire', soon: 'Up Next', realwork: 'Real Work',
-  later: 'Later', delegate: 'Delegated', capture: 'Capture',
-};
-
 const BUCKET_PREFIX_MAP: Record<string, string> = {
   N: 'now', S: 'soon', RW: 'realwork', L: 'later', D: 'delegate',
   CP: 'capture', CM: 'completion', MT: 'meeting',
@@ -111,6 +130,24 @@ const EXT_FALLBACK: Record<string, string> = {
   '.md':   'text/markdown',
   '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
 };
+
+// ─── BUCKET LABEL RESOLUTION ──────────────────────────────────────────────────
+// Always from concept registry — never hardcoded
+
+async function resolveBucketLabels(user_id: string): Promise<Record<string, string>> {
+  const db = createSupabaseAdmin();
+  const { data } = await db
+    .from('ko_concept_registry')
+    .select('concept_key, label')
+    .eq('user_id', user_id)
+    .eq('concept_type', 'bucket');
+  const map: Record<string, string> = {};
+  for (const row of data ?? []) {
+    const key = row.concept_key.replace(/^bucket_/, '');
+    map[key] = row.label;
+  }
+  return map;
+}
 
 // ─── FILE EXTRACTION ──────────────────────────────────────────────────────────
 
@@ -143,7 +180,12 @@ function parseIdentifier(identifier: string): { prefix: string; index: number } 
   return { prefix: match[1], index: parseInt(match[2], 10) };
 }
 
-async function resolveIdentifier(user_id: string, identifier: string, object_type: string, context_filter?: string | null): Promise<string | null> {
+async function resolveIdentifier(
+  user_id: string,
+  identifier: string,
+  object_type: string,
+  context_filter?: string | null
+): Promise<string | null> {
   const db = createSupabaseAdmin();
   const parsed = parseIdentifier(identifier);
   if (!parsed) return null;
@@ -152,7 +194,14 @@ async function resolveIdentifier(user_id: string, identifier: string, object_typ
 
   if (object_type === 'task') {
     if (!bucketKey || !['now', 'soon', 'realwork', 'later', 'delegate', 'capture'].includes(bucketKey)) return null;
-    let query = db.from('task').select('task_id').eq('user_id', user_id).eq('bucket_key', bucketKey).eq('is_completed', false).eq('is_archived', false).order('sort_order', { ascending: true, nullsFirst: false }).order('created_at', { ascending: true });
+    let query = db.from('task')
+      .select('task_id')
+      .eq('user_id', user_id)
+      .eq('bucket_key', bucketKey)
+      .eq('is_completed', false)
+      .eq('is_archived', false)
+      .order('sort_order', { ascending: true, nullsFirst: false })
+      .order('created_at', { ascending: true });
     if (context_filter) query = query.eq('context_id', context_filter);
     const { data } = await query;
     return data?.[index - 1]?.task_id ?? null;
@@ -195,7 +244,12 @@ async function resolvePeopleTagId(user_id: string, nameOrId: string): Promise<st
 
 // ─── GENERIC FIELD OPERATION ──────────────────────────────────────────────────
 
-async function applyFieldOperation(user_id: string, object_type: string, record_id: string, op: { field: string; value: any; mode?: string }): Promise<string> {
+async function applyFieldOperation(
+  user_id: string,
+  object_type: string,
+  record_id: string,
+  op: { field: string; value: any; mode?: string }
+): Promise<string> {
   const db    = createSupabaseAdmin();
   const table = OBJECT_TABLE[object_type];
   const pk    = OBJECT_PK[object_type];
@@ -211,8 +265,6 @@ async function applyFieldOperation(user_id: string, object_type: string, record_
     } else {
       const { data: validTagRows } = await db.from('tag').select('name').eq('user_id', user_id).in('name', tagNames).eq('is_archived', false);
       const validNames = new Set((validTagRows ?? []).map((t: any) => t.name));
-      const invalid = tagNames.filter(t => !validNames.has(t));
-      if (invalid.length) console.warn(`[applyFieldOperation] rejected invalid tags: ${invalid.join(', ')}`);
       for (const tagName of tagNames) {
         if (validNames.has(tagName) && !currentTags.includes(tagName)) currentTags.push(tagName);
       }
@@ -220,7 +272,9 @@ async function applyFieldOperation(user_id: string, object_type: string, record_
     }
     const { error } = await db.from(table).update({ tags: currentTags }).eq(pk, record_id).eq('user_id', user_id);
     if (error) throw new Error(error.message);
-    return isRemove ? `removed ${tagNames.map(t => `#${t}`).join(', ')}` : `added ${tagNames.filter(t => currentTags.includes(t)).map(t => `#${t}`).join(', ')}`;
+    return isRemove
+      ? `removed ${tagNames.map(t => `#${t}`).join(', ')}`
+      : `added ${tagNames.filter(t => currentTags.includes(t)).map(t => `#${t}`).join(', ')}`;
   }
 
   if (op.field === 'task_status_id') {
@@ -256,9 +310,10 @@ async function applyFieldOperation(user_id: string, object_type: string, record_
   }
 
   if (op.field === 'bucket_key') {
+    const bucketLabels = await resolveBucketLabels(user_id);
     const { error } = await db.from(table).update({ bucket_key: op.value }).eq(pk, record_id).eq('user_id', user_id);
     if (error) throw new Error(error.message);
-    return `moved to ${BUCKET_LABEL[String(op.value)] ?? op.value}`;
+    return `moved to ${bucketLabels[String(op.value)] ?? op.value}`;
   }
 
   const { error } = await db.from(table).update({ [op.field]: op.value }).eq(pk, record_id).eq('user_id', user_id);
@@ -268,12 +323,15 @@ async function applyFieldOperation(user_id: string, object_type: string, record_
 
 // ─── ACTION EXECUTORS ─────────────────────────────────────────────────────────
 
-async function executeInsert(user_id: string, action: KarlAction, context_filter?: string | null): Promise<{ response: string; refresh: boolean; task_id?: string; offer_preview?: boolean }> {
+async function executeInsert(
+  user_id: string,
+  action: KarlAction,
+  context_filter?: string | null
+): Promise<{ response: string; refresh: boolean; task_id?: string; offer_preview?: boolean }> {
   const db          = createSupabaseAdmin();
   const object_type = action.object_type ?? 'task';
   const fields      = { ...(action.fields ?? {}) };
   const table       = OBJECT_TABLE[object_type];
-  const pk          = OBJECT_PK[object_type];
   if (!table) throw new Error(`Unknown object type: ${object_type}`);
 
   if (fields.context_name && !fields.context_id) {
@@ -295,8 +353,9 @@ async function executeInsert(user_id: string, action: KarlAction, context_filter
   if (object_type === 'task') {
     const result = await captureTask(user_id, fields as any);
     if (!result.success) throw new Error(result.error);
-    const bucketLabel = BUCKET_LABEL[result.task?.bucket_key ?? 'capture'] ?? result.task?.bucket_key;
-    const tagNote     = result.task?.tags?.length ? ` · ${result.task.tags.map((t: string) => `#${t}`).join(' ')}` : '';
+    const bucketLabels = await resolveBucketLabels(user_id);
+    const bucketLabel  = bucketLabels[result.task?.bucket_key ?? 'capture'] ?? result.task?.bucket_key;
+    const tagNote      = result.task?.tags?.length ? ` · ${result.task.tags.map((t: string) => `#${t}`).join(' ')}` : '';
     writeKarlObservation(user_id, `Captured: "${result.task?.title}" → ${bucketLabel}${tagNote}`, 'pattern').catch(() => {});
     return { response: `Captured — **${result.task?.title}** → ${bucketLabel}${tagNote}.`, refresh: true, task_id: result.task_id, offer_preview: true };
   }
@@ -319,16 +378,28 @@ async function executeInsert(user_id: string, action: KarlAction, context_filter
   return { response: `**${fields.title ?? fields.name ?? object_type}** saved.`, refresh: true };
 }
 
-async function executeCaptureTasksBulk(user_id: string, tasks: any[]): Promise<{ response: string; refresh: boolean }> {
+async function executeCaptureTasksBulk(
+  user_id: string,
+  tasks: any[]
+): Promise<{ response: string; refresh: boolean }> {
   const results = await Promise.all(tasks.map(t => captureTask(user_id, typeof t === 'string' ? { title: t } : t)));
   const failed  = results.filter(r => !r.success);
   const success = results.filter(r => r.success);
   if (success.length === 0) throw new Error('All task captures failed');
   writeKarlObservation(user_id, `Bulk captured ${success.length} tasks`, 'pattern').catch(() => {});
-  return { response: failed.length > 0 ? `Captured ${success.length} tasks. ${failed.length} failed.` : `Captured ${success.length} task${success.length > 1 ? 's' : ''}.`, refresh: true };
+  return {
+    response: failed.length > 0
+      ? `Captured ${success.length} tasks. ${failed.length} failed.`
+      : `Captured ${success.length} task${success.length > 1 ? 's' : ''}.`,
+    refresh: true,
+  };
 }
 
-async function executeUpdate(user_id: string, action: KarlAction, context_filter?: string | null): Promise<{ response: string; refresh: boolean }> {
+async function executeUpdate(
+  user_id: string,
+  action: KarlAction,
+  context_filter?: string | null
+): Promise<{ response: string; refresh: boolean }> {
   const object_type = action.object_type ?? 'task';
   const identifier  = action.identifier;
   if (!identifier) throw new Error('update action missing identifier');
@@ -342,7 +413,11 @@ async function executeUpdate(user_id: string, action: KarlAction, context_filter
   return { response: `Done — ${descriptions.join(', ')}.`, refresh: true };
 }
 
-async function executeComplete(user_id: string, action: KarlAction, context_filter?: string | null): Promise<{ response: string; refresh: boolean }> {
+async function executeComplete(
+  user_id: string,
+  action: KarlAction,
+  context_filter?: string | null
+): Promise<{ response: string; refresh: boolean }> {
   const db          = createSupabaseAdmin();
   const object_type = action.object_type ?? 'task';
   const identifier  = action.identifier;
@@ -371,7 +446,11 @@ async function executeComplete(user_id: string, action: KarlAction, context_filt
   throw new Error(`complete not supported for ${object_type}`);
 }
 
-async function executeArchive(user_id: string, action: KarlAction, context_filter?: string | null): Promise<{ response: string; refresh: boolean }> {
+async function executeArchive(
+  user_id: string,
+  action: KarlAction,
+  context_filter?: string | null
+): Promise<{ response: string; refresh: boolean }> {
   const db          = createSupabaseAdmin();
   const object_type = action.object_type ?? 'task';
   const identifier  = action.identifier;
@@ -386,7 +465,11 @@ async function executeArchive(user_id: string, action: KarlAction, context_filte
   return { response: `${identifier} archived.`, refresh: true };
 }
 
-async function executeDelete(user_id: string, action: KarlAction, context_filter?: string | null): Promise<{ response: string; refresh: boolean }> {
+async function executeDelete(
+  user_id: string,
+  action: KarlAction,
+  context_filter?: string | null
+): Promise<{ response: string; refresh: boolean }> {
   const db          = createSupabaseAdmin();
   const object_type = action.object_type ?? 'task';
   const identifier  = action.identifier;
@@ -423,10 +506,7 @@ async function executeDeleteObject(
     .maybeSingle();
 
   if (!cfg?.allow_delete) {
-    return {
-      response: `Delete on ${object_type} disabled by administrator.`,
-      refresh: false,
-    };
+    return { response: `Delete on ${object_type} disabled by administrator.`, refresh: false };
   }
 
   const table = OBJECT_TABLE[object_type];
@@ -463,7 +543,10 @@ async function executeCreateTag(user_id: string, action: KarlAction): Promise<{ 
   return { response: `Tag **${name}** created.`, refresh: true };
 }
 
-async function executeSaveAsTemplate(user_id: string, action: KarlAction): Promise<{ response: string; refresh: boolean; offer_open_templates: boolean }> {
+async function executeSaveAsTemplate(
+  user_id: string,
+  action: KarlAction
+): Promise<{ response: string; refresh: boolean; offer_open_templates: boolean }> {
   const db     = createSupabaseAdmin();
   const fields = action.fields ?? {};
   const name   = fields.name;
@@ -476,6 +559,7 @@ async function executeSaveAsTemplate(user_id: string, action: KarlAction): Promi
     doc_type:        fields.doc_type?.trim() ?? '',
     prompt_template: fields.prompt_template?.trim() ?? '',
     data_sources:    fields.data_sources ?? {},
+    parameters:      fields.parameters ?? [],
     output_format:   fields.output_format ?? 'md',
     tags:            fields.tags ?? [],
     is_system:       false,
@@ -492,9 +576,18 @@ async function executeSaveAsTemplate(user_id: string, action: KarlAction): Promi
   };
 }
 
-async function executeRunTemplate(user_id: string, action: KarlAction, context_filter?: string | null): Promise<{ response: string; refresh: boolean; template_output?: string }> {
+// ─── EXECUTE RUN TEMPLATE ─────────────────────────────────────────────────────
+// v1.2.0 — uses parameter system when parameters[] is populated.
+// Falls back to legacy data_sources when parameters is empty (backwards compat).
+
+async function executeRunTemplate(
+  user_id: string,
+  action: KarlAction,
+  context_filter?: string | null
+): Promise<{ response: string; refresh: boolean; template_output?: string }> {
   const db = createSupabaseAdmin();
 
+  // ── Resolve template ──────────────────────────────────────────────────────
   let templateId = action.fields?.template_id ?? null;
 
   if (!templateId && action.target_identifier) {
@@ -515,122 +608,152 @@ async function executeRunTemplate(user_id: string, action: KarlAction, context_f
 
   const { data: template } = await db
     .from('document_template')
-    .select('name, description, doc_type, prompt_template, data_sources, output_format')
+    .select('name, description, doc_type, prompt_template, data_sources, parameters, output_format')
     .eq('document_template_id', templateId)
     .single();
 
   if (!template) throw new Error('Template not found');
   if (!template.prompt_template) throw new Error('Template has no generation instructions. Use Karl Assist in Templates to build them.');
 
-  const ds = (template.data_sources ?? {}) as any;
-  const dataParts: string[] = [];
+  const parameters: TemplateParameter[] = Array.isArray(template.parameters) && template.parameters.length > 0
+    ? template.parameters as TemplateParameter[]
+    : [];
 
-  if (ds.situation !== false) {
-    const { data: sit } = await db.from('user_situation').select('brief').eq('user_id', user_id).eq('is_active', true).maybeSingle();
-    if (sit?.brief) dataParts.push(`## User Situation\n${sit.brief}`);
-  }
+  // ── Build data block ──────────────────────────────────────────────────────
+  let dataBlock: string;
+  let promptForKarl: string;
 
-  if (ds.tasks !== false) {
-    const buckets: string[] = ds.tasks?.buckets ?? ['now', 'soon', 'realwork'];
-    let q = db.from('task').select('title, bucket_key, tags, notes, target_date, delegated_to, context:context_id(name), delegatee:delegated_to(name)')
-      .eq('user_id', user_id).eq('is_completed', false).eq('is_archived', false)
-      .in('bucket_key', buckets)
-      .order('sort_order', { ascending: true, nullsFirst: false });
-    if (ds.tasks?.context) q = q.eq('context_id', ds.tasks.context);
-    if (context_filter)    q = q.eq('context_id', context_filter);
-    const { data: tasks } = await q;
-    if (tasks?.length) {
-      const byBucket: Record<string, string[]> = {};
-      for (const t of tasks) {
-        if (!byBucket[t.bucket_key]) byBucket[t.bucket_key] = [];
-        const tagStr      = t.tags?.length ? ` [${t.tags.join(', ')}]` : '';
-        const dateStr     = t.target_date ? ` · due ${t.target_date.slice(0, 10)}` : '';
-        const ctxName     = (t.context as any)?.name;
-        const ctxStr      = ctxName ? ` · ${ctxName}` : '';
-        const delegateName = (t.delegatee as any)?.name;
-        const delegateStr  = delegateName ? ` · delegated_to:${delegateName}` : '';
-        byBucket[t.bucket_key].push(`- ${t.title}${tagStr}${dateStr}${ctxStr}${delegateStr}`);
+  if (parameters.length > 0) {
+    // ── NEW PATH: parameter system ──────────────────────────────────────────
+    console.log(`[executeRunTemplate] using parameter system (${parameters.length} params)`);
+    const { keyed, block } = await buildDataBundle(user_id, parameters, context_filter);
+    dataBlock = block;
+
+    // Inject {{key}} placeholders into prompt_template
+    promptForKarl = injectParameters(template.prompt_template, keyed);
+
+  } else {
+    // ── LEGACY PATH: data_sources blunt pull ────────────────────────────────
+    console.log('[executeRunTemplate] using legacy data_sources path');
+    const ds = (template.data_sources ?? {}) as any;
+    const dataParts: string[] = [];
+    const bucketLabels = await resolveBucketLabels(user_id);
+
+    if (ds.situation !== false) {
+      const { data: sit } = await db.from('user_situation').select('brief').eq('user_id', user_id).eq('is_active', true).maybeSingle();
+      if (sit?.brief) dataParts.push(`## User Situation\n${sit.brief}`);
+    }
+
+    if (ds.tasks !== false) {
+      const buckets: string[] = ds.tasks?.buckets ?? Object.keys(bucketLabels);
+      let q = db.from('task')
+        .select('title, bucket_key, tags, notes, target_date, delegated_to, context:context_id(name), delegatee:delegated_to(name)')
+        .eq('user_id', user_id).eq('is_completed', false).eq('is_archived', false)
+        .in('bucket_key', buckets)
+        .order('sort_order', { ascending: true, nullsFirst: false });
+      if (ds.tasks?.context) q = (q as any).eq('context_id', ds.tasks.context);
+      if (context_filter)    q = (q as any).eq('context_id', context_filter);
+      const { data: tasks } = await q;
+      if (tasks?.length) {
+        const byBucket: Record<string, string[]> = {};
+        for (const t of tasks) {
+          if (!byBucket[t.bucket_key]) byBucket[t.bucket_key] = [];
+          const tagStr       = t.tags?.length ? ` [${t.tags.join(', ')}]` : '';
+          const dateStr      = t.target_date ? ` · due ${String(t.target_date).slice(0, 10)}` : '';
+          const ctxStr       = (t.context as any)?.name ? ` · ${(t.context as any).name}` : '';
+          const delegateStr  = (t.delegatee as any)?.name ? ` · delegated_to:${(t.delegatee as any).name}` : '';
+          byBucket[t.bucket_key].push(`- ${t.title}${tagStr}${dateStr}${ctxStr}${delegateStr}`);
+        }
+        const taskLines = Object.entries(byBucket)
+          .map(([b, items]) => `${bucketLabels[b] ?? b}:\n${items.join('\n')}`)
+          .join('\n\n');
+        dataParts.push(`## Open Tasks\n${taskLines}`);
       }
-      const taskLines = Object.entries(byBucket).map(([b, items]) => `${BUCKET_LABEL[b] ?? b}:\n${items.join('\n')}`).join('\n\n');
-      dataParts.push(`## Open Tasks\n${taskLines}`);
     }
+
+    if (ds.completions !== false) {
+      const windowDays = ds.completions?.window_days ?? 7;
+      const windowStart = new Date();
+      windowStart.setDate(windowStart.getDate() - windowDays);
+      let q = db.from('completion')
+        .select('title, completed_at, outcome, description, tags, context:context_id(name)')
+        .eq('user_id', user_id).gte('completed_at', windowStart.toISOString())
+        .order('completed_at', { ascending: false });
+      if (ds.completions?.context) q = (q as any).eq('context_id', ds.completions.context);
+      const { data: completions } = await q;
+      if (completions?.length) {
+        const lines = completions.map(c => {
+          const date   = String(c.completed_at ?? '').slice(0, 10);
+          const ctx    = (c.context as any)?.name;
+          const tags   = c.tags?.length ? ` [${c.tags.join(', ')}]` : '';
+          const ctxStr = ctx ? ` · ${ctx}` : '';
+          let line = `- [${date}] ${c.title}${tags}${ctxStr}`;
+          if (c.outcome)     line += `\n  Outcome: ${c.outcome}`;
+          if (c.description) line += `\n  Notes: ${c.description}`;
+          return line;
+        }).join('\n');
+        dataParts.push(`## Completions (last ${windowDays} days)\n${lines}`);
+      }
+    }
+
+    if (ds.meetings !== false) {
+      const windowDays = ds.meetings?.window_days ?? 30;
+      const windowStart = new Date();
+      windowStart.setDate(windowStart.getDate() - windowDays);
+      const completedOnly = ds.meetings?.completed_only ?? false;
+      let q = db.from('meeting')
+        .select('title, meeting_date, attendees, tags, outcome, notes')
+        .eq('user_id', user_id).gte('meeting_date', windowStart.toISOString().slice(0, 10))
+        .order('meeting_date', { ascending: false }).limit(20);
+      if (completedOnly) q = (q as any).eq('is_completed', true);
+      const { data: meetings } = await q;
+      if (meetings?.length) {
+        const lines = meetings.map(m => {
+          const date = String(m.meeting_date ?? '').slice(0, 10);
+          const att  = m.attendees?.length ? ` · ${m.attendees.join(', ')}` : '';
+          let line = `- [${date}] ${m.title}${att}`;
+          if (m.outcome) line += `\n  Outcome: ${m.outcome}`;
+          if (m.notes)   line += `\n  Notes: ${m.notes.slice(0, 500)}`;
+          return line;
+        }).join('\n');
+        dataParts.push(`## Meetings (last ${windowDays} days)\n${lines}`);
+      }
+    }
+
+    if (ds.references === true) {
+      const { data: refs } = await db.from('external_reference').select('title, description, notes').eq('user_id', user_id).order('created_at', { ascending: false }).limit(10);
+      if (refs?.length) {
+        const lines = refs.map(r => `- ${r.title}${r.description ? ` — ${r.description}` : ''}`).join('\n');
+        dataParts.push(`## References\n${lines}`);
+      }
+    }
+
+    dataBlock    = dataParts.join('\n\n') || 'No data available for the configured sources.';
+    promptForKarl = template.prompt_template;
   }
 
-  if (ds.completions !== false) {
-    const windowDays = ds.completions?.window_days ?? 7;
-    const windowStart = new Date();
-    windowStart.setDate(windowStart.getDate() - windowDays);
-    let q = db.from('completion').select('title, completed_at, outcome, description, tags, context:context_id(name)')
-      .eq('user_id', user_id).gte('completed_at', windowStart.toISOString())
-      .order('completed_at', { ascending: false });
-    if (ds.completions?.context) q = q.eq('context_id', ds.completions.context);
-    const { data: completions } = await q;
-    if (completions?.length) {
-      const lines = completions.map(c => {
-        const date = c.completed_at?.slice(0, 10) ?? '';
-        const ctx  = (c.context as any)?.name;
-        const tags = c.tags?.length ? ` [${c.tags.join(', ')}]` : '';
-        const ctxStr = ctx ? ` · ${ctx}` : '';
-        let line = `- [${date}] ${c.title}${tags}${ctxStr}`;
-        if (c.outcome)     line += `\n  Outcome: ${c.outcome}`;
-        if (c.description) line += `\n  Notes: ${c.description}`;
-        return line;
-      }).join('\n');
-      dataParts.push(`## Completions (last ${windowDays} days)\n${lines}`);
-    }
-  }
-
-  if (ds.meetings !== false) {
-    const windowDays = ds.meetings?.window_days ?? 30;
-    const windowStart = new Date();
-    windowStart.setDate(windowStart.getDate() - windowDays);
-    const completedOnly = ds.meetings?.completed_only ?? false;
-    let q = db.from('meeting').select('title, meeting_date, attendees, tags, outcome, notes')
-      .eq('user_id', user_id).gte('meeting_date', windowStart.toISOString().slice(0, 10))
-      .order('meeting_date', { ascending: false }).limit(20);
-    if (completedOnly) q = q.eq('is_completed', true);
-    const { data: meetings } = await q;
-    if (meetings?.length) {
-      const lines = meetings.map(m => {
-        const date = m.meeting_date?.slice(0, 10) ?? '';
-        const att  = m.attendees?.length ? ` · ${m.attendees.join(', ')}` : '';
-        let line = `- [${date}] ${m.title}${att}`;
-        if (m.outcome) line += `\n  Outcome: ${m.outcome}`;
-        if (m.notes)   line += `\n  Notes: ${m.notes.slice(0, 500)}`;
-        return line;
-      }).join('\n');
-      dataParts.push(`## Meetings (last ${windowDays} days)\n${lines}`);
-    }
-  }
-
-  if (ds.references === true) {
-    const { data: refs } = await db.from('external_reference').select('title, description, notes').eq('user_id', user_id).order('created_at', { ascending: false }).limit(10);
-    if (refs?.length) {
-      const lines = refs.map(r => `- ${r.title}${r.description ? ` — ${r.description}` : ''}`).join('\n');
-      dataParts.push(`## References\n${lines}`);
-    }
-  }
-
-  const dataBlock = dataParts.join('\n\n') || 'No data available for the configured sources.';
-
+  // ── Generate output ───────────────────────────────────────────────────────
   const bundle = await buildKarlContext(user_id, context_filter);
   const conceptHints = bundle.conceptRegistry.length
-    ? 'Icons to use in output: ' + bundle.conceptRegistry.filter(c => c.concept_type !== 'action').map(c => `${c.icon ?? ''} = ${c.label}`).join(' · ')
+    ? 'Concept registry (use labels from here, not your own): ' +
+      bundle.conceptRegistry
+        .filter(c => c.concept_type !== 'action')
+        .map(c => `${c.icon ?? ''} = ${c.label} (key: ${c.concept_key})`)
+        .join(' · ')
     : '';
 
   const systemPrompt = `You are Karl, generating a document for a KarlOps user.
-Follow the template instructions exactly. Use the data provided.
-Format the output in ${template.output_format ?? 'markdown'}.
+Follow the generation instructions exactly. Use only the data provided — do not invent data.
+Format the output in ${template.output_format ?? 'md'}.
 ${conceptHints}
-Use concept registry icons as section headers where appropriate.
-Be concise and specific. Do not invent data not present in the data block.
-Return ONLY the document content — no preamble, no explanation.`;
+Use concept registry labels and icons for section headers where appropriate. Never use your own hardcoded labels.
+Return ONLY the document content — no preamble, no explanation, no code fences.`;
 
   const userMessage = `Template: ${template.name}
 ${template.description ? `Purpose: ${template.description}` : ''}
 
 Generation Instructions:
-${template.prompt_template}
+${promptForKarl}
 
 Data:
 ${dataBlock}`;
@@ -663,7 +786,7 @@ ${dataBlock}`;
   if (!output) throw new Error('Template run produced no output');
 
   if (action.run_mode === 'save') {
-    const dateStr  = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    const dateStr = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
     const { error } = await db.from('external_reference').insert({
       user_id,
       title:                `${template.name} — ${dateStr}`,
@@ -686,7 +809,11 @@ ${dataBlock}`;
 
 // ─── DISPATCH SINGLE ACTION ───────────────────────────────────────────────────
 
-async function dispatchAction(user_id: string, action: KarlAction, context_filter?: string | null): Promise<{ response: string; refresh: boolean; task_id?: string; offer_preview?: boolean; template_output?: string; offer_open_templates?: boolean }> {
+async function dispatchAction(
+  user_id: string,
+  action: KarlAction,
+  context_filter?: string | null
+): Promise<{ response: string; refresh: boolean; task_id?: string; offer_preview?: boolean; template_output?: string; offer_open_templates?: boolean }> {
   switch (action.action) {
     case 'insert':           return executeInsert(user_id, action, context_filter);
     case 'capture_tasks':    return executeCaptureTasksBulk(user_id, action.tasks ?? []);
@@ -707,8 +834,15 @@ async function dispatchAction(user_id: string, action: KarlAction, context_filte
 
 // ─── EXECUTE ACTIONS ARRAY ────────────────────────────────────────────────────
 
-async function executeActions(user_id: string, actions: KarlAction[], context_filter?: string | null): Promise<NextResponse> {
-  const results: Array<{ response: string; refresh: boolean; task_id?: string; offer_preview?: boolean; template_output?: string; offer_open_templates?: boolean }> = [];
+async function executeActions(
+  user_id: string,
+  actions: KarlAction[],
+  context_filter?: string | null
+): Promise<NextResponse> {
+  const results: Array<{
+    response: string; refresh: boolean; task_id?: string;
+    offer_preview?: boolean; template_output?: string; offer_open_templates?: boolean;
+  }> = [];
   const errors: string[] = [];
 
   for (const action of actions) {
@@ -729,13 +863,13 @@ async function executeActions(user_id: string, actions: KarlAction[], context_fi
     }
   }
 
-  const refresh             = results.some(r => r.refresh);
-  const task_id             = results.find(r => r.task_id)?.task_id;
-  const offerPreview        = results.some(r => r.offer_preview) && actions.length === 1;
-  const templateOutput      = results.find(r => r.template_output)?.template_output;
-  const offerOpenTemplates  = results.some(r => r.offer_open_templates);
-  const responses           = results.map(r => r.response).filter(Boolean);
-  const responseText        = errors.length
+  const refresh            = results.some(r => r.refresh);
+  const task_id            = results.find(r => r.task_id)?.task_id;
+  const offerPreview       = results.some(r => r.offer_preview) && actions.length === 1;
+  const templateOutput     = results.find(r => r.template_output)?.template_output;
+  const offerOpenTemplates = results.some(r => r.offer_open_templates);
+  const responses          = results.map(r => r.response).filter(Boolean);
+  const responseText       = errors.length
     ? [...responses, `Errors: ${errors.join(', ')}`].join('\n')
     : responses.join('\n');
 
@@ -755,9 +889,9 @@ async function executeActions(user_id: string, actions: KarlAction[], context_fi
 
 function flattenLegacyPending(pending: Record<string, any>): KarlAction[] {
   if (pending.actions?.length) return pending.actions;
-  const flat    = pending.payload ? { ...pending.payload, ...pending } : pending;
-  const action  = flat.action ?? flat.intent;
-  const tasks   = flat.tasks ?? flat.payload?.tasks ?? [];
+  const flat   = pending.payload ? { ...pending.payload, ...pending } : pending;
+  const action = flat.action ?? flat.intent;
+  const tasks  = flat.tasks ?? flat.payload?.tasks ?? [];
 
   if (tasks.length > 0) return [{ action: 'capture_tasks', object_type: 'task', modal: 'TaskAddModal', tasks }];
 
@@ -808,7 +942,12 @@ export async function POST(req: NextRequest) {
     }
 
     if (extracted.length === 0) {
-      return NextResponse.json({ success: true, intent: 'question', response: errors.length ? `Couldn't read those files: ${errors.join(', ')}.` : `I opened the files but couldn't find any readable text.` });
+      return NextResponse.json({
+        success: true, intent: 'question',
+        response: errors.length
+          ? `Couldn't read those files: ${errors.join(', ')}.`
+          : `I opened the files but couldn't find any readable text.`,
+      });
     }
 
     const fileBlocks = extracted.map((f, i) =>
@@ -817,7 +956,7 @@ export async function POST(req: NextRequest) {
         : `--- ${f.name} ---\n${f.text.length > 12000 ? f.text.slice(0, 12000) + '\n[truncated]' : f.text}`
     ).join('\n\n');
 
-    const userHint = input?.trim() ?? '';
+    const userHint   = input?.trim() ?? '';
     const filePrompt = userHint
       ? `User instruction: "${userHint}"\n\nFile content:\n${fileBlocks}`
       : `File dropped without instruction. Ask what the user wants to do.\n\nFile content:\n${fileBlocks}`;
@@ -827,9 +966,14 @@ export async function POST(req: NextRequest) {
     writeKarlObservation(user.id, `File drop: user said "${userHint || 'nothing'}", Karl classified as "${classifiedAction}". Files: ${extracted.map(f => f.name).join(', ')}.`, 'preference').catch(() => {});
     if (errors.length && result.response) result.response = result.response + `\n\n(Skipped: ${errors.join(', ')})`;
 
-    // File drops should never silent-execute — always surface as pending for confirm
-const safeIntent = result.intent === 'execute' ? 'pending' : result.intent;
-return NextResponse.json({ success: true, intent: safeIntent, response: result.response ?? null, actions: result.actions ?? null, payload: null });
+    // File drops never silent-execute — always surface as pending for confirm
+    const safeIntent = result.intent === 'execute' ? 'pending' : result.intent;
+    return NextResponse.json({
+      success: true, intent: safeIntent,
+      response: result.response ?? null,
+      actions: result.actions ?? null,
+      payload: null,
+    });
   }
 
   // ── Normal text path ───────────────────────────────────────────────────────
