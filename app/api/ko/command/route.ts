@@ -956,7 +956,7 @@ Return ONLY the document content — no preamble, no explanation, no code fences
       'anthropic-beta': 'prompt-caching-2024-07-31',
     },
     body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 2000,
       system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
       messages: [{ role: 'user', content: fullPrompt }],
@@ -1067,8 +1067,13 @@ async function executeActions(
         karlLearnFromFailure(user_id, action, message).catch(() => {});
         errors.push(`${action.action} ${action.object_type ?? ''}: ${message}`);
       } else {
-        logError(user_id, 'command', `${action.action} ${action.object_type ?? ''}`, 'system', message, action as any).catch(() => {});
-        errors.push(`${action.action} ${action.object_type ?? ''}: something went wrong`);
+        logError(user_id, 'command', `${action.action} ${action.object_type ?? ''}`, 'system', message, action as any).catch(() => {});  
+          
+if (message.toLowerCase().includes('rate limit')) {
+  errors.push(`Rate limit hit — the data selected for this template is too large to process in one request. Try reducing the date window or filtering by context.`);
+} else {
+  errors.push(`${action.action} ${action.object_type ?? ''}: something went wrong`);
+}
       }
     }
   }
