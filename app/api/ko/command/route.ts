@@ -1,7 +1,7 @@
 // app/api/ko/command/route.ts
-// KarlOps L — Command execution route v1.5.0
+// KarlOps L — Command execution route v1.5.1
+// notes and description NEVER included in generation prompts or API payloads.
 // Output stored compressed (gzip) + encrypted (AES-256-GCM) + base64 encoded.
-// Only readable through KO with KO_OUTPUT_KEY. run_data stores the recipe. output stores the result.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createSupabaseAdmin } from '@/lib/supabase-server';
@@ -318,6 +318,8 @@ async function applyFieldOperation(
 }
 
 // ─── SECTION DATA PULLERS ─────────────────────────────────────────────────────
+// RULE: notes and description are NEVER included in generation prompts or API payloads.
+// They are display-only fields, exported via file only.
 
 async function pullTasksForSection(
   user_id: string,
@@ -372,8 +374,9 @@ async function pullCompletionsForSection(
   const db = createSupabaseAdmin();
   const windowDays = scope.window_days ?? null;
 
+  // outcome only — no description, no notes
   let q = db.from('completion')
-    .select('title, completed_at, outcome, tags, context:context_id(name)')
+    .select('title, completed_at, outcome, context:context_id(name)')
     .eq('user_id', user_id)
     .order('completed_at', { ascending: false });
 
@@ -391,9 +394,9 @@ async function pullCompletionsForSection(
   if (!completions?.length) return '(no completions)';
 
   return completions.map(c => {
-    const date   = String(c.completed_at ?? '').slice(0, 10);
-    const ctx    = (c.context as any)?.name;
-    const ctxStr = ctx ? ` · ${ctx}` : '';
+    const date       = String(c.completed_at ?? '').slice(0, 10);
+    const ctx        = (c.context as any)?.name;
+    const ctxStr     = ctx ? ` · ${ctx}` : '';
     const outcomeStr = c.outcome ? ` · ${c.outcome}` : '';
     return `- ${c.title}${ctxStr} · Completed: ${date}${outcomeStr}`;
   }).join('\n');
@@ -408,6 +411,7 @@ async function pullMeetingsForSection(
   const windowDays = scope.window_days ?? null;
   const today = new Date().toISOString().slice(0, 10);
 
+  // title, date, attendees, outcome only — no notes, no description
   let q = db.from('meeting')
     .select('title, meeting_date, attendees, outcome, context:context_id(name)')
     .eq('user_id', user_id)
@@ -417,7 +421,6 @@ async function pullMeetingsForSection(
   if (windowDays !== null) {
     const windowStart = new Date();
     windowStart.setDate(windowStart.getDate() - windowDays);
-    // Past AND future within window — no date ceiling, just floor
     q = (q as any).gte('meeting_date', windowStart.toISOString().slice(0, 10));
   }
 
@@ -431,28 +434,29 @@ async function pullMeetingsForSection(
   if (!meetings?.length) return '(no meetings)';
 
   return meetings.map(m => {
-    const date      = String(m.meeting_date ?? '').slice(0, 10);
-    const att       = m.attendees?.length ? ` · ${m.attendees.join(', ')}` : '';
-    const ctx       = (m.context as any)?.name;
-    const ctxStr    = ctx ? ` · ${ctx}` : '';
-    const outcome   = m.outcome ? ` · ${m.outcome}` : '';
-    const future    = date > today ? ' [upcoming]' : '';
-    return `- ${m.title}${att}${ctxStr} · ${date}${future}${outcome}`;
+    const date        = String(m.meeting_date ?? '').slice(0, 10);
+    const att         = m.attendees?.length ? ` · ${m.attendees.join(', ')}` : '';
+    const ctx         = (m.context as any)?.name;
+    const ctxStr      = ctx ? ` · ${ctx}` : '';
+    const outcomeStr  = m.outcome ? ` · ${m.outcome}` : '';
+    const futureStr   = date > today ? ' [upcoming]' : '';
+    return `- ${m.title}${att}${ctxStr} · ${date}${futureStr}${outcomeStr}`;
   }).join('\n');
 }
 
 async function pullReferencesForSection(user_id: string, scope: Record<string, any>): Promise<string> {
   const db = createSupabaseAdmin();
   const limit = scope.limit ?? 10;
+  // title only — no description, no notes
   let q = db.from('external_reference')
-    .select('title, description')
+    .select('title')
     .eq('user_id', user_id)
     .order('created_at', { ascending: false })
     .limit(limit);
   if (scope.tags?.length) q = (q as any).contains('tags', scope.tags);
   const { data: refs } = await q;
   if (!refs?.length) return '(no references)';
-  return refs.map(r => `- ${r.title}${r.description ? ` — ${r.description}` : ''}`).join('\n');
+  return refs.map(r => `- ${r.title}`).join('\n');
 }
 
 async function pullSituationForSection(user_id: string): Promise<string> {
@@ -464,9 +468,15 @@ async function pullSituationForSection(user_id: string): Promise<string> {
 async function pullContactsForSection(user_id: string, scope: Record<string, any>): Promise<string> {
   const db = createSupabaseAdmin();
   const limit = scope.limit ?? 20;
-  const { data: contacts } = await db.from('contact').select('name, notes').eq('user_id', user_id).eq('is_archived', false).order('name').limit(limit);
+  // name only — no notes
+  const { data: contacts } = await db.from('contact')
+    .select('name')
+    .eq('user_id', user_id)
+    .eq('is_archived', false)
+    .order('name')
+    .limit(limit);
   if (!contacts?.length) return '(no contacts)';
-  return contacts.map(c => `- ${c.name}${c.notes ? ` — ${c.notes.slice(0, 100)}` : ''}`).join('\n');
+  return contacts.map(c => `- ${c.name}`).join('\n');
 }
 
 // ─── STUB DATA GENERATOR ──────────────────────────────────────────────────────
@@ -475,7 +485,7 @@ function generateStubForSection(
   source: string,
   bucketLabels: Record<string, string>
 ): string {
-  const today     = new Date().toISOString().slice(0, 10);
+  const today    = new Date().toISOString().slice(0, 10);
   const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
   const lastWeek  = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
   const nextWeek  = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
@@ -509,29 +519,29 @@ function generateStubForSection(
       return [
         `- Completed Item A · Project Alpha · Completed: ${today} · Delivered on schedule`,
         `- Completed Item B · Project Beta · Completed: ${yesterday} · Reviewed and approved`,
-        `- Completed Item C · No context · Completed: ${lastWeek} · Closed out`,
+        `- Completed Item C · No context · Completed: ${lastWeek}`,
       ].join('\n');
 
     case 'meetings':
       return [
-        `- Weekly Sync · Alice, Bob · Project Alpha · ${yesterday} · Discussed priorities`,
+        `- Weekly Sync · Alice, Bob · Project Alpha · ${yesterday}`,
         `- Project Kickoff · Alice, Carol · Project Beta · ${lastWeek} · Aligned on scope`,
         `- Planning Session · Bob, Dave · Project Alpha · ${nextWeek} [upcoming]`,
       ].join('\n');
 
     case 'references':
       return [
-        `- Sample Reference Document — Overview of key project guidelines`,
-        `- Another Reference — Supporting materials for Q2 planning`,
+        `- Sample Reference Document`,
+        `- Another Reference`,
       ].join('\n');
 
     case 'situation':
-      return `Currently focused on Q2 delivery with active projects across multiple contexts. Key priorities are tracking against deadlines and managing delegated work.`;
+      return `Currently focused on Q2 delivery with active projects across multiple contexts.`;
 
     case 'contacts':
       return [
-        `- Alice Smith — Project lead, primary stakeholder`,
-        `- Bob Jones — Engineering, available for technical review`,
+        `- Alice Smith`,
+        `- Bob Jones`,
       ].join('\n');
 
     default:
@@ -792,9 +802,9 @@ async function executeSaveAsTemplate(
 }
 
 // ─── EXECUTE RUN TEMPLATE ─────────────────────────────────────────────────────
-// v1.5.0 — Section-aware. Output stored compressed + encrypted (AES-256-GCM).
-// run_data = full prompt (recipe). output = encrypted generated content.
-// Preview = stub data, never saves. Save = real data, encrypts and stores output.
+// v1.5.1 — notes and description stripped from all data pulls.
+// Preview = stub data, validates formatting, never saves.
+// Save = real data (no notes/description), encrypts and stores output.
 
 async function executeRunTemplate(
   user_id: string,
@@ -881,7 +891,11 @@ async function executeRunTemplate(
     // Legacy path — no sections defined
     console.log('[executeRunTemplate] no sections defined — using legacy full pull');
     if (isPreview) {
-      sectionBlocks.push(`[ALL DATA - STUB]\n${generateStubForSection('tasks', bucketLabels)}\n\n${generateStubForSection('meetings', bucketLabels)}\n\n${generateStubForSection('completions', bucketLabels)}`);
+      sectionBlocks.push([
+        generateStubForSection('tasks', bucketLabels),
+        generateStubForSection('meetings', bucketLabels),
+        generateStubForSection('completions', bucketLabels),
+      ].join('\n\n'));
     } else {
       const [tasksData, completionsData, meetingsData] = await Promise.all([
         pullTasksForSection(user_id, { buckets: Object.keys(bucketLabels) }, bucketLabels, context_filter),
@@ -975,10 +989,10 @@ Return ONLY the document content — no preamble, no explanation, no code fences
     };
   }
 
-  // ── Encrypt and store output ───────────────────────────────────────────────
+  // Save — encrypt output, store run_data and encrypted output on extract
   const encryptedOutput = await encryptOutput(output);
-
   const dateStr = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
   const { error: saveError } = await db.from('external_reference').insert({
     user_id,
     title:                `${template.name} — ${dateStr}`,
