@@ -1,7 +1,7 @@
 // app/api/ko/command/route.ts
-// KarlOps L — Command execution route v1.4.0
-// Section-aware template execution. Template = formatting shell. Data = run-time section_data.
-// Stores run_data (full prompt) on extract. No output stored. Regenerate anytime.
+// KarlOps L — Command execution route v1.5.0
+// Output stored compressed (gzip) + encrypted (AES-256-GCM) + base64 encoded.
+// Only readable through KO with KO_OUTPUT_KEY. run_data stores the recipe. output stores the result.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createSupabaseAdmin } from '@/lib/supabase-server';
@@ -9,6 +9,49 @@ import { routeCommand, OBJECT_TABLE, OBJECT_PK, KarlAction } from '@/lib/ko/comm
 import { captureTask } from '@/lib/ko/commands/captureTask';
 import { captureCompletion } from '@/lib/ko/commands/captureCompletion';
 import { writeKarlObservation, buildKarlContext } from '@/lib/ko/buildKarlContext';
+import { createCipheriv, createDecipheriv, randomBytes } from 'crypto';
+import { gzip, gunzip } from 'zlib';
+import { promisify } from 'util';
+
+const gzipAsync   = promisify(gzip);
+const gunzipAsync = promisify(gunzip);
+
+// ─── ENCRYPTION ───────────────────────────────────────────────────────────────
+// AES-256-GCM: authenticated encryption, detects tampering.
+// compress → encrypt → base64 for storage.
+// base64 → decrypt → decompress for reading.
+
+const ALGORITHM = 'aes-256-gcm';
+
+function getEncryptionKey(): Buffer {
+  const key = process.env.KO_OUTPUT_KEY;
+  if (!key || key.length !== 64) throw new Error('KO_OUTPUT_KEY must be a 64-char hex string (32 bytes)');
+  return Buffer.from(key, 'hex');
+}
+
+export async function encryptOutput(plaintext: string): Promise<string> {
+  const key       = getEncryptionKey();
+  const iv        = randomBytes(12); // 96-bit IV for GCM
+  const compressed = await gzipAsync(Buffer.from(plaintext, 'utf-8'));
+  const cipher    = createCipheriv(ALGORITHM, key, iv);
+  const encrypted = Buffer.concat([cipher.update(compressed), cipher.final()]);
+  const authTag   = cipher.getAuthTag();
+  // Format: iv(12) + authTag(16) + ciphertext — all base64 encoded
+  return Buffer.concat([iv, authTag, encrypted]).toString('base64');
+}
+
+export async function decryptOutput(stored: string): Promise<string> {
+  const key       = getEncryptionKey();
+  const buf       = Buffer.from(stored, 'base64');
+  const iv        = buf.subarray(0, 12);
+  const authTag   = buf.subarray(12, 28);
+  const encrypted = buf.subarray(28);
+  const decipher  = createDecipheriv(ALGORITHM, key, iv);
+  decipher.setAuthTag(authTag);
+  const compressed  = Buffer.concat([decipher.update(encrypted), decipher.final()]);
+  const decompressed = await gunzipAsync(compressed);
+  return decompressed.toString('utf-8');
+}
 
 // ─── ERROR HANDLING ──────────────────────────────────────────────────────────
 
@@ -317,7 +360,6 @@ async function applyFieldOperation(
 }
 
 // ─── SECTION DATA PULLERS ─────────────────────────────────────────────────────
-// One puller per source type. Called per section based on section_data config.
 
 async function pullTasksForSection(
   user_id: string,
@@ -336,7 +378,7 @@ async function pullTasksForSection(
     .in('bucket_key', buckets)
     .order('sort_order', { ascending: true, nullsFirst: false });
 
-  if (scope.context)      q = (q as any).eq('context_id', scope.context);
+  if (scope.context)       q = (q as any).eq('context_id', scope.context);
   else if (context_filter) q = (q as any).eq('context_id', context_filter);
   if (scope.tags?.length)  q = (q as any).contains('tags', scope.tags);
   if (scope.delegated_to)  q = (q as any).eq('delegated_to', scope.delegated_to);
@@ -349,13 +391,13 @@ async function pullTasksForSection(
 
   for (const t of tasks) {
     if (!byBucket[t.bucket_key]) byBucket[t.bucket_key] = [];
-    const ctx        = (t.context as any)?.name;
-    const status     = (t.task_status as any)?.label ?? '';
-    const due        = t.target_date ? String(t.target_date).slice(0, 10) : null;
-    const overdue    = due && due < today ? ' [OVERDUE]' : '';
-    const dueStr     = due ? ` · Due: ${due}${overdue}` : '';
-    const ctxStr     = ctx ? ` · ${ctx}` : '';
-    const statusStr  = status ? ` · ${status}` : '';
+    const ctx       = (t.context as any)?.name;
+    const status    = (t.task_status as any)?.label ?? '';
+    const due       = t.target_date ? String(t.target_date).slice(0, 10) : null;
+    const overdue   = due && due < today ? ' [OVERDUE]' : '';
+    const dueStr    = due ? ` · Due: ${due}${overdue}` : '';
+    const ctxStr    = ctx ? ` · ${ctx}` : '';
+    const statusStr = status ? ` · ${status}` : '';
     byBucket[t.bucket_key].push(`- ${t.title}${ctxStr}${statusStr}${dueStr}`);
   }
 
@@ -370,7 +412,7 @@ async function pullCompletionsForSection(
   context_filter?: string | null
 ): Promise<string> {
   const db = createSupabaseAdmin();
-  const windowDays = scope.window_days ?? null; // null = no restriction
+  const windowDays = scope.window_days ?? null;
 
   let q = db.from('completion')
     .select('title, completed_at, outcome, tags, context:context_id(name)')
@@ -383,7 +425,7 @@ async function pullCompletionsForSection(
     q = (q as any).gte('completed_at', windowStart.toISOString());
   }
 
-  if (scope.context)      q = (q as any).eq('context_id', scope.context);
+  if (scope.context)       q = (q as any).eq('context_id', scope.context);
   else if (context_filter) q = (q as any).eq('context_id', context_filter);
   if (scope.tags?.length)  q = (q as any).contains('tags', scope.tags);
 
@@ -391,10 +433,11 @@ async function pullCompletionsForSection(
   if (!completions?.length) return '(no completions)';
 
   return completions.map(c => {
-    const date = String(c.completed_at ?? '').slice(0, 10);
-    const ctx  = (c.context as any)?.name;
+    const date   = String(c.completed_at ?? '').slice(0, 10);
+    const ctx    = (c.context as any)?.name;
     const ctxStr = ctx ? ` · ${ctx}` : '';
-    return `- ${c.title}${ctxStr} · Completed: ${date}`;
+    const outcomeStr = c.outcome ? ` · ${c.outcome}` : '';
+    return `- ${c.title}${ctxStr} · Completed: ${date}${outcomeStr}`;
   }).join('\n');
 }
 
@@ -404,10 +447,11 @@ async function pullMeetingsForSection(
   context_filter?: string | null
 ): Promise<string> {
   const db = createSupabaseAdmin();
-  const windowDays = scope.window_days ?? null; // null = no restriction
+  const windowDays = scope.window_days ?? null;
+  const today = new Date().toISOString().slice(0, 10);
 
   let q = db.from('meeting')
-    .select('title, meeting_date, attendees, outcome, notes, context:context_id(name)')
+    .select('title, meeting_date, attendees, outcome, context:context_id(name)')
     .eq('user_id', user_id)
     .order('meeting_date', { ascending: false })
     .limit(50);
@@ -415,6 +459,7 @@ async function pullMeetingsForSection(
   if (windowDays !== null) {
     const windowStart = new Date();
     windowStart.setDate(windowStart.getDate() - windowDays);
+    // Past AND future within window — no date ceiling, just floor
     q = (q as any).gte('meeting_date', windowStart.toISOString().slice(0, 10));
   }
 
@@ -428,13 +473,13 @@ async function pullMeetingsForSection(
   if (!meetings?.length) return '(no meetings)';
 
   return meetings.map(m => {
-    const date   = String(m.meeting_date ?? '').slice(0, 10);
-    const att    = m.attendees?.length ? ` · ${m.attendees.join(', ')}` : '';
-    const ctx    = (m.context as any)?.name;
-    const ctxStr = ctx ? ` · ${ctx}` : '';
-    let line = `- ${m.title}${att}${ctxStr} · ${date}`;
-    if (m.outcome) line += `\n  ${m.outcome}`;
-    return line;
+    const date      = String(m.meeting_date ?? '').slice(0, 10);
+    const att       = m.attendees?.length ? ` · ${m.attendees.join(', ')}` : '';
+    const ctx       = (m.context as any)?.name;
+    const ctxStr    = ctx ? ` · ${ctx}` : '';
+    const outcome   = m.outcome ? ` · ${m.outcome}` : '';
+    const future    = date > today ? ' [upcoming]' : '';
+    return `- ${m.title}${att}${ctxStr} · ${date}${future}${outcome}`;
   }).join('\n');
 }
 
@@ -467,49 +512,53 @@ async function pullContactsForSection(user_id: string, scope: Record<string, any
 }
 
 // ─── STUB DATA GENERATOR ──────────────────────────────────────────────────────
-// For preview mode — generates realistic fake data per section source
-// so users can validate template formatting without needing real data
 
 function generateStubForSection(
   source: string,
   bucketLabels: Record<string, string>
 ): string {
-  const today = new Date().toISOString().slice(0, 10);
+  const today     = new Date().toISOString().slice(0, 10);
   const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
   const lastWeek  = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+  const nextWeek  = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
   const overdue   = new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10);
 
   const bucketKeys = Object.keys(bucketLabels);
-  const firstBucket  = bucketKeys[0] ?? 'now';
-  const secondBucket = bucketKeys[1] ?? 'soon';
-  const firstLabel   = bucketLabels[firstBucket] ?? firstBucket;
-  const secondLabel  = bucketLabels[secondBucket] ?? secondBucket;
+  const labels     = bucketKeys.map(k => bucketLabels[k]);
 
   switch (source) {
     case 'tasks':
       return [
-        `${firstLabel}:`,
+        labels[0] ? `${labels[0]}:` : 'On Fire:',
         `- Sample Task A · Project Alpha · Active · Due: ${today}`,
         `- Sample Task B · Project Beta · Waiting · Due: ${overdue} [OVERDUE]`,
         '',
-        `${secondLabel}:`,
-        `- Sample Task C · Project Alpha · Active · Due: ${lastWeek} [OVERDUE]`,
+        labels[1] ? `${labels[1]}:` : 'Up Next:',
+        `- Sample Task C · Project Alpha · Active · Due: ${nextWeek}`,
         `- Sample Task D · No context · Active`,
+        '',
+        labels[2] ? `${labels[2]}:` : 'Real Work:',
+        `- Sample Task E · Project Beta · In Progress`,
+        '',
+        labels[3] ? `${labels[3]}:` : 'Later:',
+        `- Sample Task F · Project Alpha · Active · Due: ${nextWeek}`,
+        '',
+        labels[4] ? `${labels[4]}:` : 'Delegated:',
+        `- Sample Task G · Project Beta · Waiting · Due: ${overdue} [OVERDUE]`,
       ].join('\n');
 
     case 'completions':
       return [
-        `- Completed Item A · Project Alpha · Completed: ${today}`,
-        `- Completed Item B · Project Beta · Completed: ${yesterday}`,
-        `- Completed Item C · No context · Completed: ${lastWeek}`,
+        `- Completed Item A · Project Alpha · Completed: ${today} · Delivered on schedule`,
+        `- Completed Item B · Project Beta · Completed: ${yesterday} · Reviewed and approved`,
+        `- Completed Item C · No context · Completed: ${lastWeek} · Closed out`,
       ].join('\n');
 
     case 'meetings':
       return [
-        `- Weekly Sync · Alice, Bob · ${today}`,
-        `  Discussed roadmap priorities and upcoming deadlines`,
-        `- Project Kickoff · Alice, Carol, Dave · ${yesterday}`,
-        `  Aligned on scope and initial deliverables`,
+        `- Weekly Sync · Alice, Bob · Project Alpha · ${yesterday} · Discussed priorities`,
+        `- Project Kickoff · Alice, Carol · Project Beta · ${lastWeek} · Aligned on scope`,
+        `- Planning Session · Bob, Dave · Project Alpha · ${nextWeek} [upcoming]`,
       ].join('\n');
 
     case 'references':
@@ -519,7 +568,7 @@ function generateStubForSection(
       ].join('\n');
 
     case 'situation':
-      return `Sample situation brief: Currently focused on Q2 delivery with active projects across multiple contexts. Key priorities are tracking against deadlines and managing delegated work.`;
+      return `Currently focused on Q2 delivery with active projects across multiple contexts. Key priorities are tracking against deadlines and managing delegated work.`;
 
     case 'contacts':
       return [
@@ -785,11 +834,9 @@ async function executeSaveAsTemplate(
 }
 
 // ─── EXECUTE RUN TEMPLATE ─────────────────────────────────────────────────────
-// v1.4.0 — Section-aware execution.
-// Template = formatting shell (prompt_template + sections[]).
-// Data = pulled at run time per section using section_data from the action.
-// Preview mode = stub data only, validates formatting, never saves.
-// Save mode = real data, stores run_data (full prompt) on extract. No output stored.
+// v1.5.0 — Section-aware. Output stored compressed + encrypted (AES-256-GCM).
+// run_data = full prompt (recipe). output = encrypted generated content.
+// Preview = stub data, never saves. Save = real data, encrypts and stores output.
 
 async function executeRunTemplate(
   user_id: string,
@@ -829,24 +876,21 @@ async function executeRunTemplate(
   const sections: Array<{ key: string; label: string; source: string; format: string }> =
     Array.isArray(template.sections) ? template.sections : [];
 
-  const isPreview   = action.run_mode === 'preview' || !action.run_mode;
-  const sectionData = action.section_data ?? {};
+  const isPreview    = action.run_mode === 'preview' || !action.run_mode;
+  const sectionData  = action.section_data ?? {};
   const bucketLabels = await resolveBucketLabels(user_id);
 
   // ── Build section data blocks ─────────────────────────────────────────────
   const sectionBlocks: string[] = [];
 
   if (sections.length > 0) {
-    // New section-aware path
     for (const section of sections) {
       const scope = sectionData[section.key] ?? {};
       let sectionContent: string;
 
       if (isPreview) {
-        // Preview = stub data to validate formatting
         sectionContent = generateStubForSection(section.source, bucketLabels);
       } else {
-        // Real run = pull actual data per section scope
         switch (section.source) {
           case 'tasks':
             sectionContent = await pullTasksForSection(user_id, scope, bucketLabels, context_filter);
@@ -876,28 +920,25 @@ async function executeRunTemplate(
       );
     }
   } else {
-    // Legacy path — no sections defined, pull everything with defaults
+    // Legacy path — no sections defined
     console.log('[executeRunTemplate] no sections defined — using legacy full pull');
-    const today = new Date().toISOString().slice(0, 10);
-
     if (isPreview) {
       sectionBlocks.push(`[ALL DATA - STUB]\n${generateStubForSection('tasks', bucketLabels)}\n\n${generateStubForSection('meetings', bucketLabels)}\n\n${generateStubForSection('completions', bucketLabels)}`);
     } else {
-      // Pull everything with no filters
       const [tasksData, completionsData, meetingsData] = await Promise.all([
         pullTasksForSection(user_id, { buckets: Object.keys(bucketLabels) }, bucketLabels, context_filter),
         pullCompletionsForSection(user_id, {}, context_filter),
         pullMeetingsForSection(user_id, {}, context_filter),
       ]);
-      if (tasksData !== '(no tasks)')       sectionBlocks.push(`Tasks:\n${tasksData}`);
-      if (meetingsData !== '(no meetings)') sectionBlocks.push(`Meetings:\n${meetingsData}`);
+      if (tasksData !== '(no tasks)')             sectionBlocks.push(`Tasks:\n${tasksData}`);
+      if (meetingsData !== '(no meetings)')        sectionBlocks.push(`Meetings:\n${meetingsData}`);
       if (completionsData !== '(no completions)') sectionBlocks.push(`Completions:\n${completionsData}`);
     }
   }
 
   const dataBlock = sectionBlocks.join('\n\n') || 'No data available.';
 
-  // ── Build concept registry hints ──────────────────────────────────────────
+  // ── Concept registry hints ────────────────────────────────────────────────
   const bundle = await buildKarlContext(user_id, context_filter);
   const conceptHints = bundle.conceptRegistry.length
     ? 'Concept registry (use these labels and icons only):\n' +
@@ -907,7 +948,7 @@ async function executeRunTemplate(
         .join('\n')
     : '';
 
-  // ── Assemble the full prompt ───────────────────────────────────────────────
+  // ── Assemble full prompt ───────────────────────────────────────────────────
   const today = new Date().toISOString().slice(0, 10);
   const fullPrompt = [
     `Template: ${template.name}`,
@@ -923,11 +964,11 @@ async function executeRunTemplate(
     '',
     'Section Data:',
     dataBlock,
-  ].filter(s => s !== undefined && s !== null).join('\n').trim();
+  ].filter(Boolean).join('\n').trim();
 
-  // ── Generate output ───────────────────────────────────────────────────────
+  // ── Generate ──────────────────────────────────────────────────────────────
   const systemPrompt = `You are Karl, generating a document for a KarlOps user.
-Follow the formatting instructions exactly. Use only the section data provided — do not invent data beyond what is given.
+Follow the formatting instructions exactly. Use only the section data provided — do not invent data.
 ${isPreview ? 'This is a formatting preview — use the stub data as-is to demonstrate the layout.' : ''}
 Format the output in ${template.output_format ?? 'md'}.
 Use concept registry labels and icons for section headers. Never use hardcoded labels or icons.
@@ -976,7 +1017,9 @@ Return ONLY the document content — no preamble, no explanation, no code fences
     };
   }
 
-  // Save — store run_data (the full prompt) on the extract, not the output
+  // ── Encrypt and store output ───────────────────────────────────────────────
+  const encryptedOutput = await encryptOutput(output);
+
   const dateStr = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   const { error: saveError } = await db.from('external_reference').insert({
     user_id,
@@ -985,6 +1028,8 @@ Return ONLY the document content — no preamble, no explanation, no code fences
     filename:             `${template.name.toLowerCase().replace(/\s+/g, '-')}-${today}.md`,
     location:             'generated',
     run_data:             fullPrompt,
+    output:               encryptedOutput,
+    output_encrypted:     true,
     section_data:         Object.keys(sectionData).length > 0 ? sectionData : null,
     document_template_id: templateId,
     ref_type:             'generated',
@@ -992,9 +1037,9 @@ Return ONLY the document content — no preamble, no explanation, no code fences
   });
   if (saveError) throw new Error(saveError.message);
 
-  writeKarlObservation(user_id, `Ran template "${template.name}" → saved extract (run_data stored, no output)`, 'pattern').catch(() => {});
+  writeKarlObservation(user_id, `Ran template "${template.name}" → saved extract (output encrypted)`, 'pattern').catch(() => {});
   return {
-    response: `📄 **${template.name}** generated and saved to Extracts. Output shown below — regenerate anytime from the saved prompt.`,
+    response: `📄 **${template.name}** generated and saved to Extracts. Output shown below — encrypted at rest, regenerate anytime.`,
     refresh: true,
     template_output: output,
   };
@@ -1159,7 +1204,6 @@ export async function POST(req: NextRequest) {
     writeKarlObservation(user.id, `File drop: user said "${userHint || 'nothing'}", Karl classified as "${classifiedAction}". Files: ${extracted.map(f => f.name).join(', ')}.`, 'preference').catch(() => {});
     if (errors.length && result.response) result.response = result.response + `\n\n(Skipped: ${errors.join(', ')})`;
 
-    // File drops never silent-execute — always surface as pending for confirm
     const safeIntent = result.intent === 'execute' ? 'pending' : result.intent;
     return NextResponse.json({
       success: true, intent: safeIntent,
