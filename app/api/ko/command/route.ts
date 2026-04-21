@@ -1,5 +1,7 @@
 // app/api/ko/command/route.ts
-// KarlOps L — Command execution route v1.5.1
+// KarlOps L — Command execution route v1.5.3
+// flattenLegacyPending now handles run_template action correctly.
+// Generation uses claude-haiku (separate rate limit from routing sonnet call).
 // notes and description NEVER included in generation prompts or API payloads.
 // Output stored compressed (gzip) + encrypted (AES-256-GCM) + base64 encoded.
 
@@ -374,7 +376,6 @@ async function pullCompletionsForSection(
   const db = createSupabaseAdmin();
   const windowDays = scope.window_days ?? null;
 
-  // outcome only — no description, no notes
   let q = db.from('completion')
     .select('title, completed_at, outcome, context:context_id(name)')
     .eq('user_id', user_id)
@@ -411,7 +412,6 @@ async function pullMeetingsForSection(
   const windowDays = scope.window_days ?? null;
   const today = new Date().toISOString().slice(0, 10);
 
-  // title, date, attendees, outcome only — no notes, no description
   let q = db.from('meeting')
     .select('title, meeting_date, attendees, outcome, context:context_id(name)')
     .eq('user_id', user_id)
@@ -434,12 +434,12 @@ async function pullMeetingsForSection(
   if (!meetings?.length) return '(no meetings)';
 
   return meetings.map(m => {
-    const date        = String(m.meeting_date ?? '').slice(0, 10);
-    const att         = m.attendees?.length ? ` · ${m.attendees.join(', ')}` : '';
-    const ctx         = (m.context as any)?.name;
-    const ctxStr      = ctx ? ` · ${ctx}` : '';
-    const outcomeStr  = m.outcome ? ` · ${m.outcome}` : '';
-    const futureStr   = date > today ? ' [upcoming]' : '';
+    const date       = String(m.meeting_date ?? '').slice(0, 10);
+    const att        = m.attendees?.length ? ` · ${m.attendees.join(', ')}` : '';
+    const ctx        = (m.context as any)?.name;
+    const ctxStr     = ctx ? ` · ${ctx}` : '';
+    const outcomeStr = m.outcome ? ` · ${m.outcome}` : '';
+    const futureStr  = date > today ? ' [upcoming]' : '';
     return `- ${m.title}${att}${ctxStr} · ${date}${futureStr}${outcomeStr}`;
   }).join('\n');
 }
@@ -447,7 +447,6 @@ async function pullMeetingsForSection(
 async function pullReferencesForSection(user_id: string, scope: Record<string, any>): Promise<string> {
   const db = createSupabaseAdmin();
   const limit = scope.limit ?? 10;
-  // title only — no description, no notes
   let q = db.from('external_reference')
     .select('title')
     .eq('user_id', user_id)
@@ -468,7 +467,6 @@ async function pullSituationForSection(user_id: string): Promise<string> {
 async function pullContactsForSection(user_id: string, scope: Record<string, any>): Promise<string> {
   const db = createSupabaseAdmin();
   const limit = scope.limit ?? 20;
-  // name only — no notes
   const { data: contacts } = await db.from('contact')
     .select('name')
     .eq('user_id', user_id)
@@ -481,18 +479,13 @@ async function pullContactsForSection(user_id: string, scope: Record<string, any
 
 // ─── STUB DATA GENERATOR ──────────────────────────────────────────────────────
 
-function generateStubForSection(
-  source: string,
-  bucketLabels: Record<string, string>
-): string {
-  const today    = new Date().toISOString().slice(0, 10);
+function generateStubForSection(source: string, bucketLabels: Record<string, string>): string {
+  const today     = new Date().toISOString().slice(0, 10);
   const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
   const lastWeek  = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
   const nextWeek  = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
   const overdue   = new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10);
-
-  const bucketKeys = Object.keys(bucketLabels);
-  const labels     = bucketKeys.map(k => bucketLabels[k]);
+  const labels    = Object.keys(bucketLabels).map(k => bucketLabels[k]);
 
   switch (source) {
     case 'tasks':
@@ -514,36 +507,24 @@ function generateStubForSection(
         labels[4] ? `${labels[4]}:` : 'Delegated:',
         `- Sample Task G · Project Beta · Waiting · Due: ${overdue} [OVERDUE]`,
       ].join('\n');
-
     case 'completions':
       return [
         `- Completed Item A · Project Alpha · Completed: ${today} · Delivered on schedule`,
         `- Completed Item B · Project Beta · Completed: ${yesterday} · Reviewed and approved`,
         `- Completed Item C · No context · Completed: ${lastWeek}`,
       ].join('\n');
-
     case 'meetings':
       return [
         `- Weekly Sync · Alice, Bob · Project Alpha · ${yesterday}`,
         `- Project Kickoff · Alice, Carol · Project Beta · ${lastWeek} · Aligned on scope`,
         `- Planning Session · Bob, Dave · Project Alpha · ${nextWeek} [upcoming]`,
       ].join('\n');
-
     case 'references':
-      return [
-        `- Sample Reference Document`,
-        `- Another Reference`,
-      ].join('\n');
-
+      return [`- Sample Reference Document`, `- Another Reference`].join('\n');
     case 'situation':
       return `Currently focused on Q2 delivery with active projects across multiple contexts.`;
-
     case 'contacts':
-      return [
-        `- Alice Smith`,
-        `- Bob Jones`,
-      ].join('\n');
-
+      return [`- Alice Smith`, `- Bob Jones`].join('\n');
     default:
       return `(stub data for ${source})`;
   }
@@ -793,7 +774,6 @@ async function executeSaveAsTemplate(
   if (error) throw new Error(error.message);
 
   writeKarlObservation(user_id, `Saved template: "${name}"`, 'pattern').catch(() => {});
-
   return {
     response: `📄 Template **${name}** saved. Run it anytime — say "run TM" followed by its number, or open Templates to configure it first.`,
     refresh: true,
@@ -802,7 +782,7 @@ async function executeSaveAsTemplate(
 }
 
 // ─── EXECUTE RUN TEMPLATE ─────────────────────────────────────────────────────
-// v1.5.1 — notes and description stripped from all data pulls.
+// v1.5.3 — Uses claude-haiku for generation (separate rate limit from routing).
 // Preview = stub data, validates formatting, never saves.
 // Save = real data (no notes/description), encrypts and stores output.
 
@@ -844,7 +824,7 @@ async function executeRunTemplate(
   const sections: Array<{ key: string; label: string; source: string; format: string }> =
     Array.isArray(template.sections) ? template.sections : [];
 
-  const isPreview    = action.run_mode === 'preview' || !action.run_mode;
+  const isPreview    = action.run_mode === 'preview';
   const sectionData  = action.section_data ?? {};
   const bucketLabels = await resolveBucketLabels(user_id);
 
@@ -938,7 +918,7 @@ async function executeRunTemplate(
     dataBlock,
   ].filter(Boolean).join('\n').trim();
 
-  // ── Generate ──────────────────────────────────────────────────────────────
+  // ── Generate using Haiku — separate rate limit from routing Sonnet call ───
   const systemPrompt = `You are Karl, generating a document for a KarlOps user.
 Follow the formatting instructions exactly. Use only the section data provided — do not invent data.
 ${isPreview ? 'This is a formatting preview — use the stub data as-is to demonstrate the layout.' : ''}
@@ -1067,13 +1047,12 @@ async function executeActions(
         karlLearnFromFailure(user_id, action, message).catch(() => {});
         errors.push(`${action.action} ${action.object_type ?? ''}: ${message}`);
       } else {
-        logError(user_id, 'command', `${action.action} ${action.object_type ?? ''}`, 'system', message, action as any).catch(() => {});  
-          
-if (message.toLowerCase().includes('rate limit')) {
-  errors.push(`Rate limit hit — the data selected for this template is too large to process in one request. Try reducing the date window or filtering by context.`);
-} else {
-  errors.push(`${action.action} ${action.object_type ?? ''}: something went wrong`);
-}
+        logError(user_id, 'command', `${action.action} ${action.object_type ?? ''}`, 'system', message, action as any).catch(() => {});
+        if (message.toLowerCase().includes('rate limit')) {
+          errors.push(`Rate limit hit — the data selected for this template is too large to process in one request. Try reducing the date window or filtering by context.`);
+        } else {
+          errors.push(`${action.action} ${action.object_type ?? ''}: something went wrong`);
+        }
       }
     }
   }
@@ -1101,12 +1080,26 @@ if (message.toLowerCase().includes('rate limit')) {
 }
 
 // ─── BACKWARDS COMPAT ─────────────────────────────────────────────────────────
+// flattenLegacyPending: converts old flat pending payload to actions array.
+// CRITICAL: run_template must be handled explicitly or it falls through to
+// insert task, causing captureTask to receive garbage fields.
 
 function flattenLegacyPending(pending: Record<string, any>): KarlAction[] {
   if (pending.actions?.length) return pending.actions;
+
   const flat   = pending.payload ? { ...pending.payload, ...pending } : pending;
   const action = flat.action ?? flat.intent;
   const tasks  = flat.tasks ?? flat.payload?.tasks ?? [];
+
+  // run_template — must be explicit, never fall through to insert
+  if (action === 'run_template') {
+    return [{
+      action:           'run_template',
+      target_identifier: flat.target_identifier ?? flat.actions?.[0]?.target_identifier,
+      run_mode:         flat.run_mode === 'preview' ? 'save' : (flat.run_mode ?? 'save'), // if confirming a preview, run as save
+      section_data:     flat.section_data ?? flat.actions?.[0]?.section_data ?? {},
+    }];
+  }
 
   if (tasks.length > 0) return [{ action: 'capture_tasks', object_type: 'task', modal: 'TaskAddModal', tasks }];
 

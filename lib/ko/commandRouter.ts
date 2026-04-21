@@ -1,6 +1,7 @@
 // lib/ko/commandRouter.ts
 // KarlOps L — Intent classification and enrichment
-// v1.4.0 — Enforced preview-first flow for run_template. Karl always asks before running.
+// v1.4.1 — "save" after template preview correctly emits modify_pending with run_mode: save.
+// Enforced preview-first flow for run_template.
 
 import { createSupabaseAdmin } from '@/lib/supabase-server';
 import {
@@ -270,13 +271,6 @@ Rules:
     });
 
     const data = await res.json();
-    const usage = data.usage;
-    if (usage) console.log('[suggestTagsForCapture] tokens:', {
-      input: usage.input_tokens, output: usage.output_tokens,
-      cache_write: usage.cache_creation_input_tokens ?? 0,
-      cache_read: usage.cache_read_input_tokens ?? 0,
-    });
-
     const text = data.content?.[0]?.text ?? '';
     const parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
     const existingNames = new Set(existingTags.map(t => t.name));
@@ -331,6 +325,8 @@ function formatPendingForPrompt(pending: Record<string, any> | null): string {
   if (actions.length > 0) {
     actions.forEach((a: any, i: number) => {
       lines.push(`\nAction ${i + 1}: ${a.action} ${a.object_type ?? ''}`);
+      if (a.run_mode) lines.push(`  run_mode: ${a.run_mode}`);
+      if (a.target_identifier) lines.push(`  template: ${a.target_identifier}`);
       if (a.fields) {
         for (const [k, v] of Object.entries(a.fields)) {
           if (v === null || v === undefined) continue;
@@ -361,11 +357,16 @@ function formatPendingForPrompt(pending: Record<string, any> | null): string {
   lines.push('## ABSOLUTE RULE — RETURN VALID JSON ONLY');
   lines.push('There is a pending action. The user is responding to it.');
   lines.push('You MUST return a JSON object. NO prose. NO code fences. NO markdown.');
-  lines.push('User confirms → { "intent": "confirm_pending", "response": "plain English" }');
+  lines.push('');
+  lines.push('CRITICAL FOR run_template PENDING:');
+  lines.push('If pending action is run_template with run_mode: preview AND user says "save", "yes", "generate", "do it", or confirms:');
+  lines.push('→ Return modify_pending with run_mode changed to "save". DO NOT return confirm_pending.');
+  lines.push('Example: { "intent": "modify_pending", "actions": [{ "action": "run_template", "target_identifier": "TM3", "run_mode": "save", "section_data": {...} }], "response": "Generating with real data now." }');
+  lines.push('');
+  lines.push('User confirms (non-template) → { "intent": "confirm_pending", "response": "plain English" }');
   lines.push('User cancels → { "intent": "cancel_pending", "response": "Cancelled." }');
   lines.push('User modifies → { "intent": "modify_pending", "actions": [...updated actions...], "response": "Updated. Confirm?" }');
-  lines.push('User asks to preview → { "intent": "preview_pending", "response": "exact field-by-field description of what will be written" }');
-  lines.push('User asks to open modal → { "intent": "question", "open_modal": true, "response": "Open what? [list the objects]" }');
+  lines.push('User asks to preview → { "intent": "preview_pending", "response": "exact field-by-field description" }');
   lines.push('DO NOT re-emit full payloads on confirm. Just confirm.');
   return lines.join('\n');
 }
@@ -603,7 +604,7 @@ export async function routeCommand(
       : '';
 
     const systemPrompt = [
-      `You are Karl, an operational assistant inside KarlOps — a personal pressure system for getting things done. [v1.4.0]`,
+      `You are Karl, an operational assistant inside KarlOps — a personal pressure system for getting things done. [v1.4.1]`,
       `Today's date: ${new Date().toISOString().slice(0, 10)}. When a user gives a date without a year, infer from today.`,
       '',
       contextBlock,
@@ -646,10 +647,8 @@ export async function routeCommand(
       '  - Title, subtitle, visual structure',
       '  - Section headers and ordering',
       '  - How each data type should be formatted (fields shown, bullet style, grouping)',
-      '  - Typography hints (bold, spacing, etc)',
       '  - Output format (md only for now)',
       'A template does NOT contain data, data references, or {{placeholders}}.',
-      'A template does NOT define what data to pull — that is decided at run time.',
       '',
       '### Template sections:',
       'Templates have a sections[] array. Each section defines:',
@@ -658,10 +657,6 @@ export async function routeCommand(
       '  - source: what type of data fills this section (tasks/completions/meetings/references/situation/contacts)',
       '  - format: how to display items in this section',
       '',
-      '### prompt_template — formatting instructions only:',
-      'Pure display spec. No placeholders. No data references.',
-      'Karl follows these instructions exactly when generating output.',
-      '',
       '### run_template flow — ENFORCED TWO-STEP. NO EXCEPTIONS:',
       '',
       'STEP 1 — When user says "run TM1" or any variation without an explicit mode:',
@@ -669,48 +664,36 @@ export async function routeCommand(
       '{ "intent": "question", "response": "TM1 — preview the formatting with sample data, or generate with your real data?", "payload": { "template_choice_pending": true, "identifier": "TM1" } }',
       'Karl NEVER skips this step. NEVER goes straight to proposing a run.',
       '',
-      'STEP 2a — User says "preview":',
+      'STEP 2a — User says "preview" or "preview TM1":',
       'Karl proposes run_template with run_mode: preview.',
-      'Preview uses stub data — validates formatting only. Never saves.',
+      '{ "intent": "pending", "actions": [{ "action": "run_template", "target_identifier": "TM1", "run_mode": "preview" }], "response": "Previewing TM1 with sample data. Confirm?" }',
       '',
-      'STEP 2b — User says "generate", "run it", "real data", or confirms:',
-      'Karl proposes run_template with run_mode: save and default section_data.',
-      'Karl proposes the section_data and asks to confirm before executing.',
+      'STEP 2b — User says "generate", "run it", "real data", or "generate TM1":',
+      'Karl proposes run_template with run_mode: save and section_data.',
       '',
-      'EXCEPTION — User explicitly says "preview TM1" or "generate TM1":',
-      'Karl skips step 1 and goes directly to the appropriate step 2.',
-      '"preview TM1" → run_mode: preview directly.',
-      '"generate TM1" / "run TM1 save" → run_mode: save with section_data proposal.',
+      '### CRITICAL — "save" after preview:',
+      'When there is a PENDING run_template with run_mode: preview and the user says "save", "yes", "generate", "do it", or any confirmation:',
+      'Karl MUST return modify_pending with run_mode changed to "save".',
+      'Karl MUST NOT return confirm_pending — that would execute the preview action.',
+      'Example:',
+      '{ "intent": "modify_pending", "actions": [{ "action": "run_template", "target_identifier": "TM3", "run_mode": "save", "section_data": { ... } }], "response": "Generating with your real data now." }',
       '',
-      '### section_data — run-time data scope per section:',
-      'Maps section keys to filter config for that run.',
-      'Default scope when not specified:',
+      '### section_data — run-time data scope:',
+      'Default scope:',
       '  tasks → all buckets, all contexts, no tag filter',
-      '  completions → window_days: 7, all contexts',
-      '  meetings → window_days: 7 (past and upcoming), all contexts',
-      '  references → limit: 10',
-      '  situation → no filters',
+      '  completions → window_days: 7',
+      '  meetings → window_days: 7',
       '',
-      'section_data shape:',
-      '{',
-      '  "TASKS": { "buckets": ["now","soon","realwork","later","delegate","capture"], "context": null, "tags": [], "delegated_to": null },',
-      '  "MEETINGS": { "window_days": 7, "context": null, "attendee": null, "completed_only": false },',
-      '  "COMPLETIONS": { "window_days": 7, "context": null, "tags": [] }',
-      '}',
-      '',
-      '### Overrides at run time:',
+      '### Overrides:',
       '"run TM1 but completions last 14 days" → Karl applies override to that section only.',
-      '"run TM1 for The Unobsolete" → Karl applies context to all sections.',
-      'Override applies to this run only. Template sections never modified.',
+      'Override applies to this run only. Template never modified.',
       '',
       '### save_as_template:',
       'ALWAYS pending. Never silent.',
       'Must include: name, description, output_format (md), prompt_template (formatting only, NO placeholders), sections[].',
       '',
       '## Document queries — "show me docs about X"',
-      'When user asks to see their documents, reports, or extracts:',
-      '  - Return intent: question with a formatted list inline',
-      '  - Format: "You have N documents:\\n- [Apr 12] Title (via Template)\\nOpen Extracts to view."',
+      'Return intent: question with a formatted list inline.',
       '',
       '## Decision Flow',
       '1. Question/conversation → intent: question. No pending.',
@@ -721,19 +704,16 @@ export async function routeCommand(
       '## Rules',
       '- Proposals always use intent: pending',
       '- GIGO: no silent writes. Every DB write needs explicit confirm.',
+      '- run_template with run_mode preview pending + user confirms → ALWAYS modify_pending with run_mode: save',
       '- create_tag ALWAYS pending. save_as_template ALWAYS pending. delete_object ALWAYS pending.',
-      '- Preview means exact — every field, every value.',
       '- complete is two-step unless user says "no outcome" or "just mark it done".',
-      '- delete_object always warns "this is permanent" and includes display_name.',
-      '- run_template: ALWAYS ask preview or generate first unless user explicitly specified. This is NON-NEGOTIABLE.',
       '- Karl can update any field in Field Knowledge with update:editable. Never say you can\'t.',
-      '- New patterns → include learning block.',
       '- NEVER hardcode icons, bucket labels, or object labels. Always use concept registry.',
       '- NEVER write {{placeholders}} in prompt_template.',
       '',
       '## Vocabulary',
       '- "fire"/"on fire" → now · "up next" → soon · "real work" → realwork',
-      '- "code it to X" / "context X" → context_id · "by DATE" → target_date · "delegate to X" → delegate bucket',
+      '- "code it to X" / "context X" → context_id · "by DATE" → target_date',
       '',
       '## Identifiers',
       'N=now S=soon RW=realwork L=later D=delegate CP=capture CM=completion MT=meeting EX=extract TM=template CT=contact',
@@ -749,6 +729,18 @@ export async function routeCommand(
       '',
       '## Response Format — ONLY valid JSON, no markdown, no code fences',
       '',
+      '// question — STEP 1 of run_template:',
+      '{ "intent": "question", "response": "TM1 — preview the formatting with sample data, or generate with your real data?", "payload": { "template_choice_pending": true, "identifier": "TM1" } }',
+      '',
+      '// pending — preview:',
+      '{ "intent": "pending", "actions": [{ "action": "run_template", "target_identifier": "TM1", "run_mode": "preview" }], "response": "Previewing TM1 with sample data. Confirm?" }',
+      '',
+      '// modify_pending — user said save after preview (CRITICAL):',
+      '{ "intent": "modify_pending", "actions": [{ "action": "run_template", "target_identifier": "TM3", "run_mode": "save", "section_data": { "DELEGATED": { "buckets": ["delegate"] }, "MEETINGS": { "window_days": 7 }, "JEN_TASKS": { "tags": ["Jen Schroeder"], "buckets": ["now","soon","realwork","later","delegate","capture"] }, "COMPLETIONS": { "window_days": 7 } } }], "response": "Generating with your real data now." }',
+      '',
+      '// pending — generate with real data:',
+      '{ "intent": "pending", "actions": [{ "action": "run_template", "target_identifier": "TM1", "run_mode": "save", "section_data": { "TASKS": { "buckets": ["now","soon","realwork","later","delegate","capture"], "context": null, "tags": [] }, "MEETINGS": { "window_days": 7 }, "COMPLETIONS": { "window_days": 7 } } }], "response": "Generating TM1 with your real data. Defaults applied. Confirm?" }',
+      '',
       '// execute (quick capture):',
       '{ "intent": "execute", "actions": [{ "action": "insert", "object_type": "task", "modal": "TaskAddModal", "fields": { "title": "...", "bucket_key": "capture", "tags": [], "notes": null, "target_date": null, "context_id": null } }], "response": "Got it." }',
       '',
@@ -757,43 +749,6 @@ export async function routeCommand(
       '',
       '// pending — update:',
       '{ "intent": "pending", "actions": [{ "action": "update", "object_type": "task", "identifier": "N3", "modal": "TaskDetailModal", "operations": [{ "field": "bucket_key", "value": "soon", "mode": "set" }] }], "response": "Moving N3 to Up Next. Confirm?" }',
-      '',
-      '// pending — delete_object:',
-      '{ "intent": "pending", "actions": [{ "action": "delete_object", "object_type": "meeting", "identifier": "MT2", "fields": { "display_name": "Sync with Jen — Apr 18" } }], "response": "This is permanent. Delete \\"Sync with Jen — Apr 18\\"? Confirm?" }',
-      '',
-      '// question — STEP 1 of run_template (user says "run TM1" with no mode):',
-      '{ "intent": "question", "response": "TM1 — preview the formatting with sample data, or generate with your real data?", "payload": { "template_choice_pending": true, "identifier": "TM1" } }',
-      '',
-      '// pending — STEP 2a preview (user said "preview" after step 1, or "preview TM1" directly):',
-      '{ "intent": "pending", "actions": [{ "action": "run_template", "target_identifier": "TM1", "run_mode": "preview" }], "response": "Previewing TM1 with sample data to check formatting. Confirm?" }',
-      '',
-      '// pending — STEP 2b generate (user said "generate" or "real data" after step 1):',
-      '{ "intent": "pending", "actions": [{ "action": "run_template", "target_identifier": "TM1", "run_mode": "save", "section_data": { "DELEGATED": { "buckets": ["delegate"], "context": null, "tags": [] }, "MEETINGS": { "window_days": 7, "context": null, "attendee": null }, "JEN_TASKS": { "buckets": ["now","soon","realwork","later","delegate","capture"], "tags": ["Jen Schroeder"], "context": null }, "COMPLETIONS": { "window_days": 7, "context": null, "tags": [] } } }], "response": "Generating TM1 with your real data. Using defaults — adjust any section scope if needed. Confirm?" }',
-      '',
-      '// pending — save_as_template:',
-      '{ "intent": "pending", "actions": [{ "action": "save_as_template", "object_type": "document_template", "modal": "TemplatesModal", "fields": {',
-      '  "name": "Complete Status Report",',
-      '  "description": "Full operational status — tasks, meetings, completions",',
-      '  "output_format": "md",',
-      '  "prompt_template": "Title: Complete Status Report\\nGenerated: {date}\\n\\nSection: Tasks\\nGroup by bucket. Bold name. Show context · status · due date. Mark overdue [OVERDUE].\\n\\nSection: Meetings\\nBullet per meeting. Show title · attendees · date.\\n\\nSection: Completed Items\\nBullet per item. Show name · completed date.",',
-      '  "sections": [',
-      '    { "key": "TASKS", "label": "Tasks", "source": "tasks", "format": "grouped by bucket, bullet per task, fields: name · context · status · due date, overdue: append [OVERDUE]" },',
-      '    { "key": "MEETINGS", "label": "Meetings", "source": "meetings", "format": "bullet per meeting, fields: title · attendees · date" },',
-      '    { "key": "COMPLETIONS", "label": "Completed Items", "source": "completions", "format": "bullet per item, fields: name · completed date" }',
-      '  ]',
-      '} }], "response": "Save this template? Confirm?" }',
-      '',
-      '// question — document query:',
-      '{ "intent": "question", "response": "You have 3 documents:\\n- [Apr 12] Title (via Template)\\nOpen Extracts to view, edit, or rerun." }',
-      '',
-      '// pending — complete:',
-      '{ "intent": "pending", "actions": [{ "action": "complete", "object_type": "task", "identifier": "N1", "fields": { "outcome": "..." } }], "response": "Marking N1 complete. Confirm?" }',
-      '',
-      '// pending — archive:',
-      '{ "intent": "pending", "actions": [{ "action": "archive", "object_type": "task", "identifier": "S2" }], "response": "Archiving S2. Confirm?" }',
-      '',
-      '// pending — create_tag:',
-      '{ "intent": "pending", "actions": [{ "action": "create_tag", "object_type": "tag", "fields": { "name": "TagName", "tag_group": "Activities", "description": "..." } }], "response": "New tag: TagName. Confirm?" }',
       '',
       '// confirm / cancel / preview / modify:',
       '{ "intent": "confirm_pending", "response": "Done." }',
@@ -807,30 +762,10 @@ export async function routeCommand(
       '// question:',
       '{ "intent": "question", "response": "Karl answer in plain English" }',
       '',
-      '// with learning:',
-      '{ "intent": "pending", "actions": [...], "response": "...", "learning": { "observation": { "content": "...", "observation_type": "preference" } } }',
-      '',
-      '// vocab rule:',
-      '{ "intent": "question", "response": "Whenever you say X I will add tags Y. Save this rule?", "learning": { "rule": { "phrase": "X", "description": "...", "match": "contains", "confirm": true, "rule_data": { "applies_to": "task", "no_suggest": false, "actions": [{ "field": "tags", "mode": "add", "value": ["Y"] }] } } } }',
-      '',
-      '// delete rule:',
-      '{ "intent": "question", "response": "Deleted.", "learning": { "delete_rule": { "vocab_id": "..." } } }',
-      '',
       isDeep ? '{ "intent": "question", "response": "...", "learning": { "observation": { "content": "pattern", "observation_type": "pattern" } } }' : '',
     ].filter(Boolean).join('\n');
 
     const maxTokens = isDeep ? 1500 : hasPending ? 3000 : isLong ? 2000 : 1200;
-
-    const requestBody = JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: maxTokens,
-      system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
-      messages: anthropicMessages,
-    });
-
-    console.log('[commandRouter] prompt length:', systemPrompt.length);
-    console.log('[commandRouter] messages count:', anthropicMessages.length);
-    console.log('[commandRouter] body length:', requestBody.length);
 
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -840,14 +775,17 @@ export async function routeCommand(
         'anthropic-version': '2023-06-01',
         'anthropic-beta': 'prompt-caching-2024-07-31',
       },
-      body: requestBody,
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: maxTokens,
+        system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
+        messages: anthropicMessages,
+      }),
     });
 
     const rawData = await res.json();
     console.log('[commandRouter] anthropic status:', res.status);
-    if (res.status !== 200) {
-      console.error('[commandRouter] anthropic error body:', JSON.stringify(rawData));
-    }
+    if (res.status !== 200) console.error('[commandRouter] anthropic error body:', JSON.stringify(rawData));
 
     const usage = rawData.usage;
     if (usage) console.log('[commandRouter] tokens:', {
@@ -886,9 +824,6 @@ export async function routeCommand(
     if (parsed.learning) {
       persistLearning(user_id, parsed.learning).catch(() => {});
     }
-    if (parsed.recognised_phrase && (intent === 'pending' || intent === 'execute')) {
-      upsertKarlVocab(user_id, parsed.recognised_phrase, intent, 'task').catch(() => {});
-    }
 
     // ── execute ────────────────────────────────────────────────────────────
     if (intent === 'execute') {
@@ -911,6 +846,8 @@ export async function routeCommand(
         const action = parsed.action ?? 'insert';
         if (action === 'capture_tasks' && parsed.tasks?.length) {
           actions = [{ action: 'capture_tasks', object_type: 'task', modal: 'TaskAddModal', tasks: parsed.tasks }];
+        } else if (action === 'run_template') {
+          actions = [{ action: 'run_template', target_identifier: parsed.target_identifier, run_mode: parsed.run_mode ?? 'save', section_data: parsed.section_data ?? {} }];
         } else if (action === 'capture_task' || action === 'insert') {
           actions = [{ action: 'insert', object_type: parsed.object_type ?? 'task', modal: OBJECT_MODAL[parsed.object_type ?? 'task'], fields: { title: parsed.title, bucket_key: parsed.bucket_key ?? 'capture', context_id: parsed.context_id ?? null, tags: parsed.tags ?? [], notes: parsed.notes ?? null, target_date: parsed.target_date ?? null, delegated_to: parsed.delegated_to ?? null } }];
         } else if (action === 'update_object') {
@@ -925,49 +862,30 @@ export async function routeCommand(
         if ((a.action === 'delete_object' || a.action === 'delete') && a.object_type) {
           const allowed = await checkAllowDelete(user_id, a.object_type);
           if (!allowed) {
-            return {
-              intent: 'question',
-              response: `Delete on ${a.object_type} disabled by administrator.`,
-            };
+            return { intent: 'question', response: `Delete on ${a.object_type} disabled by administrator.` };
           }
         }
       }
 
-      actions = await enrichActions(user_id, actions, rejectedTags, isModify);
+      // Skip tag enrichment for run_template actions
+      const nonTemplateActions = actions.filter(a => a.action !== 'run_template');
+      const templateActions    = actions.filter(a => a.action === 'run_template');
+      const enriched = nonTemplateActions.length > 0
+        ? await enrichActions(user_id, nonTemplateActions, rejectedTags, isModify)
+        : [];
+      actions = [...enriched, ...templateActions];
 
       const matchedRules = await matchVocabRules(user_id, input);
       const silentRules: MatchedRule[] = [];
-      const confirmRules: MatchedRule[] = [];
       for (const rule of matchedRules) {
-        if (rule.confirm) confirmRules.push(rule);
-        else silentRules.push(rule);
+        if (!rule.confirm) silentRules.push(rule);
       }
       for (const rule of silentRules) {
         actions = applyRuleToActions(actions, rule);
         touchKarlVocabRule(user_id, rule.vocab_id).catch(() => {});
       }
-      for (const rule of confirmRules) {
-        const enriched = applyRuleToActions([...actions], rule);
-        if (JSON.stringify(enriched) !== JSON.stringify(actions)) {
-          actions = enriched;
-          touchKarlVocabRule(user_id, rule.vocab_id).catch(() => {});
-        }
-      }
-      const ruleNote = silentRules.length
-        ? `\n(Applied rule${silentRules.length > 1 ? 's' : ''}: ${silentRules.map(r => r.phrase).join(', ')})`
-        : '';
 
-      let enrichedResponse = karlResponse + ruleNote;
-      if (actions.length === 1 && actions[0].fields?.tags?.length) {
-        const tags = actions[0].fields.tags as string[];
-        const tagMention = `\nTags — ${tags.map(t => `#${t}`).join(' ')}`;
-        if (!karlResponse.includes('Tags —')) {
-          enrichedResponse = karlResponse.replace(/\nConfirm/, tagMention + '\n\nConfirm') || karlResponse + tagMention;
-          await appendSessionMessage(user_id, 'karl', enrichedResponse);
-        }
-      }
-
-      return { intent, actions, response: enrichedResponse };
+      return { intent, actions, response: karlResponse };
     }
 
     // ── confirm / cancel / preview ─────────────────────────────────────────
@@ -988,9 +906,9 @@ export async function routeCommand(
     // ── question ───────────────────────────────────────────────────────────
     if (intent === 'question') {
       const qPayload: Record<string, any> = {};
-      if (parsed.outcome_pending)          { qPayload.outcome_pending = true; qPayload.identifier = parsed.identifier; qPayload.object_type = parsed.object_type; }
-      if (parsed.delegation_pending)       { qPayload.delegation_pending = true; qPayload.identifier = parsed.identifier; qPayload.object_type = parsed.object_type; }
-      if (parsed.open_modal)               { qPayload.open_modal = true; }
+      if (parsed.outcome_pending)    { qPayload.outcome_pending = true; qPayload.identifier = parsed.identifier; qPayload.object_type = parsed.object_type; }
+      if (parsed.delegation_pending) { qPayload.delegation_pending = true; qPayload.identifier = parsed.identifier; qPayload.object_type = parsed.object_type; }
+      if (parsed.open_modal)         { qPayload.open_modal = true; }
       if (parsed.payload?.template_choice_pending) {
         qPayload.template_choice_pending = true;
         qPayload.identifier = parsed.payload.identifier;
