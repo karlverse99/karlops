@@ -34,29 +34,9 @@ interface ChatMessage { role: 'user' | 'assistant'; content: string; timestamp: 
 interface BucketDef { key: string; label: string; icon: string; color: string; accent: string; }
 interface Context { context_id: string; name: string; }
 interface TaskStatus { task_status_id: string; name: string; label: string; }
+interface PendingAction { intent: string; payload: Record<string, any>; summary: string; }
 
-// v0.8.0 — actions[] replaces flat payload
-interface KarlAction {
-  action: string;
-  object_type?: string;
-  modal?: string;
-  fields?: Record<string, any>;
-  tasks?: any[];
-  operations?: any[];
-  identifier?: string;
-  target_identifier?: string;
-  run_mode?: 'preview' | 'save';
-}
-
-interface PendingAction {
-  intent: string;
-  actions: KarlAction[];   // v0.8.0 — always actions array
-  payload?: Record<string, any>; // kept for legacy compat
-  summary: string;
-}
-
-interface QueuedFile { name: string; type: string; data: string; size: number; }
-
+// Delegate modal state — used for both drag-drop and chat delegation_pending
 interface DelegateModalState {
   taskId: string;
   taskTitle: string;
@@ -85,20 +65,6 @@ const BUCKET_ID: Record<string, string> = {
   capture:  'CP',
 };
 
-const SUPPORTED_FILE_TYPES = [
-  'application/pdf',
-  'text/plain',
-  'text/markdown',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-];
-
-const EXT_TYPE_MAP: Record<string, string> = {
-  pdf:  'application/pdf',
-  txt:  'text/plain',
-  md:   'text/markdown',
-  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-};
-
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 
 function groupTasksByBucket(tasks: Task[]): Record<string, Task[]> {
@@ -110,20 +76,19 @@ function groupTasksByBucket(tasks: Task[]): Record<string, Task[]> {
   return grouped;
 }
 
-function buildPendingSummary(actions: KarlAction[]): string {
-  if (!actions?.length) return 'pending action';
-  if (actions.length === 1) {
-    const a = actions[0];
-    if (a.action === 'capture_tasks') return `${a.tasks?.length ?? '?'} tasks`;
-    if (a.fields?.title) return a.fields.title;
-    if (a.identifier) return `${a.action} ${a.identifier}`;
-    return `${a.action} ${a.object_type ?? ''}`.trim();
+function buildPendingSummary(data: any): string {
+  const p = data.payload ?? {};
+  const action = p.action ?? data.intent ?? '';
+  if (action === 'capture_completion') return `completion: ${p.title ?? '...'}`;
+  if (action === 'update_object') {
+    const ops = (p.operations ?? [])
+      .map((op: any) => op.tag_op ? `${op.tag_op} tag ${op.value}` : `${op.field}=${op.value}`)
+      .join(', ');
+    return `update ${p.identifier}: ${ops}`;
   }
-  return actions.map(a =>
-    a.action === 'capture_tasks' ? `${a.tasks?.length ?? '?'} tasks`
-    : a.fields?.title ? a.fields.title
-    : `${a.action} ${a.object_type ?? ''}`.trim()
-  ).join(' + ');
+  if (action === 'capture_tasks') return `${p.tasks?.length ?? '?'} tasks`;
+  if (action === 'process_document') return `process document: ${p.doc_action ?? p.content_type ?? '...'}`;
+  return p.title ?? p.summary ?? 'pending action';
 }
 
 function renderMarkdown(text: string): React.ReactNode[] {
@@ -145,40 +110,6 @@ function renderMarkdown(text: string): React.ReactNode[] {
 function formatDate(dateStr: string): string {
   const d = new Date(dateStr);
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-}
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes}B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)}KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
-}
-
-// ── Build the pending payload sent to Karl on confirm ─────────────────────────
-// v0.8.0 — sends actions[] directly. Strips notes from tasks to keep lean.
-function buildPendingForKarl(pending: PendingAction | null): Record<string, any> | null {
-  if (!pending) return null;
-
-  // New shape — actions array
-  if (pending.actions?.length) {
-    const actions = pending.actions.map(a => {
-      if (a.tasks?.length) {
-        return { ...a, tasks: a.tasks.map((t: any) => { const { notes: _n, ...rest } = t; return rest; }) };
-      }
-      return a;
-    });
-    return { actions, intent: pending.intent };
-  }
-
-  // Legacy fallback — old flat payload shape
-  if (pending.payload) {
-    const p: Record<string, any> = { ...pending.payload, action: pending.intent, intent: pending.intent };
-    if (p.tasks?.length) {
-      p.tasks = p.tasks.map((t: any) => { const { notes: _n, ...rest } = t; return rest; });
-    }
-    return p;
-  }
-
-  return null;
 }
 
 // ─── COMPONENTS: TaskPill ────────────────────────────────────────────────────
@@ -379,9 +310,8 @@ export default function WorkspacePage() {
   const [contactCount, setContactCount]       = useState(0);
   const [selectedTask, setSelectedTask]       = useState<Task | null>(null);
   const [pendingPreviewTaskId, setPendingPreviewTaskId] = useState<string | null>(null);
+
   const [delegateModal, setDelegateModal]     = useState<DelegateModalState | null>(null);
-  const [dragOverChat, setDragOverChat]       = useState(false);
-  const [queuedFiles, setQueuedFiles]         = useState<QueuedFile[]>([]);
 
   const draggedTask                            = useRef<Task | null>(null);
   const chatBottomRef                          = useRef<HTMLDivElement>(null);
@@ -431,7 +361,7 @@ export default function WorkspacePage() {
           role: 'assistant',
           content: data.is_new_user
             ? `Welcome. I'm Karl.\n\nDrop anything here — tasks, notes, things on your mind. I'll help you sort it.\n\nWhat's on the board right now?`
-            : (data.greeting ?? `Back at it. What's changed?`),
+            : `Back at it. What's changed?`,
           timestamp: new Date(),
         }]);
 
@@ -541,10 +471,6 @@ export default function WorkspacePage() {
     if (pending) setTimeout(() => inputRef.current?.focus(), 100);
   }, [pending]);
 
-  useEffect(() => {
-    if (queuedFiles.length > 0) setTimeout(() => inputRef.current?.focus(), 100);
-  }, [queuedFiles.length]);
-
   // ─── Split resize ──────────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -576,178 +502,136 @@ export default function WorkspacePage() {
     await loadMeetingCount(koUser.id);
     await loadExtractCount(koUser.id);
     await loadContactCount(koUser.id);
-    await loadTemplateCount(koUser.id);
   };
-
-  // ─── Unified command response handler ─────────────────────────────────────
-  // v0.8.0 — handles actions[] shape from route. Backwards compat for payload shape.
-
-  const handleCommandResponse = async (data: any) => {
-
-    // ── Executed (execute intent or confirm that hit DB) ───────────────────
-    if (
-      data.intent === 'execute' ||
-      data.intent === 'executed' ||
-      data.intent === 'capture_task' ||
-      data.intent === 'confirm_pending' ||
-      (data.success && data.refresh)
-    ) {
-      setPending(null);
-      addMessage('assistant', data.response ?? 'Done.');
-      await refreshAfterUpdate();
-      if (data.offer_preview && data.task_id) setPendingPreviewTaskId(data.task_id);
-      return;
-    }
-
-    if (data.intent === 'cancel_pending') {
-      setPending(null);
-      addMessage('assistant', data.response ?? 'Cancelled.');
-      return;
-    }
-
-    // ── Pending — v0.8.0 actions[] shape ──────────────────────────────────
-    if (data.intent === 'pending') {
-      const actions: KarlAction[] = data.actions ?? [];
-      // Fallback: old payload shape
-      if (!actions.length && data.payload) {
-        const p = data.payload;
-        const action = p.action ?? 'insert';
-        if (p.tasks?.length) {
-          actions.push({ action: 'capture_tasks', object_type: 'task', tasks: p.tasks });
-        } else {
-          actions.push({ action, object_type: p.object_type ?? 'task', fields: p, identifier: p.identifier, operations: p.operations });
-        }
-      }
-      setPending({ intent: 'pending', actions, summary: buildPendingSummary(actions) });
-      addMessage('assistant', data.response ?? '...');
-      return;
-    }
-
-    // ── Modify pending ─────────────────────────────────────────────────────
-    if (data.intent === 'modify_pending') {
-      const actions: KarlAction[] = data.actions ?? [];
-      if (!actions.length && data.payload) {
-        const p = data.payload;
-        actions.push({ action: p.action ?? 'insert', object_type: p.object_type ?? 'task', fields: p, identifier: p.identifier, operations: p.operations, tasks: p.tasks });
-      }
-      setPending({ intent: 'modify_pending', actions, summary: buildPendingSummary(actions) });
-      addMessage('assistant', data.response ?? 'Updated.');
-      return;
-    }
-
-    if (data.intent === 'preview_pending') {
-      addMessage('assistant', data.response ?? '...');
-      return;
-    }
-
-    if (data.intent === 'open_form') {
-      addMessage('assistant', data.response ?? 'Opening it up.');
-      const modal      = data.payload?.modal ?? data.actions?.[0]?.modal ?? '';
-      const identifier = data.payload?.identifier ?? data.actions?.[0]?.identifier;
-
-      // Task with identifier — open TaskDetailModal
-      if (identifier && (!modal || modal === 'TaskDetailModal' || modal === 'TaskAddModal')) {
-        const taskId = resolveIdentifierToTaskId(identifier);
-        if (taskId) {
-          const task = tasks.find(t => t.id === taskId);
-          if (task) { setSelectedTask(task); return; }
-        }
-      }
-
-      // Route to correct modal by name
-      if      (modal === 'TaskDetailModal')  { /* handled above or fall through to TaskAdd */ }
-      if      (modal === 'CompletionsModal') { setShowCompletions(true); }
-      else if (modal === 'MeetingsModal')    { setShowMeetings(true); }
-      else if (modal === 'ExtractsModal')    { setShowExtracts(true); }
-      else if (modal === 'TemplatesModal')   { setShowTemplates(true); }
-      else if (modal === 'ContactsModal')    { setShowContacts(true); }
-      else if (modal === 'TagManagerModal')  { setShowTagManager(true); }
-      else if (modal === 'TaskListModal')    { setShowTaskList(true); }
-      else if (modal === 'TaskAddModal')     { setShowTaskAdd(true); }
-      else {
-        // No modal specified or unknown — Karl probably said "open it" without specifying
-        // Default to task add unless we can infer from context
-        setShowTaskAdd(true);
-      }
-      return;
-    }
-
-    if (data.intent === 'command' && data.payload?.command_type === 'open_tag_manager') {
-      setShowTagManager(true);
-      addMessage('assistant', data.response ?? 'Opening tag manager.');
-      return;
-    }
-
-    if (data.intent === 'question' && data.payload?.delegation_pending) {
-      const taskId = resolveIdentifierToTaskId(data.payload.identifier);
-      if (taskId) {
-        const task = tasks.find(t => t.id === taskId);
-        if (task) {
-          setDelegateModal({
-            taskId: task.id,
-            taskTitle: task.title,
-            preselectedTagId: data.payload.preselected_tag_id ?? null,
-            preselectedName: data.payload.preselected_name ?? null,
-            mode: 'update',
-          });
-        }
-      }
-      addMessage('assistant', data.response ?? 'Who is handling this?');
-      return;
-    }
-
-    // ── Question / unclear / fallthrough ──────────────────────────────────
-    addMessage('assistant', data.response ?? "I'm not sure what to do with that.");
-  };
-
-  // ─── Submit ────────────────────────────────────────────────────────────────
 
   const handleSubmit = async () => {
     const text = input.trim();
-    if ((!text && queuedFiles.length === 0) || !sessionReady) return;
+    if (!text || !sessionReady) return;
 
-    const pendingForKarl = buildPendingForKarl(pending);
-
-    // ── File path ────────────────────────────────────────────────────────────
-    if (queuedFiles.length > 0) {
-      const filesToSend = [...queuedFiles];
-      setQueuedFiles([]);
-      addMessage('user', text ? `[${filesToSend.map(f => f.name).join(', ')}] — ${text}` : `[${filesToSend.map(f => f.name).join(', ')}]`);
-      setInput('');
-      setThinking(true);
-      try {
-        const res = await fetch('/api/ko/command', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
-          body: JSON.stringify({
-            input: text || null,
-            pending: pendingForKarl,
-            context_filter: contextFilter,
-            files: filesToSend,
-          }),
-        });
-        await handleCommandResponse(await res.json());
-      } catch (err: any) {
-        console.error('[handleSubmit files]', err);
-        addMessage('assistant', 'Something went wrong reading those files. Try again.');
-      } finally {
-        setThinking(false);
-      }
-      return;
-    }
-
-    // ── Normal text path ─────────────────────────────────────────────────────
-    if (!text) return;
     addMessage('user', text);
     setInput('');
     setThinking(true);
+
     try {
+      const pendingForKarl = pending
+        ? { ...pending.payload, action: pending.intent, intent: pending.intent }
+        : null;
+
       const res = await fetch('/api/ko/command', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
-        body: JSON.stringify({ input: text, pending: pendingForKarl, context_filter: contextFilter }),
+        body: JSON.stringify({ input: text, pending: pendingForKarl }),
       });
-      await handleCommandResponse(await res.json());
+      const data = await res.json();
+
+      // ── Karl executed immediately (quick capture) ────────────────────
+      // Route returns 'capture_task' as intent after writing on execute path
+      if (data.intent === 'execute' || data.intent === 'capture_task') {
+        setPending(null);
+        addMessage('assistant', data.response ?? 'Done.');
+        await refreshAfterUpdate();
+        if (data.offer_preview && data.task_id) setPendingPreviewTaskId(data.task_id);
+        return;
+      }
+
+      // ── Karl confirmed and executed the pending action ───────────────
+      if (data.intent === 'confirm_pending') {
+        setPending(null);
+        addMessage('assistant', data.response ?? 'Done.');
+        await refreshAfterUpdate();
+        if (data.offer_preview && data.task_id) setPendingPreviewTaskId(data.task_id);
+        return;
+      }
+
+      // ── Successful write — route returned refresh:true ───────────────
+      // Covers update_object, capture_tasks, capture_completion, process_document
+      if (data.success && data.refresh) {
+        setPending(null);
+        addMessage('assistant', data.response ?? 'Done.');
+        await refreshAfterUpdate();
+        if (data.offer_preview && data.task_id) setPendingPreviewTaskId(data.task_id);
+        return;
+      }
+
+      // ── Karl cancelled ───────────────────────────────────────────────
+      if (data.intent === 'cancel_pending') {
+        setPending(null);
+        addMessage('assistant', data.response ?? 'Cancelled.');
+        return;
+      }
+
+      // ── Karl modified pending — update payload, keep pending ─────────
+      if (data.intent === 'modify_pending') {
+        const summary = data.payload?.title
+          ?? (data.payload?.tasks?.length ? `${data.payload.tasks.length} tasks` : 'modified action');
+        setPending({ intent: data.payload?.action ?? 'capture_task', payload: data.payload ?? {}, summary });
+        addMessage('assistant', data.response ?? 'Updated.');
+        return;
+      }
+
+      // ── Karl previewed — show response, keep pending alive ───────────
+      if (data.intent === 'preview_pending') {
+        addMessage('assistant', data.response ?? '...');
+        return;
+      }
+
+      // ── Karl wants to open the form ──────────────────────────────────
+      if (data.intent === 'open_form') {
+        addMessage('assistant', data.response ?? 'Opening it up.');
+        setShowTaskAdd(true);
+        return;
+      }
+
+      // ── Karl proposes a new pending action ───────────────────────────
+      if (data.intent === 'pending') {
+        const summary = data.payload?.title
+          ?? (data.payload?.tasks?.length ? `${data.payload.tasks.length} tasks` : 'pending action');
+        setPending({ intent: data.payload?.action ?? 'capture_task', payload: data.payload ?? {}, summary });
+        addMessage('assistant', data.response ?? '...');
+        return;
+      }
+
+      // ── System commands ──────────────────────────────────────────────
+      if (data.intent === 'command' && data.payload?.command_type === 'open_tag_manager') {
+        setShowTagManager(true);
+        addMessage('assistant', data.response ?? 'Opening tag manager.');
+        return;
+      }
+
+      // ── Delegation pending — pop DelegateModal ───────────────────────
+      if (data.intent === 'question' && data.payload?.delegation_pending) {
+        const taskId = resolveIdentifierToTaskId(data.payload.identifier);
+        if (taskId) {
+          const task = tasks.find(t => t.id === taskId);
+          if (task) {
+            setDelegateModal({
+              taskId: task.id,
+              taskTitle: task.title,
+              preselectedTagId: data.payload.preselected_tag_id ?? null,
+              preselectedName: data.payload.preselected_name ?? null,
+              mode: 'update',
+            });
+          }
+        }
+        addMessage('assistant', data.response ?? 'Who is handling this?');
+        return;
+      }
+
+      // ── Question / conversational ────────────────────────────────────
+      // Karl answered a question. Never touch pending — it stays exactly as it was.
+      if (data.intent === 'question' || data.intent === 'unclear') {
+        addMessage('assistant', data.response ?? "I'm not sure what to do with that.");
+        return;
+      }
+
+      // ── Fallback — any other actionable intent with payload ──────────
+      const isActionable = ['capture_task', 'capture_tasks', 'capture_completion', 'update_object', 'process_document'].includes(data.intent);
+      if (isActionable && data.payload) {
+        setPending({ intent: data.intent, payload: data.payload, summary: buildPendingSummary(data) });
+      }
+
+      addMessage('assistant', data.response ?? "I'm not sure what to do with that.");
+
     } catch (err: any) {
       console.error('[handleSubmit]', err);
       addMessage('assistant', 'Something went wrong. Try again.');
@@ -756,55 +640,7 @@ export default function WorkspacePage() {
     }
   };
 
-  // ─── File drop handler ────────────────────────────────────────────────────
-
-  const handleFileDrop = async (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    setDragOverChat(false);
-    if (draggedTask.current) return;
-
-    const droppedFiles = Array.from(e.dataTransfer.files);
-    if (!droppedFiles.length || !sessionReady) return;
-
-    const newQueued: QueuedFile[] = [];
-    const rejected: string[] = [];
-
-    for (const file of droppedFiles) {
-      if (file.size > 5 * 1024 * 1024) {
-        rejected.push(`${file.name} (over 5MB)`);
-        continue;
-      }
-      const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
-      const resolvedType = SUPPORTED_FILE_TYPES.includes(file.type)
-        ? file.type
-        : (EXT_TYPE_MAP[ext] ?? file.type);
-
-      if (!SUPPORTED_FILE_TYPES.includes(resolvedType)) {
-        rejected.push(`${file.name} (unsupported type)`);
-        continue;
-      }
-
-      const base64 = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve((reader.result as string).split(',')[1]);
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
-      });
-
-      newQueued.push({ name: file.name, type: resolvedType, data: base64, size: file.size });
-    }
-
-    if (rejected.length) {
-      addMessage('assistant', `Skipped: ${rejected.join(', ')}. Drop PDF, DOCX, TXT, or MD files.`);
-    }
-
-    if (newQueued.length > 0) {
-      setQueuedFiles(prev => [...prev, ...newQueued]);
-    }
-  };
-
-  // ── Resolve identifier to task_id ─────────────────────────────────────────
-
+  // ── Resolve identifier (e.g. "S1") to a task_id ───────────────────────────
   const resolveIdentifierToTaskId = (identifier: string): string | null => {
     if (!identifier) return null;
     const upper = identifier.toUpperCase();
@@ -821,7 +657,6 @@ export default function WorkspacePage() {
     if (isNaN(idx) || idx < 0) return null;
     const bucketTasks = tasks
       .filter(t => t.bucket_key === bucketKey)
-      .filter(t => !contextFilter || t.context_id === contextFilter)
       .sort((a, b) => {
         if (a.sort_order !== null && b.sort_order !== null) return a.sort_order - b.sort_order;
         if (a.sort_order !== null) return -1;
@@ -844,6 +679,7 @@ export default function WorkspacePage() {
     draggedTask.current = task;
   };
 
+  // ── Drop handler — intercepts delegate bucket, opens DelegateModal ─────────
   const handleDrop = async (targetBucketKey: string) => {
     const task = draggedTask.current;
     draggedTask.current = null;
@@ -869,8 +705,10 @@ export default function WorkspacePage() {
     }
   };
 
+  // ── DelegateModal confirm — write bucket + delegated_to to DB ─────────────
   const handleDelegateConfirm = async (tagId: string, tagName: string) => {
     if (!delegateModal || !koUser) return;
+
     const { taskId, mode } = delegateModal;
     setDelegateModal(null);
 
@@ -894,6 +732,8 @@ export default function WorkspacePage() {
       addMessage('assistant', `Delegated to **${tagName}**. Task moved to Delegated bucket.`);
     }
   };
+
+  // ─── Reorder within bucket ────────────────────────────────────────────────
 
   const handleReorder = async (dropTargetId: string, dropIndex: number, bucketTasks: Task[]) => {
     const draggedId = draggedTask.current?.id;
@@ -944,8 +784,6 @@ export default function WorkspacePage() {
   const grouped       = groupTasksByBucket(filteredTasks);
   const totalOpen     = tasks.length;
   const totalFiltered = filteredTasks.length;
-  const hasFiles      = queuedFiles.length > 0;
-  const canSend       = (input.trim() || hasFiles) && sessionReady && !thinking;
 
   // ─── Render ────────────────────────────────────────────────────────────────
 
@@ -1064,33 +902,8 @@ export default function WorkspacePage() {
           onMouseLeave={e => (e.currentTarget.style.background = '#1a1a1a')}
         />
 
-        {/* RIGHT: CHAT — file drop target */}
-        <div
-          style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative', outline: dragOverChat ? '1px dashed #4ade80' : '1px solid transparent', transition: 'outline 0.15s' }}
-          onDragOver={e => {
-            if (!draggedTask.current && e.dataTransfer.types.includes('Files')) {
-              e.preventDefault();
-              setDragOverChat(true);
-            }
-          }}
-          onDragLeave={e => {
-            if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOverChat(false);
-          }}
-          onDrop={handleFileDrop}
-        >
-
-          {/* Drop overlay */}
-          {dragOverChat && (
-            <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.75)', zIndex: 10, pointerEvents: 'none' }}>
-              <div style={{ color: '#4ade80', fontFamily: 'monospace', textAlign: 'center' }}>
-                <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>⬇</div>
-                <div style={{ fontSize: '0.9rem' }}>Drop file for Karl to analyze</div>
-                <div style={{ fontSize: '0.7rem', color: '#555', marginTop: '0.35rem' }}>PDF · DOCX · TXT · MD</div>
-              </div>
-            </div>
-          )}
-
-          {/* CHAT MESSAGES */}
+        {/* RIGHT: CHAT */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem 1.25rem 0.5rem', scrollbarWidth: 'thin', scrollbarColor: '#222 transparent' }}>
             {chat.map((msg, i) => <ChatBubble key={i} msg={msg} />)}
             {thinking && (
@@ -1108,7 +921,7 @@ export default function WorkspacePage() {
             {pending && (
               <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: '0.75rem' }}>
                 <div style={{ padding: '0.5rem 0.75rem', background: '#0d1a0d', border: '1px solid #1a3a1a', borderRadius: '8px', fontSize: '0.75rem', color: '#4ade80' }}>
-                  Pending: <strong>{pending.summary}</strong>
+                  Pending: <strong>{pending.summary ?? pending.payload?.title ?? 'action'}</strong>
                 </div>
               </div>
             )}
@@ -1131,28 +944,6 @@ export default function WorkspacePage() {
             <div ref={chatBottomRef} />
           </div>
 
-          {/* FILE QUEUE PILLS */}
-          {hasFiles && (
-            <div style={{ padding: '0.5rem 1.25rem 0', display: 'flex', flexWrap: 'wrap', gap: '0.4rem', borderTop: '1px solid #1a1a1a', background: '#0d0d0d' }}>
-              {queuedFiles.map((f, i) => (
-                <div
-                  key={i}
-                  style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', background: '#111', border: '1px solid #2a3a2a', borderRadius: '6px', padding: '0.25rem 0.5rem', fontSize: '0.72rem', color: '#4ade80' }}
-                >
-                  <span>📄</span>
-                  <span style={{ maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
-                  <span style={{ color: '#555', fontSize: '0.65rem' }}>{formatFileSize(f.size)}</span>
-                  <span
-                    onClick={() => setQueuedFiles(prev => prev.filter((_, idx) => idx !== i))}
-                    style={{ color: '#555', cursor: 'pointer', marginLeft: '0.2rem', fontWeight: 700, fontSize: '0.8rem' }}
-                    onMouseEnter={e => (e.currentTarget.style.color = '#ef4444')}
-                    onMouseLeave={e => (e.currentTarget.style.color = '#555')}
-                  >✕</span>
-                </div>
-              ))}
-            </div>
-          )}
-
           {/* INPUT BAR */}
           <div style={{ borderTop: '1px solid #1a1a1a', padding: '0.75rem 1.25rem', background: '#0d0d0d', flexShrink: 0 }}>
             <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-end' }}>
@@ -1161,30 +952,20 @@ export default function WorkspacePage() {
                 value={input}
                 onChange={e => { setInput(e.target.value); e.target.style.height = 'auto'; e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px'; }}
                 onKeyDown={handleKeyDown}
-                placeholder={
-                  hasFiles
-                    ? `Tell Karl what to do with ${queuedFiles.length === 1 ? 'this file' : 'these files'}...`
-                    : sessionReady
-                    ? 'Drop a task, ask Karl anything, or drag a file here...'
-                    : 'Starting up...'
-                }
+                placeholder={sessionReady ? 'Drop a task, ask Karl anything, or give an order...' : 'Starting up...'}
                 disabled={!sessionReady || thinking}
                 rows={1}
-                style={{ flex: 1, background: '#111', border: `1px solid ${hasFiles ? '#2a3a2a' : '#222'}`, borderRadius: '6px', color: '#e5e5e5', fontSize: '0.85rem', padding: '0.6rem 0.75rem', fontFamily: 'monospace', resize: 'none', outline: 'none', lineHeight: 1.5, minHeight: '36px', maxHeight: '120px', overflowY: 'auto', transition: 'border-color 0.15s' }}
-                onFocus={e => (e.target.style.borderColor = hasFiles ? '#4ade80' : '#555')}
-                onBlur={e => (e.target.style.borderColor = hasFiles ? '#2a3a2a' : '#222')}
+                style={{ flex: 1, background: '#111', border: '1px solid #222', borderRadius: '6px', color: '#e5e5e5', fontSize: '0.85rem', padding: '0.6rem 0.75rem', fontFamily: 'monospace', resize: 'none', outline: 'none', lineHeight: 1.5, minHeight: '36px', maxHeight: '120px', overflowY: 'auto', transition: 'border-color 0.15s' }}
+                onFocus={e => (e.target.style.borderColor = '#555')}
+                onBlur={e => (e.target.style.borderColor = '#222')}
               />
               <button
                 onClick={handleSubmit}
-                disabled={!canSend}
-                style={{ background: canSend ? '#1a2a1a' : '#111', border: `1px solid ${canSend ? '#2a4a2a' : '#1a1a1a'}`, color: canSend ? '#4ade80' : '#555', borderRadius: '6px', padding: '0.5rem 1rem', fontSize: '0.8rem', fontFamily: 'monospace', cursor: canSend ? 'pointer' : 'not-allowed', flexShrink: 0, height: '36px', transition: 'all 0.15s' }}
+                disabled={!input.trim() || !sessionReady || thinking}
+                style={{ background: input.trim() && sessionReady && !thinking ? '#1a2a1a' : '#111', border: `1px solid ${input.trim() && sessionReady && !thinking ? '#2a4a2a' : '#1a1a1a'}`, color: input.trim() && sessionReady && !thinking ? '#4ade80' : '#555', borderRadius: '6px', padding: '0.5rem 1rem', fontSize: '0.8rem', fontFamily: 'monospace', cursor: input.trim() && sessionReady && !thinking ? 'pointer' : 'not-allowed', flexShrink: 0, height: '36px', transition: 'all 0.15s' }}
               >send</button>
             </div>
-            <div style={{ color: '#555', fontSize: '0.65rem', marginTop: '0.4rem' }}>
-              {hasFiles
-                ? `${queuedFiles.length} file${queuedFiles.length > 1 ? 's' : ''} queued — tell Karl what to do, then send`
-                : '↵ send · shift+↵ newline · drag file to analyze'}
-            </div>
+            <div style={{ color: '#555', fontSize: '0.65rem', marginTop: '0.4rem' }}>↵ send · shift+↵ newline</div>
           </div>
         </div>
       </div>
