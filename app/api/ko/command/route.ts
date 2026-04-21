@@ -1,6 +1,7 @@
 // app/api/ko/command/route.ts
-// KarlOps L — Command execution route v1.3.0
-// executeRunTemplate: stores run_data (full prompt) not output. No parameters. Clean model.
+// KarlOps L — Command execution route v1.4.0
+// Section-aware template execution. Template = formatting shell. Data = run-time section_data.
+// Stores run_data (full prompt) on extract. No output stored. Regenerate anytime.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createSupabaseAdmin } from '@/lib/supabase-server';
@@ -127,7 +128,6 @@ const EXT_FALLBACK: Record<string, string> = {
 };
 
 // ─── BUCKET LABEL RESOLUTION ──────────────────────────────────────────────────
-// Always from concept registry — never hardcoded
 
 async function resolveBucketLabels(user_id: string): Promise<Record<string, string>> {
   const db = createSupabaseAdmin();
@@ -314,6 +314,222 @@ async function applyFieldOperation(
   const { error } = await db.from(table).update({ [op.field]: op.value }).eq(pk, record_id).eq('user_id', user_id);
   if (error) throw new Error(error.message);
   return `${op.field} updated`;
+}
+
+// ─── SECTION DATA PULLERS ─────────────────────────────────────────────────────
+// One puller per source type. Called per section based on section_data config.
+
+async function pullTasksForSection(
+  user_id: string,
+  scope: Record<string, any>,
+  bucketLabels: Record<string, string>,
+  context_filter?: string | null
+): Promise<string> {
+  const db = createSupabaseAdmin();
+  const buckets: string[] = scope.buckets ?? Object.keys(bucketLabels);
+
+  let q = db.from('task')
+    .select('title, bucket_key, tags, target_date, context:context_id(name), delegatee:delegated_to(name), task_status:task_status_id(label)')
+    .eq('user_id', user_id)
+    .eq('is_completed', false)
+    .eq('is_archived', false)
+    .in('bucket_key', buckets)
+    .order('sort_order', { ascending: true, nullsFirst: false });
+
+  if (scope.context)      q = (q as any).eq('context_id', scope.context);
+  else if (context_filter) q = (q as any).eq('context_id', context_filter);
+  if (scope.tags?.length)  q = (q as any).contains('tags', scope.tags);
+  if (scope.delegated_to)  q = (q as any).eq('delegated_to', scope.delegated_to);
+
+  const { data: tasks } = await q;
+  if (!tasks?.length) return '(no tasks)';
+
+  const today = new Date().toISOString().slice(0, 10);
+  const byBucket: Record<string, string[]> = {};
+
+  for (const t of tasks) {
+    if (!byBucket[t.bucket_key]) byBucket[t.bucket_key] = [];
+    const ctx        = (t.context as any)?.name;
+    const status     = (t.task_status as any)?.label ?? '';
+    const due        = t.target_date ? String(t.target_date).slice(0, 10) : null;
+    const overdue    = due && due < today ? ' [OVERDUE]' : '';
+    const dueStr     = due ? ` · Due: ${due}${overdue}` : '';
+    const ctxStr     = ctx ? ` · ${ctx}` : '';
+    const statusStr  = status ? ` · ${status}` : '';
+    byBucket[t.bucket_key].push(`- ${t.title}${ctxStr}${statusStr}${dueStr}`);
+  }
+
+  return Object.entries(byBucket)
+    .map(([b, items]) => `${bucketLabels[b] ?? b}:\n${items.join('\n')}`)
+    .join('\n\n');
+}
+
+async function pullCompletionsForSection(
+  user_id: string,
+  scope: Record<string, any>,
+  context_filter?: string | null
+): Promise<string> {
+  const db = createSupabaseAdmin();
+  const windowDays = scope.window_days ?? null; // null = no restriction
+
+  let q = db.from('completion')
+    .select('title, completed_at, outcome, tags, context:context_id(name)')
+    .eq('user_id', user_id)
+    .order('completed_at', { ascending: false });
+
+  if (windowDays !== null) {
+    const windowStart = new Date();
+    windowStart.setDate(windowStart.getDate() - windowDays);
+    q = (q as any).gte('completed_at', windowStart.toISOString());
+  }
+
+  if (scope.context)      q = (q as any).eq('context_id', scope.context);
+  else if (context_filter) q = (q as any).eq('context_id', context_filter);
+  if (scope.tags?.length)  q = (q as any).contains('tags', scope.tags);
+
+  const { data: completions } = await q;
+  if (!completions?.length) return '(no completions)';
+
+  return completions.map(c => {
+    const date = String(c.completed_at ?? '').slice(0, 10);
+    const ctx  = (c.context as any)?.name;
+    const ctxStr = ctx ? ` · ${ctx}` : '';
+    return `- ${c.title}${ctxStr} · Completed: ${date}`;
+  }).join('\n');
+}
+
+async function pullMeetingsForSection(
+  user_id: string,
+  scope: Record<string, any>,
+  context_filter?: string | null
+): Promise<string> {
+  const db = createSupabaseAdmin();
+  const windowDays = scope.window_days ?? null; // null = no restriction
+
+  let q = db.from('meeting')
+    .select('title, meeting_date, attendees, outcome, notes, context:context_id(name)')
+    .eq('user_id', user_id)
+    .order('meeting_date', { ascending: false })
+    .limit(50);
+
+  if (windowDays !== null) {
+    const windowStart = new Date();
+    windowStart.setDate(windowStart.getDate() - windowDays);
+    q = (q as any).gte('meeting_date', windowStart.toISOString().slice(0, 10));
+  }
+
+  if (scope.completed_only) q = (q as any).eq('is_completed', true);
+  if (scope.context)        q = (q as any).eq('context_id', scope.context);
+  else if (context_filter)  q = (q as any).eq('context_id', context_filter);
+  if (scope.attendee)       q = (q as any).contains('attendees', [scope.attendee]);
+  if (scope.tags?.length)   q = (q as any).contains('tags', scope.tags);
+
+  const { data: meetings } = await q;
+  if (!meetings?.length) return '(no meetings)';
+
+  return meetings.map(m => {
+    const date   = String(m.meeting_date ?? '').slice(0, 10);
+    const att    = m.attendees?.length ? ` · ${m.attendees.join(', ')}` : '';
+    const ctx    = (m.context as any)?.name;
+    const ctxStr = ctx ? ` · ${ctx}` : '';
+    let line = `- ${m.title}${att}${ctxStr} · ${date}`;
+    if (m.outcome) line += `\n  ${m.outcome}`;
+    return line;
+  }).join('\n');
+}
+
+async function pullReferencesForSection(user_id: string, scope: Record<string, any>): Promise<string> {
+  const db = createSupabaseAdmin();
+  const limit = scope.limit ?? 10;
+  let q = db.from('external_reference')
+    .select('title, description')
+    .eq('user_id', user_id)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (scope.tags?.length) q = (q as any).contains('tags', scope.tags);
+  const { data: refs } = await q;
+  if (!refs?.length) return '(no references)';
+  return refs.map(r => `- ${r.title}${r.description ? ` — ${r.description}` : ''}`).join('\n');
+}
+
+async function pullSituationForSection(user_id: string): Promise<string> {
+  const db = createSupabaseAdmin();
+  const { data } = await db.from('user_situation').select('brief').eq('user_id', user_id).eq('is_active', true).maybeSingle();
+  return data?.brief?.trim() ?? '(no situation brief)';
+}
+
+async function pullContactsForSection(user_id: string, scope: Record<string, any>): Promise<string> {
+  const db = createSupabaseAdmin();
+  const limit = scope.limit ?? 20;
+  const { data: contacts } = await db.from('contact').select('name, notes').eq('user_id', user_id).eq('is_archived', false).order('name').limit(limit);
+  if (!contacts?.length) return '(no contacts)';
+  return contacts.map(c => `- ${c.name}${c.notes ? ` — ${c.notes.slice(0, 100)}` : ''}`).join('\n');
+}
+
+// ─── STUB DATA GENERATOR ──────────────────────────────────────────────────────
+// For preview mode — generates realistic fake data per section source
+// so users can validate template formatting without needing real data
+
+function generateStubForSection(
+  source: string,
+  bucketLabels: Record<string, string>
+): string {
+  const today = new Date().toISOString().slice(0, 10);
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const lastWeek  = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+  const overdue   = new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10);
+
+  const bucketKeys = Object.keys(bucketLabels);
+  const firstBucket  = bucketKeys[0] ?? 'now';
+  const secondBucket = bucketKeys[1] ?? 'soon';
+  const firstLabel   = bucketLabels[firstBucket] ?? firstBucket;
+  const secondLabel  = bucketLabels[secondBucket] ?? secondBucket;
+
+  switch (source) {
+    case 'tasks':
+      return [
+        `${firstLabel}:`,
+        `- Sample Task A · Project Alpha · Active · Due: ${today}`,
+        `- Sample Task B · Project Beta · Waiting · Due: ${overdue} [OVERDUE]`,
+        '',
+        `${secondLabel}:`,
+        `- Sample Task C · Project Alpha · Active · Due: ${lastWeek} [OVERDUE]`,
+        `- Sample Task D · No context · Active`,
+      ].join('\n');
+
+    case 'completions':
+      return [
+        `- Completed Item A · Project Alpha · Completed: ${today}`,
+        `- Completed Item B · Project Beta · Completed: ${yesterday}`,
+        `- Completed Item C · No context · Completed: ${lastWeek}`,
+      ].join('\n');
+
+    case 'meetings':
+      return [
+        `- Weekly Sync · Alice, Bob · ${today}`,
+        `  Discussed roadmap priorities and upcoming deadlines`,
+        `- Project Kickoff · Alice, Carol, Dave · ${yesterday}`,
+        `  Aligned on scope and initial deliverables`,
+      ].join('\n');
+
+    case 'references':
+      return [
+        `- Sample Reference Document — Overview of key project guidelines`,
+        `- Another Reference — Supporting materials for Q2 planning`,
+      ].join('\n');
+
+    case 'situation':
+      return `Sample situation brief: Currently focused on Q2 delivery with active projects across multiple contexts. Key priorities are tracking against deadlines and managing delegated work.`;
+
+    case 'contacts':
+      return [
+        `- Alice Smith — Project lead, primary stakeholder`,
+        `- Bob Jones — Engineering, available for technical review`,
+      ].join('\n');
+
+    default:
+      return `(stub data for ${source})`;
+  }
 }
 
 // ─── ACTION EXECUTORS ─────────────────────────────────────────────────────────
@@ -551,7 +767,7 @@ async function executeSaveAsTemplate(
     description:     fields.description?.trim() ?? null,
     doc_type:        fields.doc_type?.trim() ?? '',
     prompt_template: fields.prompt_template?.trim() ?? '',
-    data_sources:    fields.data_sources ?? {},
+    sections:        fields.sections ?? [],
     output_format:   fields.output_format ?? 'md',
     tags:            fields.tags ?? [],
     is_system:       false,
@@ -562,18 +778,18 @@ async function executeSaveAsTemplate(
   writeKarlObservation(user_id, `Saved template: "${name}"`, 'pattern').catch(() => {});
 
   return {
-    response: `📄 Template **${name}** saved. Run it anytime — say "run TM" followed by its number, or open Templates to preview first.`,
+    response: `📄 Template **${name}** saved. Run it anytime — say "run TM" followed by its number, or open Templates to configure it first.`,
     refresh: true,
     offer_open_templates: true,
   };
 }
 
 // ─── EXECUTE RUN TEMPLATE ─────────────────────────────────────────────────────
-// v1.3.0 — Clean model:
-// - Template = display instructions only (prompt_template + data_sources scope)
-// - Extract = stores the full prompt used (run_data) — NOT the output
-// - Output shown in chat only. Regenerate anytime from run_data.
-// - No parameters column. No output storage. Recipe-based reproducibility.
+// v1.4.0 — Section-aware execution.
+// Template = formatting shell (prompt_template + sections[]).
+// Data = pulled at run time per section using section_data from the action.
+// Preview mode = stub data only, validates formatting, never saves.
+// Save mode = real data, stores run_data (full prompt) on extract. No output stored.
 
 async function executeRunTemplate(
   user_id: string,
@@ -603,154 +819,119 @@ async function executeRunTemplate(
 
   const { data: template } = await db
     .from('document_template')
-    .select('name, description, doc_type, prompt_template, data_sources, output_format')
+    .select('name, description, prompt_template, sections, output_format')
     .eq('document_template_id', templateId)
     .single();
 
   if (!template) throw new Error('Template not found');
-  if (!template.prompt_template) throw new Error('Template has no generation instructions. Open Templates to add them.');
+  if (!template.prompt_template) throw new Error('Template has no formatting instructions. Open Templates to add them.');
 
-  // ── Pull data from data_sources ───────────────────────────────────────────
-  const ds = (template.data_sources ?? {}) as any;
-  const dataParts: string[] = [];
+  const sections: Array<{ key: string; label: string; source: string; format: string }> =
+    Array.isArray(template.sections) ? template.sections : [];
+
+  const isPreview   = action.run_mode === 'preview' || !action.run_mode;
+  const sectionData = action.section_data ?? {};
   const bucketLabels = await resolveBucketLabels(user_id);
 
-  if (ds.situation !== false) {
-    const { data: sit } = await db
-      .from('user_situation').select('brief')
-      .eq('user_id', user_id).eq('is_active', true).maybeSingle();
-    if (sit?.brief) dataParts.push(`## Situation\n${sit.brief}`);
-  }
+  // ── Build section data blocks ─────────────────────────────────────────────
+  const sectionBlocks: string[] = [];
 
-  if (ds.tasks !== false) {
-    const buckets: string[] = ds.tasks?.buckets ?? Object.keys(bucketLabels);
-    let q = db.from('task')
-      .select('title, bucket_key, tags, target_date, context:context_id(name), delegatee:delegated_to(name)')
-      .eq('user_id', user_id).eq('is_completed', false).eq('is_archived', false)
-      .in('bucket_key', buckets)
-      .order('sort_order', { ascending: true, nullsFirst: false });
-    if (ds.tasks?.context)       q = (q as any).eq('context_id', ds.tasks.context);
-    if (context_filter)          q = (q as any).eq('context_id', context_filter);
-    if (ds.tasks?.tags?.length)  q = (q as any).contains('tags', ds.tasks.tags);
-    if (ds.tasks?.delegated_to)  q = (q as any).eq('delegated_to', ds.tasks.delegated_to);
-    const { data: tasks } = await q;
-    if (tasks?.length) {
-      const byBucket: Record<string, string[]> = {};
-      for (const t of tasks) {
-        if (!byBucket[t.bucket_key]) byBucket[t.bucket_key] = [];
-        const tagStr      = t.tags?.length ? ` [${t.tags.join(', ')}]` : '';
-        const dateStr     = t.target_date ? ` · due ${String(t.target_date).slice(0, 10)}` : '';
-        const ctxStr      = (t.context as any)?.name ? ` · ${(t.context as any).name}` : '';
-        const delegateStr = (t.delegatee as any)?.name ? ` · delegated_to:${(t.delegatee as any).name}` : '';
-        byBucket[t.bucket_key].push(`- ${t.title}${tagStr}${dateStr}${ctxStr}${delegateStr}`);
+  if (sections.length > 0) {
+    // New section-aware path
+    for (const section of sections) {
+      const scope = sectionData[section.key] ?? {};
+      let sectionContent: string;
+
+      if (isPreview) {
+        // Preview = stub data to validate formatting
+        sectionContent = generateStubForSection(section.source, bucketLabels);
+      } else {
+        // Real run = pull actual data per section scope
+        switch (section.source) {
+          case 'tasks':
+            sectionContent = await pullTasksForSection(user_id, scope, bucketLabels, context_filter);
+            break;
+          case 'completions':
+            sectionContent = await pullCompletionsForSection(user_id, scope, context_filter);
+            break;
+          case 'meetings':
+            sectionContent = await pullMeetingsForSection(user_id, scope, context_filter);
+            break;
+          case 'references':
+            sectionContent = await pullReferencesForSection(user_id, scope);
+            break;
+          case 'situation':
+            sectionContent = await pullSituationForSection(user_id);
+            break;
+          case 'contacts':
+            sectionContent = await pullContactsForSection(user_id, scope);
+            break;
+          default:
+            sectionContent = `(unknown source: ${section.source})`;
+        }
       }
-      const taskLines = Object.entries(byBucket)
-        .map(([b, items]) => `${bucketLabels[b] ?? b}:\n${items.join('\n')}`)
-        .join('\n\n');
-      dataParts.push(`## Tasks\n${taskLines}`);
+
+      sectionBlocks.push(
+        `[${section.key}] ${section.label}\nFormat: ${section.format}\nData:\n${sectionContent}`
+      );
+    }
+  } else {
+    // Legacy path — no sections defined, pull everything with defaults
+    console.log('[executeRunTemplate] no sections defined — using legacy full pull');
+    const today = new Date().toISOString().slice(0, 10);
+
+    if (isPreview) {
+      sectionBlocks.push(`[ALL DATA - STUB]\n${generateStubForSection('tasks', bucketLabels)}\n\n${generateStubForSection('meetings', bucketLabels)}\n\n${generateStubForSection('completions', bucketLabels)}`);
+    } else {
+      // Pull everything with no filters
+      const [tasksData, completionsData, meetingsData] = await Promise.all([
+        pullTasksForSection(user_id, { buckets: Object.keys(bucketLabels) }, bucketLabels, context_filter),
+        pullCompletionsForSection(user_id, {}, context_filter),
+        pullMeetingsForSection(user_id, {}, context_filter),
+      ]);
+      if (tasksData !== '(no tasks)')       sectionBlocks.push(`Tasks:\n${tasksData}`);
+      if (meetingsData !== '(no meetings)') sectionBlocks.push(`Meetings:\n${meetingsData}`);
+      if (completionsData !== '(no completions)') sectionBlocks.push(`Completions:\n${completionsData}`);
     }
   }
 
-  if (ds.completions !== false) {
-    const windowDays = ds.completions?.window_days ?? 7;
-    const windowStart = new Date();
-    windowStart.setDate(windowStart.getDate() - windowDays);
-    let q = db.from('completion')
-      .select('title, completed_at, outcome, description, tags, context:context_id(name)')
-      .eq('user_id', user_id).gte('completed_at', windowStart.toISOString())
-      .order('completed_at', { ascending: false });
-    if (ds.completions?.context)      q = (q as any).eq('context_id', ds.completions.context);
-    if (context_filter)               q = (q as any).eq('context_id', context_filter);
-    if (ds.completions?.tags?.length) q = (q as any).contains('tags', ds.completions.tags);
-    const { data: completions } = await q;
-    if (completions?.length) {
-      const lines = completions.map(c => {
-        const date   = String(c.completed_at ?? '').slice(0, 10);
-        const ctx    = (c.context as any)?.name;
-        const tags   = c.tags?.length ? ` [${c.tags.join(', ')}]` : '';
-        const ctxStr = ctx ? ` · ${ctx}` : '';
-        let line = `- [${date}] ${c.title}${tags}${ctxStr}`;
-        if (c.outcome)     line += `\n  Outcome: ${c.outcome}`;
-        if (c.description) line += `\n  Notes: ${c.description}`;
-        return line;
-      }).join('\n');
-      dataParts.push(`## Completions (last ${windowDays} days)\n${lines}`);
-    }
-  }
+  const dataBlock = sectionBlocks.join('\n\n') || 'No data available.';
 
-  if (ds.meetings !== false) {
-    const windowDays    = ds.meetings?.window_days ?? 30;
-    const windowStart   = new Date();
-    windowStart.setDate(windowStart.getDate() - windowDays);
-    const completedOnly = ds.meetings?.completed_only ?? false;
-    let q = db.from('meeting')
-      .select('title, meeting_date, attendees, tags, outcome, notes, context:context_id(name)')
-      .eq('user_id', user_id)
-      .gte('meeting_date', windowStart.toISOString().slice(0, 10))
-      .order('meeting_date', { ascending: false }).limit(20);
-    if (completedOnly)             q = (q as any).eq('is_completed', true);
-    if (ds.meetings?.context)      q = (q as any).eq('context_id', ds.meetings.context);
-    if (context_filter)            q = (q as any).eq('context_id', context_filter);
-    if (ds.meetings?.attendee)     q = (q as any).contains('attendees', [ds.meetings.attendee]);
-    if (ds.meetings?.tags?.length) q = (q as any).contains('tags', ds.meetings.tags);
-    const { data: meetings } = await q;
-    if (meetings?.length) {
-      const lines = meetings.map(m => {
-        const date   = String(m.meeting_date ?? '').slice(0, 10);
-        const att    = m.attendees?.length ? ` · ${m.attendees.join(', ')}` : '';
-        const ctx    = (m.context as any)?.name;
-        const ctxStr = ctx ? ` · ${ctx}` : '';
-        let line = `- [${date}] ${m.title}${att}${ctxStr}`;
-        if (m.outcome) line += `\n  Outcome: ${m.outcome}`;
-        if (m.notes)   line += `\n  Notes: ${m.notes.slice(0, 500)}`;
-        return line;
-      }).join('\n');
-      dataParts.push(`## Meetings (last ${windowDays} days)\n${lines}`);
-    }
-  }
-
-  if (ds.references === true) {
-    const { data: refs } = await db.from('external_reference')
-      .select('title, description')
-      .eq('user_id', user_id)
-      .order('created_at', { ascending: false }).limit(10);
-    if (refs?.length) {
-      const lines = refs.map(r => `- ${r.title}${r.description ? ` — ${r.description}` : ''}`).join('\n');
-      dataParts.push(`## References\n${lines}`);
-    }
-  }
-
-  const dataBlock = dataParts.join('\n\n') || 'No data available.';
-
-  // ── Assemble the full prompt ───────────────────────────────────────────────
-  // This is the complete recipe — stored as run_data in the extract
+  // ── Build concept registry hints ──────────────────────────────────────────
   const bundle = await buildKarlContext(user_id, context_filter);
   const conceptHints = bundle.conceptRegistry.length
-    ? 'Concept registry (use these labels and icons only — never your own):\n' +
+    ? 'Concept registry (use these labels and icons only):\n' +
       bundle.conceptRegistry
         .filter(c => c.concept_type !== 'action')
         .map(c => `  ${c.icon ?? ''} = ${c.label} (key: ${c.concept_key})`)
         .join('\n')
     : '';
 
+  // ── Assemble the full prompt ───────────────────────────────────────────────
+  const today = new Date().toISOString().slice(0, 10);
   const fullPrompt = [
     `Template: ${template.name}`,
     template.description ? `Purpose: ${template.description}` : '',
+    `Date: ${today}`,
     '',
-    'Generation Instructions:',
+    'Formatting Instructions:',
     template.prompt_template,
     '',
     conceptHints,
     '',
-    'Data:',
+    isPreview ? 'NOTE: This is a FORMATTING PREVIEW using stub data. Show the layout only.' : '',
+    '',
+    'Section Data:',
     dataBlock,
-  ].filter(Boolean).join('\n');
+  ].filter(s => s !== undefined && s !== null).join('\n').trim();
 
-  // ── Generate ──────────────────────────────────────────────────────────────
+  // ── Generate output ───────────────────────────────────────────────────────
   const systemPrompt = `You are Karl, generating a document for a KarlOps user.
-Follow the generation instructions exactly. Use only the data provided — do not invent data.
+Follow the formatting instructions exactly. Use only the section data provided — do not invent data beyond what is given.
+${isPreview ? 'This is a formatting preview — use the stub data as-is to demonstrate the layout.' : ''}
 Format the output in ${template.output_format ?? 'md'}.
 Use concept registry labels and icons for section headers. Never use hardcoded labels or icons.
+Replace {date} in the template with today's date: ${today}.
 Return ONLY the document content — no preamble, no explanation, no code fences.`;
 
   const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -777,34 +958,46 @@ Return ONLY the document content — no preamble, no explanation, no code fences
     cache_read: usage.cache_read_input_tokens ?? 0,
   });
 
+  if (data.error) {
+    console.error('[executeRunTemplate] Anthropic error:', JSON.stringify(data.error));
+    throw new Error(`Generation failed: ${data.error.message ?? 'unknown error'}`);
+  }
+
   const output = data.content?.[0]?.text ?? '';
   if (!output) throw new Error('Template run produced no output');
 
-  // ── Save extract — run_data only, no output stored ────────────────────────
-  if (action.run_mode === 'save') {
-    const dateStr = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-    const { error } = await db.from('external_reference').insert({
-      user_id,
-      title:                `${template.name} — ${dateStr}`,
-      description:          template.description ?? null,
-      filename:             `${template.name.toLowerCase().replace(/\s+/g, '-')}-${new Date().toISOString().slice(0, 10)}.md`,
-      location:             'generated',
-      run_data:             fullPrompt,
-      document_template_id: templateId,
-      ref_type:             'generated',
-      tags:                 [],
-    });
-    if (error) throw new Error(error.message);
-    writeKarlObservation(user_id, `Ran template "${template.name}" → saved extract (run_data only, no output stored)`, 'pattern').catch(() => {});
+  // Preview — show in chat, never save
+  if (isPreview) {
+    writeKarlObservation(user_id, `Previewed template "${template.name}" (formatting check, stub data)`, 'pattern').catch(() => {});
     return {
-      response: `📄 **${template.name}** generated and saved to Extracts. Output shown below — regenerate anytime from the saved prompt.`,
-      refresh: true,
+      response: `Here is a formatting preview of **${template.name}** using sample data:`,
+      refresh: false,
       template_output: output,
     };
   }
 
-  writeKarlObservation(user_id, `Ran template "${template.name}" → previewed in chat`, 'pattern').catch(() => {});
-  return { response: `Here is your **${template.name}** preview:`, refresh: false, template_output: output };
+  // Save — store run_data (the full prompt) on the extract, not the output
+  const dateStr = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  const { error: saveError } = await db.from('external_reference').insert({
+    user_id,
+    title:                `${template.name} — ${dateStr}`,
+    description:          template.description ?? null,
+    filename:             `${template.name.toLowerCase().replace(/\s+/g, '-')}-${today}.md`,
+    location:             'generated',
+    run_data:             fullPrompt,
+    section_data:         Object.keys(sectionData).length > 0 ? sectionData : null,
+    document_template_id: templateId,
+    ref_type:             'generated',
+    tags:                 [],
+  });
+  if (saveError) throw new Error(saveError.message);
+
+  writeKarlObservation(user_id, `Ran template "${template.name}" → saved extract (run_data stored, no output)`, 'pattern').catch(() => {});
+  return {
+    response: `📄 **${template.name}** generated and saved to Extracts. Output shown below — regenerate anytime from the saved prompt.`,
+    refresh: true,
+    template_output: output,
+  };
 }
 
 // ─── DISPATCH SINGLE ACTION ───────────────────────────────────────────────────
@@ -851,7 +1044,7 @@ async function executeActions(
       results.push(result);
     } catch (err: any) {
       const message = err.message ?? 'Unknown error';
-      console.error(`[executeActions] ${action.action} ${action.object_type} failed:`, message);
+      console.error(`[executeActions] ${action.action} ${action.object_type ?? ''} failed:`, message);
       if (isKnowledgeFailure(message)) {
         logError(user_id, 'command', `${action.action} ${action.object_type ?? ''}`, 'knowledge', message, action as any).catch(() => {});
         karlLearnFromFailure(user_id, action, message).catch(() => {});
