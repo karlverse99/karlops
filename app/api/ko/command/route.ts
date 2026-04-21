@@ -1192,11 +1192,18 @@ export async function POST(req: NextRequest) {
     if (result.intent === 'execute' && result.actions?.length) {
       return executeActions(user.id, result.actions, context_filter);
     }
-
-    if (result.intent === 'confirm_pending' && pending) {
-      const actions = flattenLegacyPending(pending);
-      return executeActions(user.id, actions, context_filter);
+if (result.intent === 'confirm_pending' && pending) {
+  const actions = flattenLegacyPending(pending);
+  // If confirming a run_template, always force run_mode to save
+  // A preview action should never be executed directly
+  const safeActions = actions.map(a => {
+    if (a.action === 'run_template') {
+      return { ...a, run_mode: 'save' as const };
     }
+    return a;
+  });
+  return executeActions(user.id, safeActions, context_filter);
+}
 
     if (result.intent === 'cancel_pending') {
       return NextResponse.json({ success: true, intent: 'cancel_pending', response: result.response ?? 'Cancelled.' });
