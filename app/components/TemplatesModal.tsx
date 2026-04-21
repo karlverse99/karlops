@@ -12,6 +12,7 @@ interface Template {
   description: string | null;
   doc_type: string | null;
   prompt_template: string;
+  data_sources: DataSources;
   output_format: string;
   tags: string[];
   is_system: boolean;
@@ -21,8 +22,17 @@ interface Template {
   created_at: string;
 }
 
+interface DataSources {
+  situation?: boolean;
+  tasks?: { buckets: string[]; context: string | null; tags: string[] } | false;
+  completions?: { window_days: number; context: string | null; tags: string[] } | false;
+  meetings?: { window_days: number; completed_only: boolean } | false;
+  references?: boolean;
+}
+
 interface AssistMessage { role: 'user' | 'assistant'; content: string; }
 
+// Concept registry entry — matches ConceptEntry from buildKarlContext
 interface ConceptEntry {
   concept_key: string;
   concept_type: string;
@@ -37,7 +47,6 @@ interface TemplatesModalProps {
   accessToken: string;
   onClose: () => void;
   onCountChange?: (count: number) => void;
-  onOpenExtracts?: (templateId: string) => void;
 }
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
@@ -46,19 +55,151 @@ const ACCENT        = '#14b8a6';
 const ACCENT_BG     = '#f0fdfa';
 const ACCENT_BORDER = '#99f6e4';
 
+// Fallback bucket keys if registry not loaded yet
+const BUCKET_KEYS_FALLBACK = ['now', 'soon', 'realwork', 'later', 'delegate', 'capture'];
+
+const DEFAULT_DS: DataSources = {
+  situation:   true,
+  tasks:       { buckets: ['now', 'soon', 'realwork'], context: null, tags: [] },
+  completions: { window_days: 30, context: null, tags: [] },
+  meetings:    { window_days: 30, completed_only: true },
+  references:  false,
+};
+
 // ─── CONCEPT REGISTRY HELPERS ─────────────────────────────────────────────────
 
+function getBucketIcon(concepts: ConceptEntry[], bucketKey: string): string {
+  const found = concepts.find(c => c.concept_type === 'bucket' && c.concept_key === `bucket_${bucketKey}`);
+  return found?.icon ?? '';
+}
+
+function getBucketLabel(concepts: ConceptEntry[], bucketKey: string): string {
+  const found = concepts.find(c => c.concept_type === 'bucket' && c.concept_key === `bucket_${bucketKey}`);
+  return found?.label ?? bucketKey;
+}
+
 function getObjectIcon(concepts: ConceptEntry[], key: string): string {
-  return concepts.find(c => c.concept_type === 'object' && c.concept_key === key)?.icon ?? '';
+  const found = concepts.find(c => c.concept_type === 'object' && c.concept_key === key);
+  return found?.icon ?? '';
 }
 
 function getObjectLabel(concepts: ConceptEntry[], key: string): string {
-  return concepts.find(c => c.concept_type === 'object' && c.concept_key === key)?.label ?? key;
+  const found = concepts.find(c => c.concept_type === 'object' && c.concept_key === key);
+  return found?.label ?? key;
+}
+
+// ─── DATA SOURCES EDITOR ──────────────────────────────────────────────────────
+
+function DataSourcesEditor({
+  ds,
+  onChange,
+  concepts,
+}: {
+  ds: DataSources;
+  onChange: (ds: DataSources) => void;
+  concepts: ConceptEntry[];
+}) {
+  const hasTasks       = !!ds.tasks;
+  const hasCompletions = !!ds.completions;
+  const hasMeetings    = !!ds.meetings;
+
+  // Use registry bucket order/labels if available, fallback to hardcoded keys
+  const bucketOpts = concepts.filter(c => c.concept_type === 'bucket').map(c => ({
+    key:   c.concept_key.replace('bucket_', ''),
+    label: c.label,
+    icon:  c.icon ?? '',
+  }));
+  if (!bucketOpts.length) {
+    BUCKET_KEYS_FALLBACK.forEach(k => bucketOpts.push({ key: k, label: k, icon: '' }));
+  }
+
+  const toggle = (key: keyof DataSources, defaultVal: any) => {
+    const next = { ...ds };
+    if (next[key]) { (next as any)[key] = false; }
+    else           { (next as any)[key] = defaultVal; }
+    onChange(next);
+  };
+
+  const row = (label: string, active: boolean, onToggle: () => void, children?: React.ReactNode) => (
+    <div style={{ marginBottom: '0.6rem' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: active && children ? '0.35rem' : 0 }}>
+        <div onClick={onToggle} style={{ width: 14, height: 14, border: `1px solid ${active ? ACCENT : '#444'}`, borderRadius: 3, background: active ? ACCENT : 'transparent', cursor: 'pointer', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          {active && <span style={{ color: '#000', fontSize: 9, fontWeight: 700 }}>✓</span>}
+        </div>
+        <span style={{ color: active ? '#111' : '#888', fontSize: '0.75rem' }}>{label}</span>
+      </div>
+      {active && children && (
+        <div style={{ marginLeft: '1.5rem', padding: '0.4rem 0.6rem', background: '#fafafa', border: '1px solid #e5e7eb', borderRadius: 4 }}>
+          {children}
+        </div>
+      )}
+    </div>
+  );
+
+  const completionLabel = getObjectLabel(concepts, 'completion') || 'Completions';
+  const meetingLabel    = getObjectLabel(concepts, 'meeting')    || 'Meetings';
+  const completionIcon  = getObjectIcon(concepts, 'completion');
+  const meetingIcon     = getObjectIcon(concepts, 'meeting');
+  const situationIcon   = '📋';
+
+  return (
+    <div>
+      {row(`${situationIcon} Situation brief`, !!ds.situation, () => toggle('situation', true))}
+
+      {row('✅ Tasks', hasTasks, () => toggle('tasks', { buckets: ['now', 'soon', 'realwork'], context: null, tags: [] }),
+        hasTasks && typeof ds.tasks === 'object' ? (
+          <div>
+            <div style={{ color: '#666', fontSize: '0.62rem', marginBottom: '0.3rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Buckets</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.25rem' }}>
+              {bucketOpts.map(b => {
+                const active = (ds.tasks as any).buckets?.includes(b.key);
+                return (
+                  <button key={b.key} onClick={() => {
+                    const cur  = (ds.tasks as any).buckets ?? [];
+                    const next = active ? cur.filter((x: string) => x !== b.key) : [...cur, b.key];
+                    onChange({ ...ds, tasks: { ...(ds.tasks as any), buckets: next } });
+                  }} style={{ background: active ? ACCENT_BG : 'transparent', border: `1px solid ${active ? ACCENT : '#333'}`, color: active ? ACCENT : '#555', padding: '0.12rem 0.4rem', borderRadius: 3, fontSize: '0.65rem', fontFamily: 'monospace', cursor: 'pointer' }}>
+                    {b.icon} {b.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : null
+      )}
+
+      {row(`${completionIcon} ${completionLabel}`, hasCompletions, () => toggle('completions', { window_days: 30, context: null, tags: [] }),
+        hasCompletions && typeof ds.completions === 'object' ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <span style={{ color: '#666', fontSize: '0.65rem' }}>Last</span>
+            <input type="number" min={1} max={365} value={(ds.completions as any).window_days}
+              onChange={e => onChange({ ...ds, completions: { ...(ds.completions as any), window_days: parseInt(e.target.value) || 30 } })}
+              style={{ width: 50, background: '#f5f5f5', border: '1px solid #ddd', color: '#222', padding: '0.2rem 0.4rem', borderRadius: 3, fontFamily: 'monospace', fontSize: '0.75rem', outline: 'none' }} />
+            <span style={{ color: '#666', fontSize: '0.65rem' }}>days</span>
+          </div>
+        ) : null
+      )}
+
+      {row(`${meetingIcon} ${meetingLabel}`, hasMeetings, () => toggle('meetings', { window_days: 30, completed_only: true }),
+        hasMeetings && typeof ds.meetings === 'object' ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <span style={{ color: '#666', fontSize: '0.65rem' }}>Last</span>
+            <input type="number" min={1} max={365} value={(ds.meetings as any).window_days}
+              onChange={e => onChange({ ...ds, meetings: { ...(ds.meetings as any), window_days: parseInt(e.target.value) || 30 } })}
+              style={{ width: 50, background: '#f5f5f5', border: '1px solid #ddd', color: '#222', padding: '0.2rem 0.4rem', borderRadius: 3, fontFamily: 'monospace', fontSize: '0.75rem', outline: 'none' }} />
+            <span style={{ color: '#666', fontSize: '0.65rem' }}>days</span>
+          </div>
+        ) : null
+      )}
+
+      {row('🔗 References', !!ds.references, () => toggle('references', true))}
+    </div>
+  );
 }
 
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
 
-export default function TemplatesModal({ userId, accessToken, onClose, onCountChange, onOpenExtracts }: TemplatesModalProps) {
+export default function TemplatesModal({ userId, accessToken, onClose, onCountChange }: TemplatesModalProps) {
 
   // ── State ──────────────────────────────────────────────────────────────────
   const [templates, setTemplates]   = useState<Template[]>([]);
@@ -67,19 +208,20 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const [isNew, setIsNew]           = useState(false);
   const [search, setSearch]         = useState('');
   const [filterType, setFilterType] = useState<'all' | 'system' | 'mine'>('all');
-  const [concepts, setConcepts]     = useState<ConceptEntry[]>([]);
-  const [extractCounts, setExtractCounts] = useState<Record<string, number>>({});
 
-  // Inline delete confirm
-  const [deleteConfirm, setDeleteConfirm] = useState(false);
+  // Concept registry — loaded once on mount
+  const [concepts, setConcepts] = useState<ConceptEntry[]>([]);
 
   // Edit state
-  const [editName, setEditName]                 = useState('');
-  const [editDesc, setEditDesc]                 = useState('');
-  const [editFormat, setEditFormat]             = useState('md');
+  const [editName, setEditName]           = useState('');
+  const [editDesc, setEditDesc]           = useState('');
+  const [editDocType, setEditDocType]     = useState('');
+  const [editFormat, setEditFormat]       = useState('markdown');
+  const [editDs, setEditDs]               = useState<DataSources>(DEFAULT_DS);
   const [editInstructions, setEditInstructions] = useState('');
-  const [saving, setSaving]                     = useState(false);
-  const [saveErr, setSaveErr]                   = useState('');
+  const [showInstructions, setShowInstructions] = useState(false);
+  const [saving, setSaving]               = useState(false);
+  const [saveErr, setSaveErr]             = useState('');
 
   // Run/preview state
   const [running, setRunning]           = useState(false);
@@ -90,8 +232,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const [savingToRefs, setSavingToRefs] = useState(false);
   const [savedToRefs, setSavedToRefs]   = useState(false);
 
-  // Karl Assist — collapsed by default, expands on button click
-  const [assistOpen, setAssistOpen]       = useState(false);
+  // Assist state
   const [assistInput, setAssistInput]     = useState('');
   const [assistHistory, setAssistHistory] = useState<AssistMessage[]>([]);
   const [assistLoading, setAssistLoading] = useState(false);
@@ -101,22 +242,21 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const initY = Math.max(0, Math.round(window.innerHeight / 2 - 390));
   const [pos, setPos]   = useState({ x: initX, y: initY });
   const [size, setSize] = useState({ w: 1100, h: 780 });
-  const [leftW, setLeftW] = useState(300);
 
-  const leftDragging    = useRef(false);
-  const leftDragStart   = useRef({ mx: 0, w: 0 });
-  const dragging        = useRef(false);
-  const resizing        = useRef(false);
-  const dragStart       = useRef({ x: 0, y: 0, px: 0, py: 0 });
-  const resizeStart     = useRef({ x: 0, y: 0, w: 0, h: 0 });
-  const assistBottomRef = useRef<HTMLDivElement>(null);
+  const [leftW, setLeftW]     = useState(300);
+  const leftDragging          = useRef(false);
+  const leftDragStart         = useRef({ mx: 0, w: 0 });
+  const dragging              = useRef(false);
+  const resizing              = useRef(false);
+  const dragStart             = useRef({ x: 0, y: 0, px: 0, py: 0 });
+  const resizeStart           = useRef({ x: 0, y: 0, w: 0, h: 0 });
+  const assistBottomRef       = useRef<HTMLDivElement>(null);
 
   // ── Data ───────────────────────────────────────────────────────────────────
 
   useEffect(() => {
     loadTemplates();
     loadConceptRegistry();
-    loadExtractCounts();
   }, []);
 
   useEffect(() => {
@@ -136,10 +276,18 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     setLoading(false);
   };
 
+  // Load concept registry — join through ko_user to get implementation_type
   const loadConceptRegistry = async () => {
     try {
-      const { data: koUser } = await supabase.from('ko_user').select('implementation_type').eq('id', userId).maybeSingle();
+      // Get implementation_type for this user
+      const { data: koUser } = await supabase
+        .from('ko_user')
+        .select('implementation_type')
+        .eq('id', userId)
+        .maybeSingle();
+
       const implType = koUser?.implementation_type ?? 'personal';
+
       const { data } = await supabase
         .from('concept_registry')
         .select('concept_key, concept_type, label, icon, description, display_order')
@@ -147,28 +295,11 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
         .eq('is_active', true)
         .order('concept_type')
         .order('display_order');
+
       if (data) setConcepts(data as ConceptEntry[]);
     } catch (err) {
       console.error('[TemplatesModal] concept registry load failed:', err);
-    }
-  };
-
-  const loadExtractCounts = async () => {
-    try {
-      const { data } = await supabase
-        .from('external_reference')
-        .select('document_template_id')
-        .eq('user_id', userId)
-        .not('document_template_id', 'is', null);
-      const counts: Record<string, number> = {};
-      for (const row of data ?? []) {
-        if (row.document_template_id) {
-          counts[row.document_template_id] = (counts[row.document_template_id] ?? 0) + 1;
-        }
-      }
-      setExtractCounts(counts);
-    } catch (err) {
-      console.error('[TemplatesModal] extract counts load failed:', err);
+      // Non-fatal — modal works fine without it, just no icons
     }
   };
 
@@ -196,22 +327,20 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   // ── Handlers ───────────────────────────────────────────────────────────────
 
   const selectTemplate = (t: Template) => {
-    setSelected(t); setIsNew(false); setDeleteConfirm(false);
-    setEditName(t.name);
-    setEditDesc(t.description ?? '');
-    setEditFormat(t.output_format === 'markdown' ? 'md' : (t.output_format ?? 'md'));
+    setSelected(t); setIsNew(false);
+    setEditName(t.name); setEditDesc(t.description ?? ''); setEditDocType(t.doc_type ?? '');
+    setEditFormat(t.output_format ?? 'markdown'); setEditDs(t.data_sources ?? DEFAULT_DS);
     setEditInstructions(t.prompt_template ?? '');
-    setRunOutput(null); setRunErr(''); setSaveErr('');
-    setAssistHistory([]); setAssistOpen(false); setAssistInput('');
+    setShowInstructions(!!t.prompt_template);
+    setRunOutput(null); setRunErr(''); setSaveErr(''); setAssistHistory([]);
     setSavePrompt(false); setSavedToRefs(false);
   };
 
   const startNew = () => {
-    setSelected(null); setIsNew(true); setDeleteConfirm(false);
-    setEditName(''); setEditDesc(''); setEditFormat('md');
-    setEditInstructions('');
-    setRunOutput(null); setRunErr(''); setSaveErr('');
-    setAssistHistory([]); setAssistOpen(false); setAssistInput('');
+    setSelected(null); setIsNew(true);
+    setEditName(''); setEditDesc(''); setEditDocType(''); setEditFormat('markdown');
+    setEditDs(DEFAULT_DS); setEditInstructions(''); setShowInstructions(false);
+    setRunOutput(null); setRunErr(''); setSaveErr(''); setAssistHistory([]);
     setSavePrompt(false); setSavedToRefs(false);
   };
 
@@ -224,8 +353,9 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
           user_id:         userId,
           name:            editName.trim(),
           description:     editDesc.trim() || null,
-          doc_type:        '',
+          doc_type:        editDocType.trim() || null,
           output_format:   editFormat,
+          data_sources:    editDs,
           prompt_template: editInstructions.trim() || '',
           is_system:       false,
           is_active:       true,
@@ -235,7 +365,9 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
         const { error } = await supabase.from('document_template').update({
           name:            editName.trim(),
           description:     editDesc.trim() || null,
+          doc_type:        editDocType.trim() || null,
           output_format:   editFormat,
+          data_sources:    editDs,
           prompt_template: editInstructions.trim() || '',
           updated_at:      new Date().toISOString(),
         }).eq('document_template_id', selected.document_template_id);
@@ -248,8 +380,9 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
 
   const handleDelete = async () => {
     if (!selected || selected.is_system) return;
+    if (!confirm(`Delete "${selected.name}"? This cannot be undone.`)) return;
     await supabase.from('document_template').update({ is_active: false }).eq('document_template_id', selected.document_template_id);
-    setSelected(null); setIsNew(false); setDeleteConfirm(false);
+    setSelected(null); setIsNew(false);
     await loadTemplates();
   };
 
@@ -259,7 +392,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     setRunning(true); setRunOutput(null); setRunErr('');
     setSavePrompt(false); setSavedToRefs(false);
     try {
-      const res = await fetch('/api/ko/template/run', {
+      const res  = await fetch('/api/ko/template/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
         body: JSON.stringify({ template_id: templateId, override_instructions: editInstructions.trim() || undefined }),
@@ -291,7 +424,6 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
       });
       if (error) throw error;
       setSavedToRefs(true); setSavePrompt(false);
-      loadExtractCounts();
     } catch (err: any) { setRunErr(err.message ?? 'Save failed'); setSavePrompt(false); }
     finally { setSavingToRefs(false); }
   };
@@ -317,20 +449,20 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     setAssistInput(''); setAssistLoading(true);
     setAssistHistory(h => [...h, { role: 'user', content: msg }]);
     try {
-      const res = await fetch('/api/ko/template/assist', {
+      const res  = await fetch('/api/ko/template/assist', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
         body: JSON.stringify({
           message:              msg,
           history:              assistHistory.map(m => ({ role: m.role, content: m.content })),
           current_instructions: editInstructions,
+          current_data_sources: editDs,
         }),
       });
       const data = await res.json();
       setAssistHistory(h => [...h, { role: 'assistant', content: data.response ?? '' }]);
-      if (data.suggested_instructions) {
-        setEditInstructions(data.suggested_instructions);
-      }
+      if (data.suggested_instructions) { setEditInstructions(data.suggested_instructions); setShowInstructions(true); }
+      if (data.suggested_data_sources) setEditDs(data.suggested_data_sources);
     } catch {
       setAssistHistory(h => [...h, { role: 'assistant', content: 'Something went wrong. Try again.' }]);
     } finally { setAssistLoading(false); }
@@ -346,7 +478,16 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
 
   const isEditing = isNew || !!selected;
   const isSystem  = selected?.is_system ?? false;
+
+  // Concept registry derived helpers
   const templateIcon = getObjectIcon(concepts, 'document_template') || '📄';
+
+  // Build assist placeholder using registry vocabulary
+  const completionVocab = getObjectLabel(concepts, 'completion') || 'completions';
+  const contextVocab    = concepts.find(c => c.concept_key === 'context')?.label || 'context';
+  const assistPlaceholder = assistHistory.length > 0
+    ? 'Refine further...'
+    : `e.g. "A weekly status showing ${completionVocab} by ${contextVocab} with key wins"`;
 
   // ─── RENDER ────────────────────────────────────────────────────────────────
 
@@ -361,7 +502,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
             <span style={{ color: '#000', fontWeight: 700, fontSize: '0.85rem' }}>
-              {templateIcon} {getObjectLabel(concepts, 'document_template') || 'Document Template'}
+              {templateIcon} {getObjectLabel(concepts, 'document_template') || 'Templates'}
             </span>
             <span style={{ color: '#000', fontSize: '0.7rem', opacity: 0.5 }}>TM · {templates.length} template{templates.length !== 1 ? 's' : ''}</span>
           </div>
@@ -400,10 +541,9 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                   ? <div style={{ padding: '1rem', color: '#888', fontSize: '0.75rem' }}>No templates found</div>
                   : filtered.map((t, idx) => {
                       const isActive = selected?.document_template_id === t.document_template_id;
-                      const runCount = extractCounts[t.document_template_id] ?? 0;
                       return (
                         <div key={t.document_template_id} onClick={() => selectTemplate(t)}
-                          style={{ padding: '0.6rem 0.75rem', borderBottom: '1px solid #e5e7eb', cursor: 'pointer', background: isActive ? ACCENT_BG : 'transparent', borderLeft: isActive ? `2px solid ${ACCENT}` : '2px solid transparent', transition: 'background 0.1s', position: 'relative' }}
+                          style={{ padding: '0.6rem 0.75rem', borderBottom: '1px solid #e5e7eb', cursor: 'pointer', background: isActive ? ACCENT_BG : 'transparent', borderLeft: isActive ? `2px solid ${ACCENT}` : '2px solid transparent', transition: 'background 0.1s' }}
                           onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = '#f5f5f5'; }}
                           onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}
                         >
@@ -411,15 +551,15 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                             <span style={{ color: ACCENT, fontSize: '0.6rem', opacity: 0.5, fontWeight: 600 }}>TM{idx + 1}</span>
                             <span style={{ fontSize: '0.75rem' }}>{templateIcon}</span>
                             <span style={{ color: '#222', fontSize: '0.78rem', flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.name}</span>
-                            {runCount > 0 && (
-                              <span style={{ fontSize: '0.58rem', color: '#0f766e', background: '#f0fdfa', border: '1px solid #99f6e4', padding: '0.02rem 0.3rem', borderRadius: 2, flexShrink: 0 }}>
-                                {runCount} run{runCount !== 1 ? 's' : ''}
-                              </span>
-                            )}
                           </div>
                           <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
                             {t.is_system && <span style={{ fontSize: '0.6rem', color: ACCENT, background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, padding: '0.05rem 0.3rem', borderRadius: 2 }}>system</span>}
+                            {t.implementation_type && <span style={{ fontSize: '0.6rem', color: '#8b5cf6', background: '#120a1a', border: '1px solid #3a1a5a', padding: '0.05rem 0.3rem', borderRadius: 2 }}>{t.implementation_type}</span>}
                             {t.doc_type && <span style={{ fontSize: '0.6rem', color: '#666', background: '#e5e5e5', border: '1px solid #e5e7eb', padding: '0.05rem 0.3rem', borderRadius: 2 }}>{t.doc_type}</span>}
+                            {/* Show data source icons from registry */}
+                            {t.data_sources?.completions && <span style={{ fontSize: '0.65rem' }} title={`${completionVocab}`}>{getObjectIcon(concepts, 'completion')}</span>}
+                            {t.data_sources?.meetings    && <span style={{ fontSize: '0.65rem' }} title="meetings">{getObjectIcon(concepts, 'meeting')}</span>}
+                            {t.data_sources?.tasks       && <span style={{ fontSize: '0.65rem' }} title="tasks">✅</span>}
                           </div>
                         </div>
                       );
@@ -444,6 +584,13 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
               <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#555', fontSize: '0.8rem', flexDirection: 'column', gap: '0.75rem' }}>
                 <div style={{ opacity: 0.3, fontSize: '1.5rem' }}>{templateIcon}</div>
                 <div>Select a template or create a new one</div>
+                {concepts.length > 0 && (
+                  <div style={{ display: 'flex', gap: '0.5rem', opacity: 0.4, fontSize: '0.65rem' }}>
+                    {concepts.filter(c => c.concept_type === 'bucket').slice(0, 4).map(c => (
+                      <span key={c.concept_key}>{c.icon} {c.label}</span>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
@@ -473,86 +620,121 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                       style={inputSt(isSystem)} placeholder="What this template produces..." />
                   </div>
 
-                  {/* Output Format */}
-                  <div style={{ marginBottom: '0.75rem' }}>
-                    <div style={labelSt}>Output Format <span style={{ color: '#ef4444' }}>*</span></div>
-                    <select value={editFormat} onChange={e => setEditFormat(e.target.value)} disabled={isSystem}
-                      style={{ ...inputSt(isSystem), cursor: isSystem ? 'not-allowed' : 'pointer', width: 180 } as any}>
-                      <option value="md">Markdown (.md)</option>
-                      <option value="html">HTML (.html)</option>
-                      <option value="pdf">PDF (.pdf)</option>
-                      <option value="txt">Plain text (.txt)</option>
-                      <option value="docx">Word (.docx)</option>
-                    </select>
+                  {/* Category + Format */}
+                  <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '0.75rem' }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={labelSt}>Category</div>
+                      <input value={editDocType} onChange={e => setEditDocType(e.target.value)} disabled={isSystem}
+                        style={inputSt(isSystem)} placeholder="report / debrief / pip..." />
+                    </div>
+                    <div style={{ width: 140 }}>
+                      <div style={labelSt}>Output Format</div>
+                      <select value={editFormat} onChange={e => setEditFormat(e.target.value)} disabled={isSystem}
+                        style={{ ...inputSt(isSystem), cursor: isSystem ? 'not-allowed' : 'pointer' } as any}>
+                        <option value="markdown">Markdown</option>
+                        <option value="docx">Word (.docx)</option>
+                      </select>
+                    </div>
                   </div>
 
-                  {/* Formatting Instructions */}
+                  {/* Data Sources — passes concepts for registry-aware labels */}
                   <div style={{ marginBottom: '0.75rem' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.4rem' }}>
-                      <div style={labelSt}>
-                        Formatting Instructions
-                        {!isSystem && <span style={{ color: '#555', textTransform: 'none', fontWeight: 400, letterSpacing: 0, marginLeft: '0.35rem' }}>(Karl-authored — edit carefully)</span>}
+                    <div style={labelSt}>Data Sources</div>
+                    <div style={{ padding: '0.75rem', background: '#fafafa', border: '1px solid #e5e7eb', borderRadius: 4 }}>
+                      {isSystem
+                        ? <div style={{ color: '#888', fontSize: '0.7rem', whiteSpace: 'pre-wrap' }}>{JSON.stringify(editDs, null, 2)}</div>
+                        : <DataSourcesEditor ds={editDs} onChange={setEditDs} concepts={concepts} />
+                      }
+                    </div>
+                  </div>
+
+                  {/* KARL ASSIST */}
+                  {!isSystem && (
+                    <div style={{ border: `1px solid ${ACCENT_BORDER}`, borderRadius: 6, overflow: 'hidden', marginBottom: '0.75rem' }}>
+
+                      <div style={{ padding: '0.5rem 0.75rem', background: ACCENT_BG, borderBottom: `1px solid ${ACCENT_BORDER}`, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <span style={{ color: ACCENT, fontSize: '0.68rem', fontWeight: 700 }}>KARL ASSIST</span>
+                        <span style={{ color: '#2d6e65', fontSize: '0.65rem' }}>— describe what you want, Karl drafts the generation instructions</span>
+                        {/* Show registry vocabulary hint */}
+                        {concepts.length > 0 && (
+                          <span style={{ marginLeft: 'auto', color: '#2d6e65', fontSize: '0.6rem', opacity: 0.7 }}>
+                            {concepts.filter(c => c.concept_type === 'bucket').slice(0, 3).map(c => `${c.icon} ${c.label}`).join(' · ')}
+                          </span>
+                        )}
                       </div>
-                      {/* Karl Assist button — collapsed by default */}
-                      {!isSystem && (
-                        <button
-                          onClick={() => setAssistOpen(v => !v)}
-                          style={{ marginLeft: 'auto', background: assistOpen ? ACCENT_BG : 'transparent', border: `1px solid ${assistOpen ? ACCENT : '#ccc'}`, color: assistOpen ? ACCENT : '#888', padding: '0.2rem 0.55rem', borderRadius: 3, fontSize: '0.65rem', fontFamily: 'monospace', cursor: 'pointer', whiteSpace: 'nowrap' }}
-                          title="Karl Assist — describe what you want, Karl will update the formatting instructions"
-                        >
-                          ✦ Karl Assist
+
+                      {assistHistory.length === 0 && !editInstructions && (
+                        <div style={{ padding: '0.75rem', background: '#f0fdfa' }}>
+                          <div style={{ color: '#888', fontSize: '0.72rem', lineHeight: 1.5 }}>
+                            Tell Karl what you want this template to produce. For example:<br />
+                            <span style={{ color: '#666', fontStyle: 'italic' }}>"{assistPlaceholder}"</span>
+                          </div>
+                        </div>
+                      )}
+
+                      {assistHistory.length > 0 && (
+                        <div style={{ maxHeight: 200, overflowY: 'auto', padding: '0.6rem 0.75rem', background: '#f5f5f5', scrollbarWidth: 'thin', scrollbarColor: '#ddd transparent' }}>
+                          {assistHistory.map((m, i) => (
+                            <div key={i} style={{ marginBottom: '0.5rem', fontSize: '0.75rem', color: m.role === 'user' ? '#0f766e' : '#374151', paddingLeft: m.role === 'user' ? '0.5rem' : 0, borderLeft: m.role === 'user' ? '2px solid #99f6e4' : 'none', lineHeight: 1.5 }}>
+                              {m.content}
+                            </div>
+                          ))}
+                          {assistLoading && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.25rem 0' }}>
+                              <KarlSpinner size="sm" color={ACCENT} />
+                              <span style={{ color: '#666', fontSize: '0.72rem' }}>Karl is thinking...</span>
+                            </div>
+                          )}
+                          <div ref={assistBottomRef} />
+                        </div>
+                      )}
+
+                      <div style={{ display: 'flex', gap: '0.5rem', padding: '0.5rem 0.75rem', background: '#fafafa' }}>
+                        <textarea
+                          value={assistInput}
+                          onChange={e => setAssistInput(e.target.value)}
+                          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAssist(); } }}
+                          placeholder={assistPlaceholder}
+                          rows={2}
+                          style={{ flex: 1, background: '#fafafa', border: '1px solid #e5e7eb', color: '#222', padding: '0.35rem 0.6rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.72rem', outline: 'none', resize: 'vertical', minHeight: 36 }}
+                          onFocus={e => (e.target.style.borderColor = ACCENT)}
+                          onBlur={e => (e.target.style.borderColor = '#ddd')}
+                        />
+                        <button onClick={handleAssist} disabled={!assistInput.trim() || assistLoading}
+                          style={{ background: assistInput.trim() ? ACCENT_BG : 'transparent', border: `1px solid ${assistInput.trim() ? ACCENT : '#333'}`, color: assistInput.trim() ? ACCENT : '#555', padding: '0.35rem 0.65rem', borderRadius: 4, fontSize: '0.7rem', fontFamily: 'monospace', cursor: assistInput.trim() ? 'pointer' : 'not-allowed', alignSelf: 'flex-end' }}>
+                          ask
                         </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* GENERATION INSTRUCTIONS */}
+                  <div style={{ marginBottom: '0.5rem' }}>
+                    <div
+                      onClick={() => setShowInstructions(v => !v)}
+                      style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', marginBottom: showInstructions ? '0.5rem' : 0 }}
+                    >
+                      <span style={{ color: showInstructions ? ACCENT : '#444', fontSize: '0.65rem', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>
+                        {showInstructions ? '▾' : '▸'} Generation Instructions {!isSystem && <span style={{ color: '#555', textTransform: 'none', fontWeight: 400, letterSpacing: 0 }}>(Karl-authored — edit carefully)</span>}
+                      </span>
+                      {editInstructions && !showInstructions && (
+                        <span style={{ fontSize: '0.62rem', color: '#2d6e65', background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, borderRadius: 3, padding: '0.05rem 0.3rem' }}>✓ drafted</span>
+                      )}
+                      {!editInstructions && !showInstructions && (
+                        <span style={{ fontSize: '0.62rem', color: '#888' }}>use Karl Assist above to build</span>
                       )}
                     </div>
 
-                    {/* Karl Assist panel — only shown when open */}
-                    {!isSystem && assistOpen && (
-                      <div style={{ border: `1px solid ${ACCENT_BORDER}`, borderRadius: 5, overflow: 'hidden', marginBottom: '0.6rem', background: '#fafafa' }}>
-                        {assistHistory.length > 0 && (
-                          <div style={{ maxHeight: 160, overflowY: 'auto', padding: '0.6rem 0.75rem', borderBottom: `1px solid ${ACCENT_BORDER}`, scrollbarWidth: 'thin', scrollbarColor: '#ddd transparent' }}>
-                            {assistHistory.map((m, i) => (
-                              <div key={i} style={{ marginBottom: '0.4rem', fontSize: '0.73rem', color: m.role === 'user' ? '#0f766e' : '#374151', paddingLeft: m.role === 'user' ? '0.5rem' : 0, borderLeft: m.role === 'user' ? `2px solid ${ACCENT_BORDER}` : 'none', lineHeight: 1.5 }}>
-                                {m.content}
-                              </div>
-                            ))}
-                            {assistLoading && (
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.2rem 0' }}>
-                                <KarlSpinner size="sm" color={ACCENT} />
-                                <span style={{ color: '#666', fontSize: '0.7rem' }}>Karl is thinking...</span>
-                              </div>
-                            )}
-                            <div ref={assistBottomRef} />
-                          </div>
-                        )}
-                        <div style={{ display: 'flex', gap: '0.5rem', padding: '0.5rem 0.6rem' }}>
-                          <textarea
-                            value={assistInput}
-                            onChange={e => setAssistInput(e.target.value)}
-                            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAssist(); } }}
-                            placeholder={editInstructions
-                              ? 'Describe a change — Karl will update the instructions below...'
-                              : 'Describe what you want this template to produce...'}
-                            rows={2}
-                            style={{ flex: 1, background: '#fff', border: '1px solid #e5e7eb', color: '#222', padding: '0.35rem 0.6rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.72rem', outline: 'none', resize: 'vertical', minHeight: 36 }}
-                            onFocus={e => (e.target.style.borderColor = ACCENT)}
-                            onBlur={e => (e.target.style.borderColor = '#e5e7eb')}
-                          />
-                          <button onClick={handleAssist} disabled={!assistInput.trim() || assistLoading}
-                            style={{ background: assistInput.trim() ? ACCENT_BG : 'transparent', border: `1px solid ${assistInput.trim() ? ACCENT : '#ccc'}`, color: assistInput.trim() ? ACCENT : '#aaa', padding: '0.35rem 0.65rem', borderRadius: 4, fontSize: '0.7rem', fontFamily: 'monospace', cursor: assistInput.trim() ? 'pointer' : 'not-allowed', alignSelf: 'flex-end' }}>
-                            ask
-                          </button>
-                        </div>
-                      </div>
+                    {showInstructions && (
+                      <textarea
+                        value={editInstructions}
+                        onChange={e => setEditInstructions(e.target.value)}
+                        disabled={isSystem}
+                        rows={8}
+                        placeholder="Use Karl Assist above to draft these instructions, or write them manually. Be specific about document format, sections, tone, and what data to emphasize..."
+                        style={{ ...inputSt(isSystem), resize: 'vertical', minHeight: 160, lineHeight: 1.5 } as any}
+                      />
                     )}
-
-                    <textarea
-                      value={editInstructions}
-                      onChange={e => setEditInstructions(e.target.value)}
-                      disabled={isSystem}
-                      rows={10}
-                      placeholder={isSystem ? '' : 'Formatting instructions for this template. Use Karl Assist above to draft, or write manually.'}
-                      style={{ ...inputSt(isSystem), resize: 'vertical', minHeight: 200, lineHeight: 1.6 } as any}
-                    />
                   </div>
 
                 </div>
@@ -562,42 +744,17 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                   {saveErr && <span style={{ color: '#ef4444', fontSize: '0.7rem', flex: 1 }}>{saveErr}</span>}
                   {!saveErr && <span style={{ flex: 1 }} />}
 
-                  {!isSystem && selected && !deleteConfirm && (
-                    <button onClick={() => setDeleteConfirm(true)}
+                  {!isSystem && selected && (
+                    <button onClick={handleDelete}
                       style={{ background: 'transparent', border: '1px solid #3a1a1a', color: '#ef4444', padding: '0.35rem 0.75rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer' }}>
                       delete
                     </button>
-                  )}
-
-                  {!isSystem && selected && deleteConfirm && (
-                    <>
-                      <span style={{ fontSize: '0.7rem', color: '#ef4444' }}>Delete "{selected.name}"?</span>
-                      <button onClick={() => setDeleteConfirm(false)}
-                        style={{ background: 'transparent', border: '1px solid #ddd', color: '#666', padding: '0.35rem 0.6rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer' }}>
-                        cancel
-                      </button>
-                      <button onClick={handleDelete}
-                        style={{ background: '#ef4444', border: 'none', color: '#fff', padding: '0.35rem 0.75rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer', fontWeight: 700 }}>
-                        yes, delete
-                      </button>
-                    </>
                   )}
 
                   {!isSystem && (
                     <button onClick={handleSave} disabled={saving}
                       style={{ background: '#0a1f1d', border: `1px solid ${ACCENT}`, color: ACCENT, padding: '0.35rem 0.9rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer' }}>
                       {saving ? 'saving...' : 'save'}
-                    </button>
-                  )}
-
-                  {selected && (extractCounts[selected.document_template_id] ?? 0) > 0 && onOpenExtracts && (
-                    <button
-                      onClick={() => { onOpenExtracts(selected.document_template_id); onClose(); }}
-                      style={{ background: 'transparent', border: `1px solid ${ACCENT_BORDER}`, color: ACCENT, padding: '0.35rem 0.75rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer' }}
-                      onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BG)}
-                      onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
-                    >
-                      {extractCounts[selected.document_template_id]} extract{extractCounts[selected.document_template_id] !== 1 ? 's' : ''} →
                     </button>
                   )}
 
@@ -620,9 +777,10 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
               </div>
             )}
 
-            {/* Output state */}
+            {/* Preview output */}
             {runOutput && !running && (
               <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+
                 <div style={{ padding: '0.5rem 1rem', borderBottom: '1px solid #e5e7eb', background: '#fafafa', display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
                   <span style={{ color: ACCENT, fontSize: '0.7rem', fontWeight: 600 }}>{templateIcon} PREVIEW</span>
                   <span style={{ color: '#555', fontSize: '0.65rem' }}>· test run · nothing saved</span>
@@ -642,7 +800,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                 </div>
 
                 <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem', scrollbarWidth: 'thin', scrollbarColor: '#ddd transparent' }}>
-                  <pre style={{ color: '#333', fontSize: '0.8rem', lineHeight: 1.7, whiteSpace: 'pre-wrap', fontFamily: 'monospace', margin: 0 }}>{runOutput}</pre>
+                  <pre style={{ color: '#555', fontSize: '0.8rem', lineHeight: 1.7, whiteSpace: 'pre-wrap', fontFamily: 'monospace', margin: 0 }}>{runOutput}</pre>
                 </div>
 
                 <div style={{ padding: '0.75rem 1rem', borderTop: '1px solid #e5e7eb', background: '#fafafa', flexShrink: 0 }}>
@@ -650,9 +808,9 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                       <div style={{ flex: 1 }}>
                         <div style={{ color: '#888', fontSize: '0.72rem' }}>Happy with this?</div>
-                        <div style={{ color: '#888', fontSize: '0.65rem', marginTop: '0.1rem' }}>Save to your {getObjectLabel(concepts, 'external_reference') || 'Extracts'} so you can track it — or just copy and go.</div>
+                        <div style={{ color: '#888', fontSize: '0.65rem', marginTop: '0.1rem' }}>Save to your {getObjectLabel(concepts, 'external_reference') || 'Extracts'} so you can rerun it anytime — or just copy and go.</div>
                       </div>
-                      <button onClick={handleRun} style={{ background: 'transparent', border: '1px solid #ddd', color: '#666', padding: '0.35rem 0.75rem', borderRadius: 4, fontSize: '0.7rem', fontFamily: 'monospace', cursor: 'pointer' }}>▶ run again</button>
+                      <button onClick={handleRun} style={{ background: 'transparent', border: '1px solid #ddd', color: '#666', padding: '0.35rem 0.75rem', borderRadius: 4, fontSize: '0.7rem', fontFamily: 'monospace', cursor: 'pointer' }}>▶ preview again</button>
                       <button onClick={() => setSavePrompt(true)} style={{ background: ACCENT, border: 'none', color: '#000', padding: '0.35rem 1rem', borderRadius: 4, fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer', fontWeight: 700 }}>Save & Track</button>
                     </div>
                   )}
@@ -671,14 +829,14 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                       <span style={{ color: ACCENT, fontSize: '0.72rem' }}>✓ Saved to {getObjectLabel(concepts, 'external_reference') || 'Extracts'}.</span>
                       <span style={{ color: '#888', fontSize: '0.65rem' }}>Find it anytime — or rerun it from there.</span>
                       <span style={{ flex: 1 }} />
-                      <button onClick={handleRun} style={{ background: 'transparent', border: '1px solid #ddd', color: '#666', padding: '0.35rem 0.75rem', borderRadius: 4, fontSize: '0.7rem', fontFamily: 'monospace', cursor: 'pointer' }}>▶ run again</button>
+                      <button onClick={handleRun} style={{ background: 'transparent', border: '1px solid #ddd', color: '#666', padding: '0.35rem 0.75rem', borderRadius: 4, fontSize: '0.7rem', fontFamily: 'monospace', cursor: 'pointer' }}>▶ preview again</button>
                     </div>
                   )}
                 </div>
               </div>
             )}
 
-            {/* Error state */}
+            {/* Run error */}
             {runErr && !running && (
               <div style={{ padding: '1rem', color: '#ef4444', fontSize: '0.75rem' }}>
                 Error: {runErr}
@@ -689,7 +847,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
           </div>
         </div>
 
-        {/* Resize handle */}
+        {/* RESIZE HANDLE */}
         <div
           onMouseDown={e => { resizing.current = true; resizeStart.current = { x: e.clientX, y: e.clientY, w: size.w, h: size.h }; }}
           style={{ position: 'absolute', bottom: 0, right: 0, width: 16, height: 16, cursor: 'nwse-resize' }}
