@@ -4,9 +4,9 @@ import { createSupabaseAdmin } from '@/lib/supabase-server';
 export const dynamic = 'force-dynamic';
 
 // ─── POST /api/ko/template/assist ─────────────────────────────────────────────
-// Karl-assist chat for building template instructions.
-// Body: { message, history, current_instructions, current_data_sources }
-// Returns: { response, suggested_instructions, suggested_data_sources }
+// Karl Assist — helps user build formatting instructions for a template.
+// Body: { message, history, current_instructions }
+// Returns: { response, suggested_instructions }
 
 export async function POST(req: NextRequest) {
   try {
@@ -18,65 +18,78 @@ export async function POST(req: NextRequest) {
     const { data: { user }, error: authErr } = await supabase.auth.getUser(token);
     if (authErr || !user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-    const { message, history = [], current_instructions = '', current_data_sources = {} } = await req.json();
+    const { message, history = [], current_instructions = '' } = await req.json();
     if (!message) return NextResponse.json({ error: 'message required' }, { status: 400 });
 
-    const systemPrompt = `You are Karl, an operational AI assistant helping a user build a document template for KarlOps.
+    const systemPrompt = `You are Karl, an operational AI assistant helping a user build formatting instructions for a KarlOps document template.
 
-A KarlOps template has two core parts:
-1. **prompt_template** — instructions that tell an LLM how to transform workspace data into a document
-2. **data_sources** — a JSON object declaring which workspace data to pull
+## How KarlOps templates work
 
-Available data sources:
-\`\`\`json
+A template has one thing the user controls: **Formatting Instructions** (stored as prompt_template).
+
+These instructions tell the generation model:
+- What sections to include
+- What fields to show per section
+- How to format each section (bullets, table, prose, etc.)
+- Any ordering, grouping, or conditional display rules
+
+The data itself is pulled automatically based on sections[] defined on the template — the user does NOT write data queries. They just describe what they want to see.
+
+## Available data sources (for your reference when suggesting instructions)
+
+- **tasks** — open tasks, filterable by bucket (now/soon/realwork/later/delegate/capture), tags, context
+- **completions** — completed work, filterable by date window, tags, context
+- **meetings** — meetings, filterable by date window, attendees, completed status
+- **situation** — user's current situation brief
+- **references** — saved external references
+- **contacts** — people directory
+
+## Your job
+
+1. Understand what document the user wants to produce
+2. Draft clear, specific formatting instructions that describe exactly what the output should look like
+3. Refine based on feedback
+4. Be concise — you're a builder tool, not a chatbot
+
+## What good formatting instructions look like
+
+Good instructions describe output structure, not data queries. Example:
+
+---
+# Status Update for [Person Name]
+Generated: {date}
+
+## Delegated Tasks
+Bullet per task. Show: title · status · due date. Flag overdue tasks.
+
+## Recent Meetings
+Bullet per meeting. Show: title · date · attendees · outcome if available.
+
+## Open Tasks Tagged: [Person Name]
+Bullet per task. Show: title · bucket · due date.
+
+## Recent Completions
+Bullet per completion. Show: title · completed date · outcome.
+---
+
+## Response format
+
+When you have enough info to suggest instructions, respond ONLY with valid JSON (no markdown fences, no preamble):
 {
-  "situation": true,                          // user's situation brief
-  "tasks": {
-    "buckets": ["now","soon","realwork"],      // which buckets (now/soon/realwork/later/delegate/capture)
-    "context": null,                          // optional context_id filter
-    "tags": []                                // optional tag filter
-  },
-  "completions": {
-    "window_days": 30,                        // how far back
-    "context": null,
-    "tags": []
-  },
-  "meetings": {
-    "window_days": 30,
-    "completed_only": true
-  },
-  "references": true                          // all references
+  "response": "your conversational reply",
+  "suggested_instructions": "the full formatting instructions text"
 }
-\`\`\`
 
-Your job:
-- Understand what document the user wants to produce
-- Draft clear, specific prompt_template instructions that will make Karl generate exactly that document
-- Suggest the right data_sources for the document type
-- Refine based on feedback
-- Be concise in conversation — you're a builder tool, not a chatbot
-
-When you have enough info to suggest instructions, respond in this JSON format:
-\`\`\`json
-{
-  "response": "your conversational reply here",
-  "suggested_instructions": "the full prompt_template text to use",
-  "suggested_data_sources": { the data_sources json object }
-}
-\`\`\`
-
-If you don't have enough info yet, respond with just:
-\`\`\`json
+If you need more info first:
 {
   "response": "your question or reply"
 }
-\`\`\`
 
-Current template state:
-instructions: ${current_instructions || '(none yet)'}
-data_sources: ${JSON.stringify(current_data_sources)}`;
+NEVER include data_sources, JSON queries, or technical config in suggested_instructions.
+The instructions should read like a document spec — sections, fields, format. That's it.
 
-    // Build message history (max 6 messages = 3 turns)
+Current instructions: ${current_instructions || '(none yet)'}`;
+
     const trimmedHistory = history.slice(-6);
     const messages = [
       ...trimmedHistory,
@@ -100,25 +113,26 @@ data_sources: ${JSON.stringify(current_data_sources)}`;
     });
 
     const data = await res.json();
-    const usage2 = data.usage;
-    if (usage2) console.log('[template/assist] tokens:', { input: usage2.input_tokens, output: usage2.output_tokens, cache_write: usage2.cache_creation_input_tokens ?? 0, cache_read: usage2.cache_read_input_tokens ?? 0 });
+    const usage = data.usage;
+    if (usage) console.log('[template/assist] tokens:', {
+      input: usage.input_tokens, output: usage.output_tokens,
+      cache_write: usage.cache_creation_input_tokens ?? 0,
+      cache_read:  usage.cache_read_input_tokens ?? 0,
+    });
+
     const raw = data.content?.[0]?.text ?? '';
 
-    // Parse JSON response
+    // Parse JSON — Karl returns raw JSON, no fences
     try {
-      const jsonMatch = raw.match(/```json\s*([\s\S]*?)```/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[1].trim());
-        return NextResponse.json({
-          response:              parsed.response ?? '',
-          suggested_instructions: parsed.suggested_instructions ?? null,
-          suggested_data_sources: parsed.suggested_data_sources ?? null,
-        });
-      }
-    } catch (_) {}
-
-    // Fallback — plain text response
-    return NextResponse.json({ response: raw, suggested_instructions: null, suggested_data_sources: null });
+      const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim());
+      return NextResponse.json({
+        response:               parsed.response ?? '',
+        suggested_instructions: parsed.suggested_instructions ?? null,
+      });
+    } catch (_) {
+      // Fallback — plain text response, no instructions suggested
+      return NextResponse.json({ response: raw, suggested_instructions: null });
+    }
 
   } catch (err: any) {
     console.error('[template/assist]', err);
