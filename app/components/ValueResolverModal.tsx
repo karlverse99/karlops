@@ -103,7 +103,7 @@ export default function ValueResolverModal({
     setLoading(true);
     try {
       // Load field metadata for the selected elements
-      const objectTypes = [...new Set(selectedElements.map(e => e.split('.')[0]))];
+      const objectTypes = Array.from(new Set(selectedElements.map(e => e.split('.')[0])));
       const fieldNames  = selectedElements.map(e => e.split('.').slice(1).join('.'));
 
       const { data: meta } = await supabase
