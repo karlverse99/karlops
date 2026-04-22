@@ -13,6 +13,7 @@ interface Template {
   doc_type: string | null;
   prompt_template: string;
   output_format: string;
+  filename_suffix_format: string | null;
   tags: string[];
   is_system: boolean;
   is_active: boolean;
@@ -46,6 +47,13 @@ const ACCENT        = '#14b8a6';
 const ACCENT_BG     = '#f0fdfa';
 const ACCENT_BORDER = '#99f6e4';
 
+const SUFFIX_OPTIONS = [
+  { value: 'datetime', label: 'Date + Time (04222026:1430)' },
+  { value: 'date',     label: 'Date only (04222026)' },
+  { value: 'version',  label: 'Version (v1, v2, v3…)' },
+  { value: 'custom',   label: 'Custom suffix' },
+];
+
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 
 function getObjectIcon(concepts: ConceptEntry[], key: string): string {
@@ -56,37 +64,104 @@ function getObjectLabel(concepts: ConceptEntry[], key: string): string {
   return concepts.find(c => c.concept_type === 'object' && c.concept_key === key)?.label ?? key;
 }
 
+/** Strip emoji characters from a string — used to clean Karl Assist output */
+function stripEmoji(str: string): string {
+  return str.replace(/[\u{1F300}-\u{1FFFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE00}-\u{FEFF}\u{1F000}-\u{1F02F}\u{1F0A0}-\u{1F0FF}\u{1F100}-\u{1F1FF}\u{1F200}-\u{1F2FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}]/gu, '').replace(/[\u2000-\u206F]/g, '');
+}
+
+/** Build a filename suffix based on format preference and existing extract count */
+function buildSuffix(format: string | null, existingCount: number, customSuffix: string): string {
+  const now = new Date();
+  switch (format) {
+    case 'date': {
+      const mm = String(now.getMonth() + 1).padStart(2, '0');
+      const dd = String(now.getDate()).padStart(2, '0');
+      const yyyy = now.getFullYear();
+      return `${mm}${dd}${yyyy}`;
+    }
+    case 'version':
+      return `v${existingCount + 1}`;
+    case 'custom':
+      return customSuffix.trim() || 'draft';
+    case 'datetime':
+    default: {
+      const mm = String(now.getMonth() + 1).padStart(2, '0');
+      const dd = String(now.getDate()).padStart(2, '0');
+      const yyyy = now.getFullYear();
+      const hh = String(now.getHours()).padStart(2, '0');
+      const mi = String(now.getMinutes()).padStart(2, '0');
+      return `${mm}${dd}${yyyy}:${hh}${mi}`;
+    }
+  }
+}
+
+function formatExtension(outputFormat: string): string {
+  switch (outputFormat) {
+    case 'html':  return 'html';
+    case 'txt':   return 'txt';
+    case 'docx':  return 'docx';
+    case 'pdf':   return 'pdf';
+    default:      return 'md';
+  }
+}
+
+// ─── TOOLTIP ──────────────────────────────────────────────────────────────────
+
+function Tooltip({ text, children }: { text: string; children: React.ReactNode }) {
+  const [show, setShow] = useState(false);
+  return (
+    <span style={{ position: 'relative', display: 'inline-flex' }}
+      onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}>
+      {children}
+      {show && (
+        <span style={{
+          position: 'absolute', bottom: '110%', left: '50%', transform: 'translateX(-50%)',
+          background: '#1f2937', color: '#f9fafb', fontSize: '0.6rem', padding: '0.3rem 0.5rem',
+          borderRadius: 4, whiteSpace: 'nowrap', zIndex: 9999, pointerEvents: 'none',
+          maxWidth: 220, textAlign: 'center', lineHeight: 1.4,
+          boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
+        }}>
+          {text}
+          <span style={{ position: 'absolute', top: '100%', left: '50%', transform: 'translateX(-50%)', width: 0, height: 0, borderLeft: '4px solid transparent', borderRight: '4px solid transparent', borderTop: '4px solid #1f2937' }} />
+        </span>
+      )}
+    </span>
+  );
+}
+
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
 
 export default function TemplatesModal({ userId, accessToken, onClose, onCountChange, onOpenExtracts }: TemplatesModalProps) {
 
   // ── State ──────────────────────────────────────────────────────────────────
-  const [templates, setTemplates]     = useState<Template[]>([]);
-  const [loading, setLoading]         = useState(true);
-  const [selected, setSelected]       = useState<Template | null>(null);
-  const [isNew, setIsNew]             = useState(false);
-  const [search, setSearch]           = useState('');
-  const [concepts, setConcepts]       = useState<ConceptEntry[]>([]);
+  const [templates, setTemplates]         = useState<Template[]>([]);
+  const [loading, setLoading]             = useState(true);
+  const [selected, setSelected]           = useState<Template | null>(null);
+  const [isNew, setIsNew]                 = useState(false);
+  const [search, setSearch]               = useState('');
+  const [concepts, setConcepts]           = useState<ConceptEntry[]>([]);
   const [extractCounts, setExtractCounts] = useState<Record<string, number>>({});
   const [deleteConfirm, setDeleteConfirm] = useState(false);
+  const [isMaximized, setIsMaximized]     = useState(false);
 
   // Edit state
-  const [editName, setEditName]                 = useState('');
-  const [editDesc, setEditDesc]                 = useState('');
-  const [editFormat, setEditFormat]             = useState('md');
-  const [editInstructions, setEditInstructions] = useState('');
-  const [saving, setSaving]                     = useState(false);
-  const [saveErr, setSaveErr]                   = useState('');
-  const [savedFlash, setSavedFlash]             = useState(false);
+  const [editName, setEditName]                       = useState('');
+  const [editDesc, setEditDesc]                       = useState('');
+  const [editFormat, setEditFormat]                   = useState('md');
+  const [editInstructions, setEditInstructions]       = useState('');
+  const [editSuffixFormat, setEditSuffixFormat]       = useState<string>('datetime');
+  const [editCustomSuffix, setEditCustomSuffix]       = useState('');
+  const [saving, setSaving]                           = useState(false);
+  const [saveErr, setSaveErr]                         = useState('');
+  const [savedFlash, setSavedFlash]                   = useState(false);
 
-  // Run / iteration state — output lives alongside editor, never replaces it
-  const [running, setRunning]           = useState(false);
-  const [runOutput, setRunOutput]       = useState<string | null>(null);
-  const [runErr, setRunErr]             = useState('');
-  const [runMode, setRunMode]           = useState<'preview' | 'generate'>('preview');
-  const [copied, setCopied]             = useState(false);
-  const [savingToRefs, setSavingToRefs] = useState(false);
-  const [savedToRefs, setSavedToRefs]   = useState(false);
+  // Run / iteration state
+  const [running, setRunning]         = useState(false);
+  const [runOutput, setRunOutput]     = useState<string | null>(null);
+  const [runErr, setRunErr]           = useState('');
+  const [runMode, setRunMode]         = useState<'preview' | 'generate'>('preview');
+  const [copied, setCopied]           = useState(false);
+  const [savedToExtracts, setSavedToExtracts] = useState(false);
 
   // Karl Assist
   const [assistOpen, setAssistOpen]       = useState(false);
@@ -100,6 +175,9 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const [pos, setPos]     = useState({ x: initX, y: initY });
   const [size, setSize]   = useState({ w: 1160, h: 800 });
   const [leftW, setLeftW] = useState(260);
+
+  // Pre-maximize snapshot for restore
+  const preMaxSnap = useRef<{ pos: { x: number; y: number }; size: { w: number; h: number } } | null>(null);
 
   const leftDragging  = useRef(false);
   const leftDragStart = useRef({ mx: 0, w: 0 });
@@ -170,19 +248,40 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     }
   };
 
+  // ── Maximize / Minimize ────────────────────────────────────────────────────
+
+  const handleMaximize = () => {
+    if (!isMaximized) {
+      preMaxSnap.current = { pos: { ...pos }, size: { ...size } };
+      // Respect navbar (~56px) + any top strip; fill remaining viewport
+      const navbarH = 56;
+      setPos({ x: 0, y: navbarH });
+      setSize({ w: window.innerWidth, h: window.innerHeight - navbarH });
+    } else {
+      if (preMaxSnap.current) {
+        setPos(preMaxSnap.current.pos);
+        setSize(preMaxSnap.current.size);
+      }
+    }
+    setIsMaximized(v => !v);
+  };
+
   // ── Drag / Resize ──────────────────────────────────────────────────────────
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
-      if (dragging.current)    setPos({ x: Math.max(0, dragStart.current.px + e.clientX - dragStart.current.x), y: Math.max(0, dragStart.current.py + e.clientY - dragStart.current.y) });
-      if (resizing.current)    setSize({ w: Math.max(900, resizeStart.current.w + e.clientX - resizeStart.current.x), h: Math.max(560, resizeStart.current.h + e.clientY - resizeStart.current.y) });
-      if (leftDragging.current) setLeftW(Math.max(200, Math.min(420, leftDragStart.current.w + e.clientX - leftDragStart.current.mx)));
+      if (dragging.current && !isMaximized)
+        setPos({ x: Math.max(0, dragStart.current.px + e.clientX - dragStart.current.x), y: Math.max(0, dragStart.current.py + e.clientY - dragStart.current.y) });
+      if (resizing.current && !isMaximized)
+        setSize({ w: Math.max(900, resizeStart.current.w + e.clientX - resizeStart.current.x), h: Math.max(560, resizeStart.current.h + e.clientY - resizeStart.current.y) });
+      if (leftDragging.current)
+        setLeftW(Math.max(200, Math.min(420, leftDragStart.current.w + e.clientX - leftDragStart.current.mx)));
     };
     const onUp = () => { dragging.current = false; resizing.current = false; leftDragging.current = false; };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
     return () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
-  }, []);
+  }, [isMaximized]);
 
   // ── Handlers ───────────────────────────────────────────────────────────────
 
@@ -192,17 +291,20 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     setEditDesc(t.description ?? '');
     setEditFormat(t.output_format === 'markdown' ? 'md' : (t.output_format ?? 'md'));
     setEditInstructions(t.prompt_template ?? '');
+    setEditSuffixFormat(t.filename_suffix_format ?? 'datetime');
+    setEditCustomSuffix('');
     setRunOutput(null); setRunErr(''); setSaveErr('');
     setAssistHistory([]); setAssistOpen(false); setAssistInput('');
-    setSavedToRefs(false); setSavedFlash(false);
+    setSavedToExtracts(false); setSavedFlash(false);
   };
 
   const startNew = () => {
     setSelected(null); setIsNew(true); setDeleteConfirm(false);
     setEditName(''); setEditDesc(''); setEditFormat('md'); setEditInstructions('');
+    setEditSuffixFormat('datetime'); setEditCustomSuffix('');
     setRunOutput(null); setRunErr(''); setSaveErr('');
     setAssistHistory([]); setAssistOpen(false); setAssistInput('');
-    setSavedToRefs(false); setSavedFlash(false);
+    setSavedToExtracts(false); setSavedFlash(false);
   };
 
   const handleSave = async () => {
@@ -213,6 +315,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
         const { error } = await supabase.from('document_template').insert({
           user_id: userId, name: editName.trim(), description: editDesc.trim() || null,
           doc_type: '', output_format: editFormat, prompt_template: editInstructions.trim() || '',
+          filename_suffix_format: editSuffixFormat,
           is_system: false, is_active: true,
         });
         if (error) throw error;
@@ -220,6 +323,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
         const { error } = await supabase.from('document_template').update({
           name: editName.trim(), description: editDesc.trim() || null,
           output_format: editFormat, prompt_template: editInstructions.trim() || '',
+          filename_suffix_format: editSuffixFormat,
           updated_at: new Date().toISOString(),
         }).eq('document_template_id', selected.document_template_id);
         if (error) throw error;
@@ -239,12 +343,19 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     await loadTemplates();
   };
 
-  // ── Core run — same route, same logic as chat path ─────────────────────────
+  // ── Run — single path through route. Route handles save for generate. ──────
   const handleRun = async (mode: 'preview' | 'generate') => {
     const templateId = selected?.document_template_id;
     if (!templateId) return;
     setRunMode(mode);
-    setRunning(true); setRunErr(''); setSavedToRefs(false);
+    setRunning(true); setRunErr(''); setSavedToExtracts(false);
+
+    // Build filename for this run (passed to route so it can name the extract)
+    const existingCount = extractCounts[templateId] ?? 0;
+    const suffix = buildSuffix(editSuffixFormat, existingCount, editCustomSuffix);
+    const ext    = formatExtension(editFormat);
+    const filename = `${editName} · ${suffix}.${ext}`;
+
     try {
       const res = await fetch('/api/ko/template/run', {
         method: 'POST',
@@ -253,33 +364,20 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
           template_id:           templateId,
           override_instructions: editInstructions.trim() || undefined,
           run_mode:              mode,
+          filename,               // passed to route for extract naming
+          extract_title:         editName, // display title, route appends suffix
+          suffix,
         }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Run failed');
       setRunOutput(data.output ?? data.output_text ?? '');
+      if (mode === 'generate' && data.saved) {
+        setSavedToExtracts(true);
+        loadExtractCounts(); // refresh badge
+      }
     } catch (err: any) { setRunErr(err.message ?? 'Run failed'); }
     finally { setRunning(false); }
-  };
-
-  const handleSaveToRefs = async () => {
-    if (!runOutput || !selected) return;
-    setSavingToRefs(true);
-    try {
-      const dateStr  = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-      const fileName = `${editName.toLowerCase().replace(/\s+/g, '-')}-${new Date().toISOString().slice(0, 10)}.md`;
-      const { error } = await supabase.from('external_reference').insert({
-        user_id: userId, title: `${editName} — ${dateStr}`, description: editDesc || null,
-        filename: fileName, location: 'generated', notes: runOutput,
-        context_id: selected.context_id || null,
-        document_template_id: selected.document_template_id,
-        ref_type: 'generated', tags: [],
-      });
-      if (error) throw error;
-      setSavedToRefs(true);
-      loadExtractCounts();
-    } catch (err: any) { setRunErr(err.message ?? 'Save failed'); }
-    finally { setSavingToRefs(false); }
   };
 
   const handleCopy = async () => {
@@ -288,12 +386,15 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     setCopied(true); setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleDownloadMd = () => {
+  const handleDownload = () => {
     if (!runOutput) return;
-    const blob = new Blob([runOutput], { type: 'text/markdown' });
+    const ext  = formatExtension(editFormat);
+    const existingCount = extractCounts[selected?.document_template_id ?? ''] ?? 0;
+    const suffix = buildSuffix(editSuffixFormat, existingCount, editCustomSuffix);
+    const blob = new Blob([runOutput], { type: 'text/plain' });
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
-    a.href = url; a.download = `${editName || 'document'}.md`; a.click();
+    a.href = url; a.download = `${editName || 'document'} · ${suffix}.${ext}`; a.click();
     URL.revokeObjectURL(url);
   };
 
@@ -309,8 +410,10 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
         body: JSON.stringify({ message: msg, history: assistHistory, current_instructions: editInstructions }),
       });
       const data = await res.json();
-      setAssistHistory(h => [...h, { role: 'assistant', content: data.response ?? '' }]);
-      if (data.suggested_instructions) setEditInstructions(data.suggested_instructions);
+      const assistResponse = data.response ?? '';
+      setAssistHistory(h => [...h, { role: 'assistant', content: assistResponse }]);
+      // Strip emoji before inserting into instructions — emoji belong in rendered output, not spec
+      if (data.suggested_instructions) setEditInstructions(stripEmoji(data.suggested_instructions));
     } catch {
       setAssistHistory(h => [...h, { role: 'assistant', content: 'Something went wrong. Try again.' }]);
     } finally { setAssistLoading(false); }
@@ -324,18 +427,33 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const isEditing    = isNew || !!selected;
   const isSystem     = selected?.is_system ?? false;
   const templateIcon = getObjectIcon(concepts, 'document_template') || '📄';
-  const extractLabel = getObjectLabel(concepts, 'external_reference') || 'Extracts';
+
+  // Preview filename shown in UI
+  const previewFilename = selected
+    ? `${editName} · ${buildSuffix(editSuffixFormat, extractCounts[selected.document_template_id] ?? 0, editCustomSuffix)}.${formatExtension(editFormat)}`
+    : '';
 
   // ─── RENDER ────────────────────────────────────────────────────────────────
 
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 200, pointerEvents: 'none' }}>
-      <div style={{ position: 'absolute', left: pos.x, top: pos.y, width: size.w, height: size.h, background: '#ffffff', border: `2px solid ${ACCENT}`, borderRadius: 8, display: 'flex', flexDirection: 'column', fontFamily: 'monospace', overflow: 'hidden', pointerEvents: 'all', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}>
+      <div style={{
+        position: 'absolute',
+        left: pos.x, top: pos.y, width: size.w, height: size.h,
+        background: '#ffffff', border: `2px solid ${ACCENT}`, borderRadius: isMaximized ? 0 : 8,
+        display: 'flex', flexDirection: 'column', fontFamily: 'monospace',
+        overflow: 'hidden', pointerEvents: 'all', boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+        transition: isMaximized ? 'none' : undefined,
+      }}>
 
         {/* ── HEADER ─────────────────────────────────────────────────────── */}
         <div
-          onMouseDown={e => { dragging.current = true; dragStart.current = { x: e.clientX, y: e.clientY, px: pos.x, py: pos.y }; }}
-          style={{ background: ACCENT, padding: '0 1rem', height: 44, display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'grab', flexShrink: 0 }}
+          onMouseDown={e => {
+            if (isMaximized) return; // no drag when maximized
+            dragging.current = true;
+            dragStart.current = { x: e.clientX, y: e.clientY, px: pos.x, py: pos.y };
+          }}
+          style={{ background: ACCENT, padding: '0 1rem', height: 44, display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: isMaximized ? 'default' : 'grab', flexShrink: 0 }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
             <span style={{ color: '#000', fontWeight: 700, fontSize: '0.85rem' }}>
@@ -343,8 +461,17 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
             </span>
             <span style={{ color: '#000', fontSize: '0.7rem', opacity: 0.5 }}>TM · {templates.length} template{templates.length !== 1 ? 's' : ''}</span>
           </div>
-          <button onMouseDown={e => e.stopPropagation()} onClick={onClose}
-            style={{ background: 'none', border: 'none', color: '#000', cursor: 'pointer', fontSize: '1rem', opacity: 0.6 }}>✕</button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }} onMouseDown={e => e.stopPropagation()}>
+            {/* Maximize / Minimize */}
+            <button
+              onClick={handleMaximize}
+              title={isMaximized ? 'Restore' : 'Maximize'}
+              style={{ background: 'none', border: 'none', color: '#000', cursor: 'pointer', fontSize: '0.85rem', opacity: 0.6, padding: '0 0.2rem', lineHeight: 1 }}>
+              {isMaximized ? '⊡' : '⊞'}
+            </button>
+            <button onClick={onClose}
+              style={{ background: 'none', border: 'none', color: '#000', cursor: 'pointer', fontSize: '1rem', opacity: 0.6 }}>✕</button>
+          </div>
         </div>
 
         {/* ── BODY ───────────────────────────────────────────────────────── */}
@@ -353,7 +480,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
           {/* ── LEFT: template list ───────────────────────────────────── */}
           <div style={{ width: leftW, flexShrink: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden', borderRight: '1px solid #e5e7eb' }}>
 
-            {/* Search — no filter buttons */}
+            {/* Search */}
             <div style={{ padding: '0.6rem 0.75rem', borderBottom: '1px solid #e5e7eb', flexShrink: 0 }}>
               <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search templates..."
                 style={{ width: '100%', background: '#fafafa', border: '1px solid #e5e7eb', color: '#222', padding: '0.4rem 0.6rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.75rem', outline: 'none', boxSizing: 'border-box' }} />
@@ -380,8 +507,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                         <div key={t.document_template_id} onClick={() => selectTemplate(t)}
                           style={{ padding: '0.6rem 0.75rem', borderBottom: '1px solid #f0f0f0', cursor: 'pointer', background: isActive ? ACCENT_BG : 'transparent', borderLeft: isActive ? `3px solid ${ACCENT}` : '3px solid transparent', transition: 'background 0.1s' }}
                           onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = '#f9f9f9'; }}
-                          onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}
-                        >
+                          onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
                             <span style={{ color: ACCENT, fontSize: '0.58rem', opacity: 0.6, fontWeight: 600, flexShrink: 0 }}>TM{idx + 1}</span>
                             <span style={{ color: '#222', fontSize: '0.78rem', flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{t.name}</span>
@@ -447,7 +573,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                   </div>
 
                   {/* Format */}
-                  <div style={{ flex: '0 0 160px' }}>
+                  <div style={{ flex: '0 0 140px' }}>
                     <div style={labelSt}>Format</div>
                     <select value={editFormat} onChange={e => setEditFormat(e.target.value)} disabled={isSystem}
                       style={{ ...inputSt(isSystem), cursor: isSystem ? 'not-allowed' : 'pointer' } as any}>
@@ -457,20 +583,46 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                       <option value="docx">Word (.docx)</option>
                     </select>
                   </div>
+
+                  {/* Version format */}
+                  {!isSystem && (
+                    <div style={{ flex: '0 0 180px' }}>
+                      <div style={labelSt}>Extract Filename</div>
+                      <select value={editSuffixFormat} onChange={e => { setEditSuffixFormat(e.target.value); setEditCustomSuffix(''); }} disabled={isSystem}
+                        style={{ ...inputSt(isSystem), cursor: isSystem ? 'not-allowed' : 'pointer' } as any}>
+                        {SUFFIX_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                      </select>
+                    </div>
+                  )}
+
+                  {/* Custom suffix input */}
+                  {!isSystem && editSuffixFormat === 'custom' && (
+                    <div style={{ flex: '0 0 140px' }}>
+                      <div style={labelSt}>Custom Suffix</div>
+                      <input value={editCustomSuffix} onChange={e => setEditCustomSuffix(e.target.value)}
+                        placeholder="e.g. final" style={inputSt(false)} />
+                    </div>
+                  )}
+
+                  {/* Filename preview */}
+                  {!isNew && previewFilename && (
+                    <div style={{ width: '100%', fontSize: '0.6rem', color: '#aaa', marginTop: '0.1rem' }}>
+                      Next extract: <span style={{ color: '#666', fontFamily: 'monospace' }}>{previewFilename}</span>
+                    </div>
+                  )}
                 </div>
 
                 {/* ── MAIN WORK AREA: instructions left, output right ── */}
                 <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
 
-                  {/* Instructions column */}
+                  {/* ── INSTRUCTIONS COLUMN ─────────────────────────── */}
                   <div style={{ flex: '1 1 40%', display: 'flex', flexDirection: 'column', overflow: 'hidden', borderRight: '1px solid #e5e7eb', minWidth: 0 }}>
 
                     {/* Instructions header */}
                     <div style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #f0f0f0', display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0, background: '#fafafa' }}>
                       <span style={{ ...labelSt, marginBottom: 0 }}>Formatting Instructions</span>
                       {!isSystem && (
-                        <button
-                          onClick={() => setAssistOpen(v => !v)}
+                        <button onClick={() => setAssistOpen(v => !v)}
                           style={{ marginLeft: 'auto', background: assistOpen ? ACCENT_BG : 'transparent', border: `1px solid ${assistOpen ? ACCENT : '#ddd'}`, color: assistOpen ? ACCENT : '#888', padding: '0.15rem 0.5rem', borderRadius: 3, fontSize: '0.62rem', fontFamily: 'monospace', cursor: 'pointer' }}>
                           ✦ Karl Assist
                         </button>
@@ -513,7 +665,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                       </div>
                     )}
 
-                    {/* Instructions textarea — fills remaining space */}
+                    {/* Instructions textarea */}
                     <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
                       <textarea
                         value={editInstructions}
@@ -523,9 +675,44 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                         style={{ flex: 1, width: '100%', background: isSystem ? '#f5f5f5' : '#fff', border: 'none', borderTop: '1px solid #f0f0f0', color: isSystem ? '#aaa' : '#222', padding: '0.75rem', fontFamily: 'monospace', fontSize: '0.8rem', outline: 'none', resize: 'none', lineHeight: 1.6, boxSizing: 'border-box' } as any}
                       />
                     </div>
+
+                    {/* ── LEFT FOOTER: Save Template + Delete Template ── */}
+                    {!isSystem && (
+                      <div style={{ padding: '0.6rem 0.75rem', borderTop: '1px solid #e5e7eb', background: '#fafafa', display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
+
+                        {saveErr && <span style={{ color: '#ef4444', fontSize: '0.65rem', flex: 1 }}>{saveErr}</span>}
+                        {savedFlash && !saveErr && <span style={{ color: ACCENT, fontSize: '0.65rem', flex: 1 }}>✓ Template saved</span>}
+                        {!saveErr && !savedFlash && <span style={{ flex: 1 }} />}
+
+                        {/* Delete Template */}
+                        {selected && !deleteConfirm && (
+                          <Tooltip text="Deletes this template. Existing extracts will be orphaned but not deleted.">
+                            <button onClick={() => setDeleteConfirm(true)}
+                              style={{ background: 'transparent', border: '1px solid #fca5a5', color: '#ef4444', padding: '0.3rem 0.65rem', borderRadius: 4, fontSize: '0.68rem', fontFamily: 'monospace', cursor: 'pointer' }}>
+                              Delete Template
+                            </button>
+                          </Tooltip>
+                        )}
+                        {selected && deleteConfirm && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+                            <span style={{ fontSize: '0.65rem', color: '#ef4444' }}>Delete "{selected.name}"? Extracts will be orphaned.</span>
+                            <button onClick={() => setDeleteConfirm(false)} style={{ background: 'transparent', border: '1px solid #ddd', color: '#666', padding: '0.25rem 0.5rem', borderRadius: 4, fontSize: '0.65rem', fontFamily: 'monospace', cursor: 'pointer' }}>cancel</button>
+                            <button onClick={handleDelete} style={{ background: '#ef4444', border: 'none', color: '#fff', padding: '0.25rem 0.6rem', borderRadius: 4, fontSize: '0.65rem', fontFamily: 'monospace', cursor: 'pointer', fontWeight: 700 }}>yes, delete</button>
+                          </div>
+                        )}
+
+                        {/* Save Template */}
+                        <Tooltip text="Saves formatting instructions, filename format, and section criteria to this template.">
+                          <button onClick={handleSave} disabled={saving}
+                            style={{ background: '#0a1f1d', border: `1px solid ${ACCENT}`, color: ACCENT, padding: '0.3rem 0.85rem', borderRadius: 4, fontSize: '0.68rem', fontFamily: 'monospace', cursor: saving ? 'not-allowed' : 'pointer', fontWeight: 600 }}>
+                            {saving ? 'saving...' : 'Save Template'}
+                          </button>
+                        </Tooltip>
+                      </div>
+                    )}
                   </div>
 
-                  {/* Output column */}
+                  {/* ── OUTPUT COLUMN ────────────────────────────────── */}
                   <div style={{ flex: '1 1 60%', display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
 
                     {/* Output header */}
@@ -533,17 +720,18 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                       {runOutput
                         ? <>
                             <span style={{ color: ACCENT, fontSize: '0.65rem', fontWeight: 600 }}>
-                              {runMode === 'preview' ? '🔍 PREVIEW' : '📄 OUTPUT'}
+                              {runMode === 'preview' ? '🔍 PREVIEW' : '✓ EXTRACT CREATED'}
                             </span>
-                            {runMode === 'preview' && <span style={{ color: '#999', fontSize: '0.6rem' }}>· stub data</span>}
+                            {runMode === 'preview' && <span style={{ color: '#999', fontSize: '0.6rem' }}>· stub data · not saved</span>}
+                            {runMode === 'generate' && savedToExtracts && <span style={{ color: '#999', fontSize: '0.6rem' }}>· {previewFilename}</span>}
                             <span style={{ flex: 1 }} />
                             <button onClick={handleCopy}
                               style={{ background: copied ? ACCENT_BG : 'transparent', border: `1px solid ${copied ? ACCENT : '#ddd'}`, color: copied ? ACCENT : '#888', padding: '0.15rem 0.5rem', borderRadius: 3, fontSize: '0.62rem', fontFamily: 'monospace', cursor: 'pointer' }}>
                               {copied ? '✓ copied' : 'copy'}
                             </button>
-                            <button onClick={handleDownloadMd}
+                            <button onClick={handleDownload}
                               style={{ background: 'transparent', border: '1px solid #ddd', color: '#888', padding: '0.15rem 0.5rem', borderRadius: 3, fontSize: '0.62rem', fontFamily: 'monospace', cursor: 'pointer' }}>
-                              ↓ .md
+                              ↓ .{formatExtension(editFormat)}
                             </button>
                           </>
                         : <span style={{ color: '#bbb', fontSize: '0.65rem' }}>Output will appear here</span>
@@ -555,7 +743,9 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                       {running && (
                         <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '1rem', background: '#fff' }}>
                           <KarlSpinner size="lg" color={ACCENT} />
-                          <span style={{ color: '#888', fontSize: '0.78rem' }}>Generating...</span>
+                          <span style={{ color: '#888', fontSize: '0.78rem' }}>
+                            {runMode === 'preview' ? 'Previewing...' : 'Generating extract...'}
+                          </span>
                         </div>
                       )}
                       {!running && runErr && (
@@ -572,93 +762,59 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                       {!running && !runErr && !runOutput && (
                         <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: '0.5rem', color: '#ccc' }}>
                           <span style={{ fontSize: '1.5rem' }}>▶</span>
-                          <span style={{ fontSize: '0.75rem' }}>Run a preview to see output here</span>
-                          <span style={{ fontSize: '0.65rem', color: '#ddd' }}>Tweak instructions, run again, repeat until right</span>
+                          <span style={{ fontSize: '0.75rem' }}>Preview to see output here</span>
+                          <span style={{ fontSize: '0.65rem', color: '#ddd' }}>Tweak instructions, preview again, repeat until right</span>
                         </div>
                       )}
                     </div>
 
-                    {/* Save to extracts strip — only shown after real generate */}
-                    {runOutput && runMode === 'generate' && (
-                      <div style={{ padding: '0.5rem 0.75rem', borderTop: '1px solid #e5e7eb', background: '#fafafa', display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
-                        {savedToRefs
-                          ? <span style={{ color: ACCENT, fontSize: '0.7rem' }}>✓ Saved to {extractLabel}</span>
-                          : <>
-                              <span style={{ color: '#666', fontSize: '0.7rem', flex: 1 }}>Save this run to {extractLabel}?</span>
-                              <button onClick={handleSaveToRefs} disabled={savingToRefs}
-                                style={{ background: ACCENT, border: 'none', color: '#000', padding: '0.25rem 0.75rem', borderRadius: 4, fontSize: '0.68rem', fontFamily: 'monospace', cursor: 'pointer', fontWeight: 700 }}>
-                                {savingToRefs ? 'saving...' : 'save it'}
-                              </button>
-                            </>
-                        }
-                        {selected && (extractCounts[selected.document_template_id] ?? 0) > 0 && onOpenExtracts && (
-                          <button
-                            onClick={() => { onOpenExtracts(selected.document_template_id); onClose(); }}
-                            style={{ background: 'transparent', border: `1px solid ${ACCENT_BORDER}`, color: ACCENT, padding: '0.25rem 0.6rem', borderRadius: 4, fontSize: '0.65rem', fontFamily: 'monospace', cursor: 'pointer' }}>
-                            {extractCounts[selected.document_template_id]}× runs →
+                    {/* Extracts link — shown after generate */}
+                    {runOutput && runMode === 'generate' && savedToExtracts && selected && onOpenExtracts && (
+                      <div style={{ padding: '0.4rem 0.75rem', borderTop: '1px solid #e5e7eb', background: '#f0fdfa', display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
+                        <span style={{ color: ACCENT, fontSize: '0.7rem', flex: 1 }}>✓ Extract saved</span>
+                        <button
+                          onClick={() => { onOpenExtracts(selected.document_template_id); onClose(); }}
+                          style={{ background: 'transparent', border: `1px solid ${ACCENT_BORDER}`, color: ACCENT, padding: '0.2rem 0.6rem', borderRadius: 4, fontSize: '0.65rem', fontFamily: 'monospace', cursor: 'pointer' }}>
+                          {extractCounts[selected.document_template_id] ?? 1}× extracts →
+                        </button>
+                      </div>
+                    )}
+
+                    {/* ── RIGHT FOOTER: Preview + Run+Create Extract ── */}
+                    {selected && !isNew && (
+                      <div style={{ padding: '0.6rem 0.75rem', borderTop: '1px solid #e5e7eb', background: '#fafafa', display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0, justifyContent: 'flex-end' }}>
+
+                        {/* Preview */}
+                        <Tooltip text="Runs with sample data to show layout. Nothing is saved.">
+                          <button onClick={() => handleRun('preview')} disabled={running}
+                            style={{ background: 'transparent', border: `1px solid ${ACCENT}`, color: ACCENT, padding: '0.3rem 0.85rem', borderRadius: 4, fontSize: '0.68rem', fontFamily: 'monospace', cursor: running ? 'not-allowed' : 'pointer' }}>
+                            {running && runMode === 'preview' ? '...' : '▶ Preview'}
                           </button>
-                        )}
+                        </Tooltip>
+
+                        {/* Run + Create Extract */}
+                        <Tooltip text="Runs with live data and saves a versioned extract to your document history.">
+                          <button onClick={() => handleRun('generate')} disabled={running}
+                            style={{ background: running && runMode === 'generate' ? '#0f2a27' : ACCENT, border: 'none', color: '#000', padding: '0.3rem 1.1rem', borderRadius: 4, fontSize: '0.68rem', fontFamily: 'monospace', cursor: running ? 'not-allowed' : 'pointer', fontWeight: 700 }}>
+                            {running && runMode === 'generate' ? '...' : 'Run + Create Extract'}
+                          </button>
+                        </Tooltip>
                       </div>
                     )}
                   </div>
-                </div>
-
-                {/* ── FOOTER: actions ─────────────────────────────────── */}
-                <div style={{ padding: '0.6rem 0.75rem', borderTop: '1px solid #e5e7eb', background: '#fafafa', display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
-
-                  {saveErr && <span style={{ color: '#ef4444', fontSize: '0.68rem' }}>{saveErr}</span>}
-                  {savedFlash && !saveErr && <span style={{ color: ACCENT, fontSize: '0.68rem' }}>✓ Saved</span>}
-                  <span style={{ flex: 1 }} />
-
-                  {/* Delete */}
-                  {!isSystem && selected && !deleteConfirm && (
-                    <button onClick={() => setDeleteConfirm(true)}
-                      style={{ background: 'transparent', border: '1px solid #fca5a5', color: '#ef4444', padding: '0.3rem 0.65rem', borderRadius: 4, fontSize: '0.68rem', fontFamily: 'monospace', cursor: 'pointer' }}>
-                      delete
-                    </button>
-                  )}
-                  {!isSystem && selected && deleteConfirm && (
-                    <>
-                      <span style={{ fontSize: '0.68rem', color: '#ef4444' }}>Delete "{selected.name}"?</span>
-                      <button onClick={() => setDeleteConfirm(false)} style={{ background: 'transparent', border: '1px solid #ddd', color: '#666', padding: '0.3rem 0.6rem', borderRadius: 4, fontSize: '0.68rem', fontFamily: 'monospace', cursor: 'pointer' }}>cancel</button>
-                      <button onClick={handleDelete} style={{ background: '#ef4444', border: 'none', color: '#fff', padding: '0.3rem 0.7rem', borderRadius: 4, fontSize: '0.68rem', fontFamily: 'monospace', cursor: 'pointer', fontWeight: 700 }}>yes, delete</button>
-                    </>
-                  )}
-
-                  {/* Save template */}
-                  {!isSystem && (
-                    <button onClick={handleSave} disabled={saving}
-                      style={{ background: '#0a1f1d', border: `1px solid ${ACCENT}`, color: ACCENT, padding: '0.3rem 0.85rem', borderRadius: 4, fontSize: '0.68rem', fontFamily: 'monospace', cursor: saving ? 'not-allowed' : 'pointer' }}>
-                      {saving ? 'saving...' : 'save'}
-                    </button>
-                  )}
-
-                  {/* Preview — stub data, iterate freely */}
-                  {selected && !isNew && (
-                    <button onClick={() => handleRun('preview')} disabled={running}
-                      style={{ background: 'transparent', border: `1px solid ${ACCENT}`, color: ACCENT, padding: '0.3rem 0.85rem', borderRadius: 4, fontSize: '0.68rem', fontFamily: 'monospace', cursor: running ? 'not-allowed' : 'pointer' }}>
-                      {running && runMode === 'preview' ? '...' : '▶ preview'}
-                    </button>
-                  )}
-
-                  {/* Generate — real data, saves to extracts */}
-                  {selected && !isNew && (
-                    <button onClick={() => handleRun('generate')} disabled={running}
-                      style={{ background: running && runMode === 'generate' ? '#0f2a27' : ACCENT, border: 'none', color: '#000', padding: '0.3rem 1rem', borderRadius: 4, fontSize: '0.68rem', fontFamily: 'monospace', cursor: running ? 'not-allowed' : 'pointer', fontWeight: 700 }}>
-                      {running && runMode === 'generate' ? '...' : '⚡ generate'}
-                    </button>
-                  )}
                 </div>
               </div>
             )}
           </div>
         </div>
 
-        {/* Resize handle */}
-        <div
-          onMouseDown={e => { resizing.current = true; resizeStart.current = { x: e.clientX, y: e.clientY, w: size.w, h: size.h }; }}
-          style={{ position: 'absolute', bottom: 0, right: 0, width: 16, height: 16, cursor: 'nwse-resize' }}
-        />
+        {/* Resize handle — hidden when maximized */}
+        {!isMaximized && (
+          <div
+            onMouseDown={e => { resizing.current = true; resizeStart.current = { x: e.clientX, y: e.clientY, w: size.w, h: size.h }; }}
+            style={{ position: 'absolute', bottom: 0, right: 0, width: 16, height: 16, cursor: 'nwse-resize' }}
+          />
+        )}
       </div>
     </div>
   );

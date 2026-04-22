@@ -9,7 +9,7 @@ export const dynamic = 'force-dynamic';
 // Unified template execution endpoint — used by both modal and chat.
 // run_mode: 'preview' = stub data, never saves
 // run_mode: 'generate' = real data, encrypts and saves to external_reference
-// Body: { template_id, override_instructions?, run_mode?, section_data? }
+// Body: { template_id, override_instructions?, run_mode?, section_data?, filename?, suffix? }
 
 export async function POST(req: NextRequest) {
   try {
@@ -22,7 +22,16 @@ export async function POST(req: NextRequest) {
     if (authErr || !user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
     const body = await req.json();
-    const { template_id, override_instructions, run_mode = 'preview', section_data = {} } = body;
+    const {
+      template_id,
+      override_instructions,
+      run_mode = 'preview',
+      section_data = {},
+      // Filename fields — passed from modal so extract naming matches UI preview
+      filename: clientFilename,
+      suffix: clientSuffix,
+    } = body;
+
     if (!template_id) return NextResponse.json({ error: 'template_id required' }, { status: 400 });
 
     const isPreview = run_mode === 'preview';
@@ -30,7 +39,7 @@ export async function POST(req: NextRequest) {
     // ── Load template ────────────────────────────────────────────────────────
     const { data: template, error: tErr } = await supabase
       .from('document_template')
-      .select('name, description, prompt_template, sections, output_format, context_id')
+      .select('name, description, prompt_template, sections, output_format, context_id, filename_suffix_format')
       .eq('document_template_id', template_id)
       .or(`user_id.eq.${user.id},is_system.eq.true`)
       .single();
@@ -161,20 +170,30 @@ Return ONLY the document content — no preamble, no explanation, no code fences
     const output = data.content?.[0]?.text ?? '';
     if (!output) return NextResponse.json({ error: 'Generation produced no output' }, { status: 500 });
 
-    // Preview — return immediately, never save
+    // Preview — return immediately, never save ───────────────────────────────
     if (isPreview) {
       return NextResponse.json({ output, format: template.output_format ?? 'md', saved: false });
     }
 
-    // Generate — encrypt and save to external_reference
+    // Generate — encrypt and save to external_reference ──────────────────────
     const encryptedOutput = await encryptOutput(output);
-    const dateStr = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+    // Use filename from modal if provided (includes user-chosen suffix + extension)
+    // Fallback: build from template name + today's date
+    const ext           = formatExtension(template.output_format ?? 'md');
+    const fallbackDate  = today.replace(/-/g, '');
+    const resolvedFilename = clientFilename?.trim()
+      || `${template.name.toLowerCase().replace(/\s+/g, '-')}-${fallbackDate}.${ext}`;
+
+    // Title: template name + suffix (without extension) for clean display
+    const resolvedSuffix = clientSuffix?.trim() || fallbackDate;
+    const extractTitle   = `${template.name} · ${resolvedSuffix}`;
 
     const { error: saveError } = await supabase.from('external_reference').insert({
       user_id:              user.id,
-      title:                `${template.name} — ${dateStr}`,
+      title:                extractTitle,
       description:          template.description ?? null,
-      filename:             `${template.name.toLowerCase().replace(/\s+/g, '-')}-${today}.md`,
+      filename:             resolvedFilename,
       location:             'generated',
       run_data:             fullPrompt,
       output:               encryptedOutput,
@@ -191,11 +210,23 @@ Return ONLY the document content — no preamble, no explanation, no code fences
       return NextResponse.json({ output, format: template.output_format ?? 'md', saved: false, save_error: saveError.message });
     }
 
-    return NextResponse.json({ output, format: template.output_format ?? 'md', saved: true });
+    return NextResponse.json({ output, format: template.output_format ?? 'md', saved: true, filename: resolvedFilename, title: extractTitle });
 
   } catch (err: any) {
     console.error('[template/run]', err);
     return NextResponse.json({ error: err.message ?? 'Unknown error' }, { status: 500 });
+  }
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function formatExtension(outputFormat: string): string {
+  switch (outputFormat) {
+    case 'html':  return 'html';
+    case 'txt':   return 'txt';
+    case 'docx':  return 'docx';
+    case 'pdf':   return 'pdf';
+    default:      return 'md';
   }
 }
 
@@ -258,7 +289,7 @@ async function pullSectionData(
     const { data: completions } = await q;
     if (!completions?.length) return '(no completions)';
     return completions.map((c: any) => {
-      const date = String(c.completed_at ?? '').slice(0, 10);
+      const date    = String(c.completed_at ?? '').slice(0, 10);
       const outcome = c.outcome ? ` · ${c.outcome}` : '';
       return `- ${c.title} · Completed: ${date}${outcome}`;
     }).join('\n');
@@ -298,12 +329,13 @@ async function pullSectionData(
     return data?.brief?.trim() ?? '(no situation brief)';
   }
 
-  if (source === 'references') {
-    const { data: refs } = await supabase
+  // 'extracts' source — list titles of existing extracts
+  if (source === 'extracts') {
+    const { data: extracts } = await supabase
       .from('external_reference').select('title').eq('user_id', userId)
       .order('created_at', { ascending: false }).limit(scope.limit ?? 10);
-    if (!refs?.length) return '(no references)';
-    return refs.map((r: any) => `- ${r.title}`).join('\n');
+    if (!extracts?.length) return '(no extracts)';
+    return extracts.map((r: any) => `- ${r.title}`).join('\n');
   }
 
   if (source === 'contacts') {
@@ -354,8 +386,8 @@ function generateStub(source: string, bucketLabels: Record<string, string>): str
       ].join('\n');
     case 'situation':
       return `Currently focused on Q2 delivery with active projects across multiple contexts.`;
-    case 'references':
-      return `- Sample Reference Document\n- Another Reference`;
+    case 'extracts':
+      return `- Sample Extract Document\n- Another Extract`;
     case 'contacts':
       return `- Alice Smith\n- Bob Jones`;
     default:
