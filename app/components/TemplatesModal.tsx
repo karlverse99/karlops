@@ -66,7 +66,13 @@ function getObjectLabel(concepts: ConceptEntry[], key: string): string {
 
 /** Strip emoji characters from a string — used to clean Karl Assist output */
 function stripEmoji(str: string): string {
-  return str.replace(/[\u{1F300}-\u{1FFFF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{FE00}-\u{FEFF}\u{1F000}-\u{1F02F}\u{1F0A0}-\u{1F0FF}\u{1F100}-\u{1F1FF}\u{1F200}-\u{1F2FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}]/gu, '').replace(/[\u2000-\u206F]/g, '');
+  // Remove surrogate pairs (emoji above U+FFFF) and common symbol blocks
+  // Avoids /u flag which requires ES6 target config
+  return str
+    .replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, '') // surrogate pairs (emoji, symbols)
+    .replace(/[\u2600-\u27BF]/g, '')                  // misc symbols, dingbats
+    .replace(/[\uFE00-\uFEFF]/g, '')                  // variation selectors, BOM
+    .replace(/[\u2000-\u206F]/g, '');                 // general punctuation block
 }
 
 /** Build a filename suffix based on format preference and existing extract count */
