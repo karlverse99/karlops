@@ -182,7 +182,6 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const [savedToExtracts, setSavedToExtracts] = useState(false);
 
   // Data Filters (section scope) — kept for legacy templates with sections[]
-  const [filtersOpen, setFiltersOpen]       = useState(false);
   const [sectionData, setSectionData]       = useState<SectionScope>({});
 
   // Element Picker modal
@@ -316,7 +315,6 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     setRunOutput(null); setRunErr(''); setSaveErr('');
     setAssistHistory([]); setAssistOpen(false); setAssistInput('');
     setSavedToExtracts(false); setSavedFlash(false);
-    setFiltersOpen(false);
     // Seed sectionData from default_scope on each section
     const sections: SectionDef[] = Array.isArray(t.sections) ? t.sections : [];
     const seed: SectionScope = {};
@@ -332,7 +330,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     setRunOutput(null); setRunErr(''); setSaveErr('');
     setAssistHistory([]); setAssistOpen(false); setAssistInput('');
     setSavedToExtracts(false); setSavedFlash(false);
-    setFiltersOpen(false); setSectionData({});
+    setSectionData({});
   };
 
   const handleSave = async () => {
@@ -472,7 +470,6 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const isEditing     = isNew || !!selected;
   const isSystem      = selected?.is_system ?? false;
   const templateIcon  = getObjectIcon(concepts, 'document_template') || '📄';
-  const selectedSections: SectionDef[] = selected && Array.isArray(selected.sections) ? selected.sections : [];
   const previewFilename = selected
     ? `${editName} · ${buildSuffix(editSuffixFormat, extractCounts[selected.document_template_id] ?? 0, editCustomSuffix)}.${formatExtension(editFormat)}`
     : '';
@@ -671,76 +668,6 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                         }}>
                         {editElements.length > 0 ? '⚙ Edit Elements' : '+ Add Elements'}
                       </button>
-                    </div>
-                  )}
-
-                  {/* ── Legacy DATA FILTERS STRIP (sections[]-based) ──── */}
-                  {!isNew && selectedSections.length > 0 && editElements.length === 0 && (
-                    <div style={{ flexShrink: 0, borderBottom: filtersOpen ? `1px solid ${ACCENT_BORDER}` : '1px solid #e5e7eb' }}>
-                      <div
-                        onClick={() => setFiltersOpen(v => !v)}
-                        style={{ padding: '0.35rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', userSelect: 'none', background: '#fafafa' }}>
-                        <span style={{ fontSize: '0.6rem', color: '#aaa' }}>{filtersOpen ? '▼' : '▶'}</span>
-                        <span style={{ fontSize: '0.65rem', color: '#999' }}>Section Data Filters</span>
-                        <span style={{ flex: 1 }} />
-                        <span style={{ fontSize: '0.58rem', color: '#bbb' }}>{selectedSections.length} section{selectedSections.length !== 1 ? 's' : ''} · legacy</span>
-                      </div>
-                      {filtersOpen && (
-                        <div style={{ background: '#f8fffe', padding: '0.5rem 1rem 0.75rem', display: 'flex', flexDirection: 'column', gap: '0.6rem', maxHeight: 220, overflowY: 'auto', scrollbarWidth: 'thin' }}>
-                          {selectedSections.map(section => {
-                            const scope  = sectionData[section.key] ?? {};
-                            const update = (patch: Record<string, any>) =>
-                              setSectionData(prev => ({ ...prev, [section.key]: { ...scope, ...patch } }));
-                            return (
-                              <div key={section.key} style={{ borderBottom: `1px solid ${ACCENT_BORDER}`, paddingBottom: '0.5rem' }}>
-                                <div style={{ fontSize: '0.6rem', color: ACCENT, fontWeight: 600, marginBottom: '0.35rem', textTransform: 'uppercase' }}>
-                                  {section.label} <span style={{ color: '#aaa', fontWeight: 400, textTransform: 'none' }}>· {section.source}</span>
-                                </div>
-                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
-                                  {section.source === 'tasks' && <>
-                                    <div style={{ flex: '1 1 200px' }}>
-                                      <div style={labelSt}>Tags</div>
-                                      <input value={(scope.tags ?? []).join(', ')} onChange={e => update({ tags: e.target.value.split(',').map((t: string) => t.trim()).filter(Boolean) })} placeholder="e.g. Jen Schroeder, Q2" style={inputSt(false)} />
-                                    </div>
-                                    <div style={{ flex: '0 0 160px' }}>
-                                      <div style={labelSt}>Buckets</div>
-                                      <input value={(scope.buckets ?? []).join(', ')} onChange={e => update({ buckets: e.target.value.split(',').map((t: string) => t.trim()).filter(Boolean) })} placeholder="now, soon…" style={inputSt(false)} />
-                                    </div>
-                                  </>}
-                                  {section.source === 'completions' && <>
-                                    <div style={{ flex: '0 0 120px' }}>
-                                      <div style={labelSt}>Window (days)</div>
-                                      <input type="number" value={scope.window_days ?? ''} onChange={e => update({ window_days: e.target.value ? Number(e.target.value) : null })} placeholder="7" style={inputSt(false)} />
-                                    </div>
-                                  </>}
-                                  {section.source === 'meetings' && <>
-                                    <div style={{ flex: '0 0 120px' }}>
-                                      <div style={labelSt}>Window (days)</div>
-                                      <input type="number" value={scope.window_days ?? ''} onChange={e => update({ window_days: e.target.value ? Number(e.target.value) : null })} placeholder="7" style={inputSt(false)} />
-                                    </div>
-                                    <div style={{ flex: '1 1 160px' }}>
-                                      <div style={labelSt}>Attendee filter</div>
-                                      <input value={scope.attendee ?? ''} onChange={e => update({ attendee: e.target.value || null })} placeholder="name" style={inputSt(false)} />
-                                    </div>
-                                  </>}
-                                  <div style={{ flex: '0 0 auto', display: 'flex', alignItems: 'flex-end' }}>
-                                    <button onClick={() => setSectionData(prev => ({ ...prev, [section.key]: {} }))}
-                                      style={{ background: 'none', border: '1px solid #e5e7eb', color: '#aaa', padding: '0.3rem 0.5rem', borderRadius: 4, fontSize: '0.6rem', fontFamily: 'monospace', cursor: 'pointer' }}>
-                                      clear
-                                    </button>
-                                  </div>
-                                </div>
-                              </div>
-                            );
-                          })}
-                          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                            <button onClick={() => setFiltersOpen(false)}
-                              style={{ background: ACCENT_BG, border: `1px solid ${ACCENT}`, color: ACCENT, padding: '0.25rem 0.75rem', borderRadius: 4, fontSize: '0.65rem', fontFamily: 'monospace', cursor: 'pointer' }}>
-                              Done
-                            </button>
-                          </div>
-                        </div>
-                      )}
                     </div>
                   )}
 
