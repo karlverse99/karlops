@@ -34,7 +34,9 @@ export async function POST(req: NextRequest) {
 
     if (!template_id) return NextResponse.json({ error: 'template_id required' }, { status: 400 });
 
-    const isPreview = run_mode === 'preview';
+    const isPreview = run_mode === 'preview';      // stub data
+    const isLive    = run_mode !== 'preview';       // use real data
+    const isSave    = run_mode === 'generate';      // save to external_reference
 
     // ── Load template ────────────────────────────────────────────────────────
     const { data: template, error: tErr } = await supabase
@@ -170,8 +172,8 @@ Return ONLY the document content — no preamble, no explanation, no code fences
     const output = data.content?.[0]?.text ?? '';
     if (!output) return NextResponse.json({ error: 'Generation produced no output' }, { status: 500 });
 
-    // Preview — return immediately, never save ───────────────────────────────
-    if (isPreview) {
+    // Preview (stub or live) — return immediately, never save ─────────────────
+    if (!isSave) {
       return NextResponse.json({ output, format: template.output_format ?? 'md', saved: false });
     }
 

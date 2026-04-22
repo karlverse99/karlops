@@ -54,6 +54,29 @@ const SUFFIX_OPTIONS = [
   { value: 'custom',   label: 'Custom suffix' },
 ];
 
+// ─── SECTION SCOPE TYPES ──────────────────────────────────────────────────────
+
+interface SectionDef {
+  key: string;
+  label: string;
+  source: string;
+  format: string;
+  default_scope?: Record<string, any>;
+}
+
+interface SectionScope { [key: string]: Record<string, any>; }
+
+function scopeHasValues(scope: SectionScope): boolean {
+  return Object.values(scope).some(s =>
+    Object.values(s).some(v => {
+      if (Array.isArray(v)) return v.length > 0;
+      if (typeof v === 'boolean') return v;
+      if (typeof v === 'number') return true;
+      return !!v;
+    })
+  );
+}
+
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 
 function getObjectIcon(concepts: ConceptEntry[], key: string): string {
@@ -165,9 +188,13 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const [running, setRunning]         = useState(false);
   const [runOutput, setRunOutput]     = useState<string | null>(null);
   const [runErr, setRunErr]           = useState('');
-  const [runMode, setRunMode]         = useState<'preview' | 'generate'>('preview');
+  const [runMode, setRunMode]         = useState<'preview' | 'preview_live' | 'generate'>('preview');
   const [copied, setCopied]           = useState(false);
   const [savedToExtracts, setSavedToExtracts] = useState(false);
+
+  // Data filters (section scope)
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [sectionData, setSectionData] = useState<SectionScope>({});
 
   // Karl Assist
   const [assistOpen, setAssistOpen]       = useState(false);
@@ -302,6 +329,12 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     setRunOutput(null); setRunErr(''); setSaveErr('');
     setAssistHistory([]); setAssistOpen(false); setAssistInput('');
     setSavedToExtracts(false); setSavedFlash(false);
+    setFiltersOpen(false);
+    // Seed sectionData from default_scope on each section
+    const sections: SectionDef[] = Array.isArray((t as any).sections) ? (t as any).sections : [];
+    const seed: SectionScope = {};
+    for (const s of sections) seed[s.key] = { ...(s.default_scope ?? {}) };
+    setSectionData(seed);
   };
 
   const startNew = () => {
@@ -311,17 +344,26 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     setRunOutput(null); setRunErr(''); setSaveErr('');
     setAssistHistory([]); setAssistOpen(false); setAssistInput('');
     setSavedToExtracts(false); setSavedFlash(false);
+    setFiltersOpen(false); setSectionData({});
   };
 
   const handleSave = async () => {
     if (!editName.trim()) { setSaveErr('Name is required'); return; }
     setSaving(true); setSaveErr('');
     try {
+      // Merge sectionData back into sections[].default_scope
+      const baseSections: SectionDef[] = selected ? (Array.isArray((selected as any).sections) ? (selected as any).sections : []) : [];
+      const updatedSections = baseSections.map(s => ({
+        ...s,
+        default_scope: sectionData[s.key] ?? s.default_scope ?? {},
+      }));
+
       if (isNew) {
         const { error } = await supabase.from('document_template').insert({
           user_id: userId, name: editName.trim(), description: editDesc.trim() || null,
           doc_type: '', output_format: editFormat, prompt_template: editInstructions.trim() || '',
           filename_suffix_format: editSuffixFormat,
+          sections: updatedSections,
           is_system: false, is_active: true,
         });
         if (error) throw error;
@@ -330,6 +372,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
           name: editName.trim(), description: editDesc.trim() || null,
           output_format: editFormat, prompt_template: editInstructions.trim() || '',
           filename_suffix_format: editSuffixFormat,
+          sections: updatedSections,
           updated_at: new Date().toISOString(),
         }).eq('document_template_id', selected.document_template_id);
         if (error) throw error;
@@ -350,16 +393,15 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   };
 
   // ── Run — single path through route. Route handles save for generate. ──────
-  const handleRun = async (mode: 'preview' | 'generate') => {
+  const handleRun = async (mode: 'preview' | 'preview_live' | 'generate') => {
     const templateId = selected?.document_template_id;
     if (!templateId) return;
     setRunMode(mode);
     setRunning(true); setRunErr(''); setSavedToExtracts(false);
 
-    // Build filename for this run (passed to route so it can name the extract)
     const existingCount = extractCounts[templateId] ?? 0;
-    const suffix = buildSuffix(editSuffixFormat, existingCount, editCustomSuffix);
-    const ext    = formatExtension(editFormat);
+    const suffix   = buildSuffix(editSuffixFormat, existingCount, editCustomSuffix);
+    const ext      = formatExtension(editFormat);
     const filename = `${editName} · ${suffix}.${ext}`;
 
     try {
@@ -370,8 +412,8 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
           template_id:           templateId,
           override_instructions: editInstructions.trim() || undefined,
           run_mode:              mode,
-          filename,               // passed to route for extract naming
-          extract_title:         editName, // display title, route appends suffix
+          section_data:          sectionData,
+          filename,
           suffix,
         }),
       });
@@ -380,7 +422,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
       setRunOutput(data.output ?? data.output_text ?? '');
       if (mode === 'generate' && data.saved) {
         setSavedToExtracts(true);
-        loadExtractCounts(); // refresh badge
+        loadExtractCounts();
       }
     } catch (err: any) { setRunErr(err.message ?? 'Run failed'); }
     finally { setRunning(false); }
@@ -433,6 +475,10 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const isEditing    = isNew || !!selected;
   const isSystem     = selected?.is_system ?? false;
   const templateIcon = getObjectIcon(concepts, 'document_template') || '📄';
+
+  const selectedSections: SectionDef[] = selected && Array.isArray((selected as any).sections)
+    ? (selected as any).sections : [];
+  const filtersHaveValues = scopeHasValues(sectionData);
 
   // Preview filename shown in UI
   const previewFilename = selected
@@ -618,6 +664,162 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                   )}
                 </div>
 
+                {/* ── DATA FILTERS STRIP ──────────────────────────── */}
+                {!isNew && selectedSections.length > 0 && (
+                  <div style={{ flexShrink: 0, borderBottom: filtersOpen ? `1px solid ${ACCENT_BORDER}` : '1px solid #e5e7eb' }}>
+
+                    {/* Toggle row */}
+                    <div
+                      onClick={() => setFiltersOpen(v => !v)}
+                      style={{
+                        padding: '0.35rem 1rem', display: 'flex', alignItems: 'center', gap: '0.5rem',
+                        cursor: 'pointer', userSelect: 'none',
+                        background: filtersHaveValues ? ACCENT_BG : '#fafafa',
+                        borderLeft: filtersHaveValues ? `3px solid ${ACCENT}` : '3px solid transparent',
+                      }}>
+                      <span style={{ fontSize: '0.6rem', color: filtersHaveValues ? ACCENT : '#aaa' }}>
+                        {filtersOpen ? '▼' : '▶'}
+                      </span>
+                      <span style={{ fontSize: '0.65rem', color: filtersHaveValues ? ACCENT : '#999', fontWeight: filtersHaveValues ? 600 : 400 }}>
+                        Data Filters
+                      </span>
+                      {filtersHaveValues && (
+                        <span style={{ fontSize: '0.58rem', color: ACCENT, background: '#ccfbf1', padding: '0.05rem 0.35rem', borderRadius: 2 }}>
+                          criteria set
+                        </span>
+                      )}
+                      <span style={{ flex: 1 }} />
+                      <span style={{ fontSize: '0.58rem', color: '#bbb' }}>
+                        {selectedSections.length} section{selectedSections.length !== 1 ? 's' : ''}
+                      </span>
+                    </div>
+
+                    {/* Expanded editor */}
+                    {filtersOpen && (
+                      <div style={{ background: '#f8fffe', padding: '0.5rem 1rem 0.75rem', display: 'flex', flexDirection: 'column', gap: '0.6rem', maxHeight: 260, overflowY: 'auto', scrollbarWidth: 'thin' }}>
+                        {selectedSections.map(section => {
+                          const scope = sectionData[section.key] ?? {};
+                          const update = (patch: Record<string, any>) =>
+                            setSectionData(prev => ({ ...prev, [section.key]: { ...scope, ...patch } }));
+
+                          return (
+                            <div key={section.key} style={{ borderBottom: `1px solid ${ACCENT_BORDER}`, paddingBottom: '0.5rem' }}>
+                              <div style={{ fontSize: '0.6rem', color: ACCENT, fontWeight: 600, marginBottom: '0.35rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                {section.label} <span style={{ color: '#aaa', fontWeight: 400, textTransform: 'none' }}>· {section.source}</span>
+                              </div>
+
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+
+                                {/* Tasks */}
+                                {section.source === 'tasks' && <>
+                                  <div style={{ flex: '1 1 200px' }}>
+                                    <div style={labelSt}>Tags (comma-separated)</div>
+                                    <input
+                                      value={(scope.tags ?? []).join(', ')}
+                                      onChange={e => update({ tags: e.target.value.split(',').map((t: string) => t.trim()).filter(Boolean) })}
+                                      placeholder="e.g. Jen Schroeder, Q2"
+                                      style={inputSt(false)} />
+                                  </div>
+                                  <div style={{ flex: '0 0 160px' }}>
+                                    <div style={labelSt}>Buckets (comma-separated)</div>
+                                    <input
+                                      value={(scope.buckets ?? []).join(', ')}
+                                      onChange={e => update({ buckets: e.target.value.split(',').map((t: string) => t.trim()).filter(Boolean) })}
+                                      placeholder="now, soon, delegate…"
+                                      style={inputSt(false)} />
+                                  </div>
+                                </>}
+
+                                {/* Completions */}
+                                {section.source === 'completions' && <>
+                                  <div style={{ flex: '0 0 120px' }}>
+                                    <div style={labelSt}>Window (days)</div>
+                                    <input
+                                      type="number" min={1} max={365}
+                                      value={scope.window_days ?? ''}
+                                      onChange={e => update({ window_days: e.target.value ? Number(e.target.value) : null })}
+                                      placeholder="7"
+                                      style={inputSt(false)} />
+                                  </div>
+                                  <div style={{ flex: '1 1 200px' }}>
+                                    <div style={labelSt}>Tags (comma-separated)</div>
+                                    <input
+                                      value={(scope.tags ?? []).join(', ')}
+                                      onChange={e => update({ tags: e.target.value.split(',').map((t: string) => t.trim()).filter(Boolean) })}
+                                      placeholder="e.g. Q2, Job Hunt"
+                                      style={inputSt(false)} />
+                                  </div>
+                                </>}
+
+                                {/* Meetings */}
+                                {section.source === 'meetings' && <>
+                                  <div style={{ flex: '0 0 120px' }}>
+                                    <div style={labelSt}>Window (days)</div>
+                                    <input
+                                      type="number" min={1} max={365}
+                                      value={scope.window_days ?? ''}
+                                      onChange={e => update({ window_days: e.target.value ? Number(e.target.value) : null })}
+                                      placeholder="7"
+                                      style={inputSt(false)} />
+                                  </div>
+                                  <div style={{ flex: '1 1 160px' }}>
+                                    <div style={labelSt}>Attendee filter</div>
+                                    <input
+                                      value={scope.attendee ?? ''}
+                                      onChange={e => update({ attendee: e.target.value || null })}
+                                      placeholder="e.g. Jen Schroeder"
+                                      style={inputSt(false)} />
+                                  </div>
+                                  <div style={{ flex: '0 0 120px', display: 'flex', alignItems: 'flex-end', paddingBottom: '0.05rem' }}>
+                                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.68rem', color: '#555', cursor: 'pointer' }}>
+                                      <input type="checkbox" checked={!!scope.completed_only}
+                                        onChange={e => update({ completed_only: e.target.checked })} />
+                                      Completed only
+                                    </label>
+                                  </div>
+                                </>}
+
+                                {/* Extracts / contacts — limit only */}
+                                {(section.source === 'extracts' || section.source === 'contacts') && (
+                                  <div style={{ flex: '0 0 120px' }}>
+                                    <div style={labelSt}>Limit</div>
+                                    <input
+                                      type="number" min={1} max={100}
+                                      value={scope.limit ?? ''}
+                                      onChange={e => update({ limit: e.target.value ? Number(e.target.value) : null })}
+                                      placeholder="10"
+                                      style={inputSt(false)} />
+                                  </div>
+                                )}
+
+                                {/* Situation — no controls */}
+                                {section.source === 'situation' && (
+                                  <span style={{ fontSize: '0.65rem', color: '#aaa', alignSelf: 'center' }}>No filters — always pulls active situation brief.</span>
+                                )}
+
+                                {/* Clear section button */}
+                                <div style={{ flex: '0 0 auto', display: 'flex', alignItems: 'flex-end' }}>
+                                  <button
+                                    onClick={() => setSectionData(prev => ({ ...prev, [section.key]: {} }))}
+                                    style={{ background: 'none', border: '1px solid #e5e7eb', color: '#aaa', padding: '0.3rem 0.5rem', borderRadius: 4, fontSize: '0.6rem', fontFamily: 'monospace', cursor: 'pointer' }}>
+                                    clear
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', paddingTop: '0.1rem' }}>
+                          <button onClick={() => setFiltersOpen(false)}
+                            style={{ background: ACCENT_BG, border: `1px solid ${ACCENT}`, color: ACCENT, padding: '0.25rem 0.75rem', borderRadius: 4, fontSize: '0.65rem', fontFamily: 'monospace', cursor: 'pointer' }}>
+                            Done
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {/* ── MAIN WORK AREA: instructions left, output right ── */}
                 <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
 
@@ -726,9 +928,10 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                       {runOutput
                         ? <>
                             <span style={{ color: ACCENT, fontSize: '0.65rem', fontWeight: 600 }}>
-                              {runMode === 'preview' ? '🔍 PREVIEW' : '✓ EXTRACT CREATED'}
+                              {runMode === 'preview' ? '🔍 PREVIEW' : runMode === 'preview_live' ? '🔍 PREVIEW · LIVE DATA' : '✓ EXTRACT CREATED'}
                             </span>
                             {runMode === 'preview' && <span style={{ color: '#999', fontSize: '0.6rem' }}>· stub data · not saved</span>}
+                            {runMode === 'preview_live' && <span style={{ color: '#999', fontSize: '0.6rem' }}>· live data · not saved</span>}
                             {runMode === 'generate' && savedToExtracts && <span style={{ color: '#999', fontSize: '0.6rem' }}>· {previewFilename}</span>}
                             <span style={{ flex: 1 }} />
                             <button onClick={handleCopy}
@@ -750,7 +953,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                         <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '1rem', background: '#fff' }}>
                           <KarlSpinner size="lg" color={ACCENT} />
                           <span style={{ color: '#888', fontSize: '0.78rem' }}>
-                            {runMode === 'preview' ? 'Previewing...' : 'Generating extract...'}
+                            {runMode === 'preview' ? 'Previewing...' : runMode === 'preview_live' ? 'Previewing with live data...' : 'Generating extract...'}
                           </span>
                         </div>
                       )}
@@ -786,22 +989,30 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                       </div>
                     )}
 
-                    {/* ── RIGHT FOOTER: Preview + Run+Create Extract ── */}
+                    {/* ── RIGHT FOOTER: 3 run buttons ─────────────── */}
                     {selected && !isNew && (
                       <div style={{ padding: '0.6rem 0.75rem', borderTop: '1px solid #e5e7eb', background: '#fafafa', display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0, justifyContent: 'flex-end' }}>
 
-                        {/* Preview */}
+                        {/* Preview — stub data */}
                         <Tooltip text="Runs with sample data to show layout. Nothing is saved.">
                           <button onClick={() => handleRun('preview')} disabled={running}
-                            style={{ background: 'transparent', border: `1px solid ${ACCENT}`, color: ACCENT, padding: '0.3rem 0.85rem', borderRadius: 4, fontSize: '0.68rem', fontFamily: 'monospace', cursor: running ? 'not-allowed' : 'pointer' }}>
+                            style={{ background: 'transparent', border: `1px solid ${ACCENT}`, color: ACCENT, padding: '0.3rem 0.75rem', borderRadius: 4, fontSize: '0.68rem', fontFamily: 'monospace', cursor: running ? 'not-allowed' : 'pointer', opacity: running && runMode !== 'preview' ? 0.5 : 1 }}>
                             {running && runMode === 'preview' ? '...' : '▶ Preview'}
                           </button>
                         </Tooltip>
 
-                        {/* Run + Create Extract */}
+                        {/* Preview with Data — live data, no save */}
+                        <Tooltip text="Runs with your live data using the current filters. Nothing is saved.">
+                          <button onClick={() => handleRun('preview_live')} disabled={running}
+                            style={{ background: 'transparent', border: `1px solid ${ACCENT}`, color: ACCENT, padding: '0.3rem 0.75rem', borderRadius: 4, fontSize: '0.68rem', fontFamily: 'monospace', cursor: running ? 'not-allowed' : 'pointer', opacity: running && runMode !== 'preview_live' ? 0.5 : 1 }}>
+                            {running && runMode === 'preview_live' ? '...' : '▶ Preview with Data'}
+                          </button>
+                        </Tooltip>
+
+                        {/* Run + Create Extract — live data, saves */}
                         <Tooltip text="Runs with live data and saves a versioned extract to your document history.">
                           <button onClick={() => handleRun('generate')} disabled={running}
-                            style={{ background: running && runMode === 'generate' ? '#0f2a27' : ACCENT, border: 'none', color: '#000', padding: '0.3rem 1.1rem', borderRadius: 4, fontSize: '0.68rem', fontFamily: 'monospace', cursor: running ? 'not-allowed' : 'pointer', fontWeight: 700 }}>
+                            style={{ background: running && runMode === 'generate' ? '#0f2a27' : ACCENT, border: 'none', color: '#000', padding: '0.3rem 1rem', borderRadius: 4, fontSize: '0.68rem', fontFamily: 'monospace', cursor: running ? 'not-allowed' : 'pointer', fontWeight: 700, opacity: running && runMode !== 'generate' ? 0.5 : 1 }}>
                             {running && runMode === 'generate' ? '...' : 'Run + Create Extract'}
                           </button>
                         </Tooltip>
