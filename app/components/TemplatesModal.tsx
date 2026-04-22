@@ -4,7 +4,6 @@ import { useEffect, useState, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import KarlSpinner from './KarlSpinner';
 import ElementPickerModal from './ElementPickerModal';
-import ValueResolverModal, { ResolvedValues } from './ValueResolverModal';
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 
@@ -22,7 +21,7 @@ interface Template {
   implementation_type: string | null;
   context_id: string | null;
   sections: SectionDef[];
-  selected_elements: string[];  // "object_type.field" strings
+  selected_elements: string[];        // "object_type.field" strings
   created_at: string;
 }
 
@@ -123,17 +122,6 @@ function formatExtension(outputFormat: string): string {
   }
 }
 
-/** Human-readable label for an element key like "task.tags" */
-function elementLabel(key: string): string {
-  const [objType, ...fieldParts] = key.split('.');
-  const field = fieldParts.join('.');
-  const objMap: Record<string, string> = { task: 'Task', completion: 'Completion', meeting: 'Meeting', contact: 'Contact', user_situation: 'Situation' };
-  const fieldMap: Record<string, string> = { tags: 'Tags', bucket_key: 'Bucket', buckets: 'Buckets', context_id: 'Context', window_days: 'Window', attendees: 'Attendees', attendee: 'Attendee', completed_only: 'Completed only', limit: 'Limit' };
-  const objLabel   = objMap[objType] ?? objType;
-  const fieldLabel = fieldMap[field] ?? field.replace(/_/g, ' ');
-  return `${objLabel} · ${fieldLabel}`;
-}
-
 // ─── TOOLTIP ──────────────────────────────────────────────────────────────────
 
 function Tooltip({ text, children }: { text: string; children: React.ReactNode }) {
@@ -180,7 +168,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const [editInstructions, setEditInstructions] = useState('');
   const [editSuffixFormat, setEditSuffixFormat] = useState<string>('datetime');
   const [editCustomSuffix, setEditCustomSuffix] = useState('');
-  const [editElements, setEditElements]         = useState<string[]>([]);  // selected_elements for current template
+  const [editElements, setEditElements]         = useState<string[]>([]);
   const [saving, setSaving]                     = useState(false);
   const [saveErr, setSaveErr]                   = useState('');
   const [savedFlash, setSavedFlash]             = useState(false);
@@ -196,9 +184,6 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   // Data Filters (section scope) — kept for legacy templates with sections[]
   const [filtersOpen, setFiltersOpen]       = useState(false);
   const [sectionData, setSectionData]       = useState<SectionScope>({});
-
-  // Resolver modal — fires before preview_live and generate when elements exist
-  const [resolverMode, setResolverMode]     = useState<'preview_live' | 'generate' | null>(null);
 
   // Element Picker modal
   const [pickerOpen, setPickerOpen]         = useState(false);
@@ -331,7 +316,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     setRunOutput(null); setRunErr(''); setSaveErr('');
     setAssistHistory([]); setAssistOpen(false); setAssistInput('');
     setSavedToExtracts(false); setSavedFlash(false);
-    setFiltersOpen(false); setResolverMode(null);
+    setFiltersOpen(false);
     // Seed sectionData from default_scope on each section
     const sections: SectionDef[] = Array.isArray(t.sections) ? t.sections : [];
     const seed: SectionScope = {};
@@ -343,11 +328,11 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     setSelected(null); setIsNew(true); setDeleteConfirm(false);
     setEditName(''); setEditDesc(''); setEditFormat('md'); setEditInstructions('');
     setEditSuffixFormat('datetime'); setEditCustomSuffix('');
-    setEditElements([]);
+    setEditElements([]); 
     setRunOutput(null); setRunErr(''); setSaveErr('');
     setAssistHistory([]); setAssistOpen(false); setAssistInput('');
     setSavedToExtracts(false); setSavedFlash(false);
-    setFiltersOpen(false); setSectionData({}); setResolverMode(null);
+    setFiltersOpen(false); setSectionData({});
   };
 
   const handleSave = async () => {
@@ -397,30 +382,15 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   };
 
   // ── Run flow ───────────────────────────────────────────────────────────────
-  // Preview (stub) — always immediate, no resolver.
-  // Preview with Data / Generate — if elements exist, open resolver first.
-  // If no elements, go straight to run.
+  // Preview (stub) — always immediate.
+  // Preview with Data / Generate — run directly using stored element_filters.
+  // No resolver modal — filters are set in ElementPickerModal and saved to template.
 
   const initiateRun = (mode: 'preview' | 'preview_live' | 'generate') => {
-    if (mode === 'preview') {
-      executeRun('preview', {});
-      return;
-    }
-    // For live modes: open resolver if there are selected elements
-    if (editElements.length > 0) {
-      setResolverMode(mode as 'preview_live' | 'generate');
-    } else {
-      executeRun(mode, {});
-    }
+    executeRun(mode);
   };
 
-  const handleResolverConfirm = (resolvedValues: ResolvedValues) => {
-    const mode = resolverMode!;
-    setResolverMode(null);
-    executeRun(mode, resolvedValues);
-  };
-
-  const executeRun = async (mode: 'preview' | 'preview_live' | 'generate', resolvedValues: ResolvedValues) => {
+  const executeRun = async (mode: 'preview' | 'preview_live' | 'generate') => {
     const templateId = selected?.document_template_id;
     if (!templateId) return;
     setRunMode(mode);
@@ -440,7 +410,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
           override_instructions: editInstructions.trim() || undefined,
           run_mode:              mode,
           section_data:          sectionData,
-          resolved_values:       resolvedValues,
+          selected_elements:     editElements,
           filename,
           suffix,
         }),
@@ -672,7 +642,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                         Data Elements
                       </span>
 
-                      {/* Element chips */}
+                      {/* Element chips — show object_type.field from field metadata keys */}
                       {editElements.length === 0
                         ? <span style={{ fontSize: '0.65rem', color: '#ccc', fontStyle: 'italic' }}>
                             none — runs use section defaults
@@ -683,7 +653,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                               color: '#0f766e', fontSize: '0.62rem', padding: '0.1rem 0.45rem',
                               borderRadius: 3, fontFamily: 'monospace',
                             }}>
-                              {elementLabel(el)}
+                              {el}
                             </span>
                           ))
                       }
@@ -984,7 +954,6 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
       {pickerOpen && selected && (
         <ElementPickerModal
           userId={userId}
-          accessToken={accessToken}
           templateId={selected.document_template_id}
           currentElements={editElements}
           onSave={elements => {
@@ -992,18 +961,6 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
             setPickerOpen(false);
           }}
           onClose={() => setPickerOpen(false)}
-        />
-      )}
-
-      {/* ── VALUE RESOLVER MODAL ───────────────────────────────────────────── */}
-      {resolverMode && (
-        <ValueResolverModal
-          userId={userId}
-          accessToken={accessToken}
-          selectedElements={editElements}
-          runMode={resolverMode}
-          onConfirm={handleResolverConfirm}
-          onCancel={() => setResolverMode(null)}
         />
       )}
     </>
