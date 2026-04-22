@@ -7,9 +7,22 @@ export const dynamic = 'force-dynamic';
 
 // ─── POST /api/ko/template/run ────────────────────────────────────────────────
 // Unified template execution endpoint — used by both modal and chat.
-// run_mode: 'preview' = stub data, never saves
-// run_mode: 'generate' = real data, encrypts and saves to external_reference
-// Body: { template_id, override_instructions?, run_mode?, section_data?, filename?, suffix? }
+//
+// run_mode: 'preview'      = stub data, never saves
+// run_mode: 'preview_live' = real data, never saves
+// run_mode: 'generate'     = real data, encrypts and saves to external_reference
+//
+// Pass-through mode: if template has NO sections[] and NO selected_elements,
+// the prompt_template content is encrypted directly and saved. No Haiku call.
+//
+// resolved_values: Record<"object_type.field", value> — from ValueResolverModal.
+//   Merged into section scope before data pull. Values override section default_scope.
+//   Keyed by "object_type.field" e.g. "task.tags", "meeting.attendee".
+//
+// Body: {
+//   template_id, override_instructions?, run_mode?,
+//   section_data?, resolved_values?, filename?, suffix?
+// }
 
 export async function POST(req: NextRequest) {
   try {
@@ -26,22 +39,21 @@ export async function POST(req: NextRequest) {
       template_id,
       override_instructions,
       run_mode = 'preview',
-      section_data = {},
-      // Filename fields — passed from modal so extract naming matches UI preview
+      section_data      = {},
+      resolved_values   = {},   // from ValueResolverModal — "object_type.field" → value
       filename: clientFilename,
-      suffix: clientSuffix,
+      suffix:   clientSuffix,
     } = body;
 
     if (!template_id) return NextResponse.json({ error: 'template_id required' }, { status: 400 });
 
-    const isPreview = run_mode === 'preview';      // stub data
-    const isLive    = run_mode !== 'preview';       // use real data
-    const isSave    = run_mode === 'generate';      // save to external_reference
+    const isPreview = run_mode === 'preview';
+    const isSave    = run_mode === 'generate';
 
     // ── Load template ────────────────────────────────────────────────────────
     const { data: template, error: tErr } = await supabase
       .from('document_template')
-      .select('name, description, prompt_template, sections, output_format, context_id, filename_suffix_format')
+      .select('name, description, prompt_template, sections, selected_elements, output_format, context_id, filename_suffix_format')
       .eq('document_template_id', template_id)
       .or(`user_id.eq.${user.id},is_system.eq.true`)
       .single();
@@ -49,10 +61,59 @@ export async function POST(req: NextRequest) {
     if (tErr || !template) return NextResponse.json({ error: 'Template not found' }, { status: 404 });
 
     const instructions = override_instructions?.trim() || template.prompt_template;
-    if (!instructions) return NextResponse.json({ error: 'Template has no formatting instructions. Add them before running.' }, { status: 400 });
 
-    const sections: Array<{ key: string; label: string; source: string; format: string }> =
+    const sections: Array<{ key: string; label: string; source: string; format: string; default_scope?: Record<string, any> }> =
       Array.isArray(template.sections) ? template.sections : [];
+    const selectedElements: string[] =
+      Array.isArray(template.selected_elements) ? template.selected_elements : [];
+
+    // ── PASS-THROUGH MODE ────────────────────────────────────────────────────
+    // No sections AND no selected_elements → this template is a plain document.
+    // For generate: encrypt prompt_template (or override_instructions) directly.
+    // For preview/preview_live: return the instructions as-is (nothing to generate).
+    if (sections.length === 0 && selectedElements.length === 0 && !isPreview) {
+      const content = instructions ?? '';
+      if (!content) return NextResponse.json({ error: 'Template has no content.' }, { status: 400 });
+
+      if (!isSave) {
+        // preview_live with no sections — just return the raw instructions
+        return NextResponse.json({ output: content, format: template.output_format ?? 'md', saved: false });
+      }
+
+      // Generate — encrypt and save directly, no Haiku call
+      const encryptedOutput = await encryptOutput(content);
+      const ext             = formatExtension(template.output_format ?? 'md');
+      const today           = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      const resolvedFilename = clientFilename?.trim() || `${template.name.toLowerCase().replace(/\s+/g, '-')}-${today}.${ext}`;
+      const resolvedSuffix   = clientSuffix?.trim() || today;
+      const extractTitle     = `${template.name} · ${resolvedSuffix}`;
+
+      const { error: saveError } = await supabase.from('external_reference').insert({
+        user_id:              user.id,
+        title:                extractTitle,
+        description:          template.description ?? null,
+        filename:             resolvedFilename,
+        location:             'generated',
+        run_data:             content,
+        output:               encryptedOutput,
+        output_encrypted:     true,
+        section_data:         null,
+        document_template_id: template_id,
+        ref_type:             'generated',
+        tags:                 [],
+      });
+
+      if (saveError) {
+        console.error('[template/run] pass-through save failed:', saveError);
+        return NextResponse.json({ output: content, format: template.output_format ?? 'md', saved: false, save_error: saveError.message });
+      }
+
+      console.log('[template/run] pass-through save — no Haiku call used');
+      return NextResponse.json({ output: content, format: template.output_format ?? 'md', saved: true, filename: resolvedFilename, title: extractTitle });
+    }
+
+    // Instructions required for non-pass-through paths
+    if (!instructions) return NextResponse.json({ error: 'Template has no formatting instructions. Add them before running.' }, { status: 400 });
 
     // ── Load bucket labels ───────────────────────────────────────────────────
     const { data: koUser } = await supabase.from('ko_user').select('implementation_type').eq('id', user.id).single();
@@ -70,29 +131,73 @@ export async function POST(req: NextRequest) {
       bucketLabels[c.concept_key.replace(/^bucket_/, '')] = c.label;
     }
 
+    // ── Merge resolved_values into section_data ───────────────────────────
+    // resolved_values are keyed "object_type.field" — we need to map them into
+    // section scopes. Strategy: for each section, find resolved_values whose
+    // object_type matches the section source, and merge the field value in.
+    //
+    // e.g. "task.tags" = ["Jen Schroeder"] applies to sections with source = "tasks"
+    //      "meeting.attendee" = "Jen Schroeder" applies to sections with source = "meetings"
+    //      "completion.window_days" = 14 applies to sections with source = "completions"
+    //
+    // source-to-object_type map:
+    const SOURCE_OBJECT_MAP: Record<string, string> = {
+      tasks:        'task',
+      completions:  'completion',
+      meetings:     'meeting',
+      contacts:     'contact',
+      situation:    'user_situation',
+      extracts:     'external_reference',
+    };
+
+    const mergedSectionData: Record<string, Record<string, any>> = {};
+
+    for (const section of sections) {
+      const baseScope      = section_data[section.key] ?? section.default_scope ?? {};
+      const expectedObjType = SOURCE_OBJECT_MAP[section.source] ?? section.source;
+
+      // Collect resolved_values whose object_type matches this section's source
+      const patch: Record<string, any> = {};
+      for (const [elKey, val] of Object.entries(resolved_values)) {
+        const [objType, ...fieldParts] = elKey.split('.');
+        const field = fieldParts.join('.');
+        if (objType === expectedObjType && val !== '' && val !== null && val !== undefined) {
+          // Array values only override if non-empty
+          if (!Array.isArray(val) || val.length > 0) patch[field] = val;
+        }
+      }
+
+      mergedSectionData[section.key] = { ...baseScope, ...patch };
+    }
+
     // ── Build section data blocks ────────────────────────────────────────────
-    const sectionBlocks: string[] = [];
     const today = new Date().toISOString().slice(0, 10);
+    const sectionBlocks: string[] = [];
 
     if (sections.length > 0) {
       for (const section of sections) {
-        const scope = section_data[section.key] ?? {};
+        const scope = mergedSectionData[section.key] ?? {};
         const content = isPreview
           ? generateStub(section.source, bucketLabels)
           : await pullSectionData(supabase, user.id, section.source, scope, bucketLabels);
         sectionBlocks.push(`[${section.key}] ${section.label}\nFormat: ${section.format}\nData:\n${content}`);
       }
     } else {
-      // Legacy — no sections defined, pull everything
+      // selected_elements with no sections — describe what we pulled
       if (isPreview) {
         sectionBlocks.push(generateStub('tasks', bucketLabels));
         sectionBlocks.push(generateStub('meetings', bucketLabels));
         sectionBlocks.push(generateStub('completions', bucketLabels));
       } else {
+        // Build a combined scope from all resolved_values
+        const combinedTaskScope       = buildCombinedScope(resolved_values, 'task');
+        const combinedCompletionScope = buildCombinedScope(resolved_values, 'completion');
+        const combinedMeetingScope    = buildCombinedScope(resolved_values, 'meeting');
+
         const [tasks, meetings, completions] = await Promise.all([
-          pullSectionData(supabase, user.id, 'tasks', { buckets: Object.keys(bucketLabels) }, bucketLabels),
-          pullSectionData(supabase, user.id, 'meetings', {}, bucketLabels),
-          pullSectionData(supabase, user.id, 'completions', {}, bucketLabels),
+          pullSectionData(supabase, user.id, 'tasks',       { buckets: Object.keys(bucketLabels), ...combinedTaskScope }, bucketLabels),
+          pullSectionData(supabase, user.id, 'meetings',    combinedMeetingScope, bucketLabels),
+          pullSectionData(supabase, user.id, 'completions', combinedCompletionScope, bucketLabels),
         ]);
         if (tasks !== '(no data)')       sectionBlocks.push(`Tasks:\n${tasks}`);
         if (meetings !== '(no data)')    sectionBlocks.push(`Meetings:\n${meetings}`);
@@ -128,7 +233,7 @@ export async function POST(req: NextRequest) {
       dataBlock,
     ].filter(Boolean).join('\n').trim();
 
-    // ── Generate via Haiku (separate rate limit from Sonnet routing) ─────────
+    // ── Generate via Haiku ───────────────────────────────────────────────────
     const systemPrompt = `You are Karl, generating a document for a KarlOps user.
 Follow the formatting instructions exactly. Use only the section data provided — do not invent data.
 ${isPreview ? 'This is a formatting preview — demonstrate the layout using stub data.' : ''}
@@ -172,24 +277,23 @@ Return ONLY the document content — no preamble, no explanation, no code fences
     const output = data.content?.[0]?.text ?? '';
     if (!output) return NextResponse.json({ error: 'Generation produced no output' }, { status: 500 });
 
-    // Preview (stub or live) — return immediately, never save ─────────────────
+    // Preview (stub or live) — return immediately, never save
     if (!isSave) {
       return NextResponse.json({ output, format: template.output_format ?? 'md', saved: false });
     }
 
-    // Generate — encrypt and save to external_reference ──────────────────────
+    // Generate — encrypt and save to external_reference
     const encryptedOutput = await encryptOutput(output);
 
-    // Use filename from modal if provided (includes user-chosen suffix + extension)
-    // Fallback: build from template name + today's date
-    const ext           = formatExtension(template.output_format ?? 'md');
-    const fallbackDate  = today.replace(/-/g, '');
+    const ext          = formatExtension(template.output_format ?? 'md');
+    const fallbackDate = today.replace(/-/g, '');
     const resolvedFilename = clientFilename?.trim()
       || `${template.name.toLowerCase().replace(/\s+/g, '-')}-${fallbackDate}.${ext}`;
-
-    // Title: template name + suffix (without extension) for clean display
     const resolvedSuffix = clientSuffix?.trim() || fallbackDate;
     const extractTitle   = `${template.name} · ${resolvedSuffix}`;
+
+    // Persist the merged scope (what actually ran) so extract is reproducible
+    const persistedSectionData = sections.length > 0 ? mergedSectionData : (Object.keys(resolved_values).length > 0 ? resolved_values : null);
 
     const { error: saveError } = await supabase.from('external_reference').insert({
       user_id:              user.id,
@@ -200,7 +304,7 @@ Return ONLY the document content — no preamble, no explanation, no code fences
       run_data:             fullPrompt,
       output:               encryptedOutput,
       output_encrypted:     true,
-      section_data:         Object.keys(section_data).length > 0 ? section_data : null,
+      section_data:         persistedSectionData,
       document_template_id: template_id,
       ref_type:             'generated',
       tags:                 [],
@@ -208,7 +312,6 @@ Return ONLY the document content — no preamble, no explanation, no code fences
 
     if (saveError) {
       console.error('[template/run] save failed:', saveError);
-      // Still return output even if save failed
       return NextResponse.json({ output, format: template.output_format ?? 'md', saved: false, save_error: saveError.message });
     }
 
@@ -230,6 +333,18 @@ function formatExtension(outputFormat: string): string {
     case 'pdf':   return 'pdf';
     default:      return 'md';
   }
+}
+
+/** Build a flat scope object from resolved_values for a given object type */
+function buildCombinedScope(resolvedValues: Record<string, any>, objectType: string): Record<string, any> {
+  const scope: Record<string, any> = {};
+  for (const [key, val] of Object.entries(resolvedValues)) {
+    const [objType, ...fieldParts] = key.split('.');
+    if (objType === objectType && val !== '' && val !== null && val !== undefined) {
+      if (!Array.isArray(val) || val.length > 0) scope[fieldParts.join('.')] = val;
+    }
+  }
+  return scope;
 }
 
 // ─── Section data puller ──────────────────────────────────────────────────────
@@ -256,6 +371,7 @@ async function pullSectionData(
       .order('sort_order', { ascending: true, nullsFirst: false });
     if (scope.context) q = q.eq('context_id', scope.context);
     if (scope.tags?.length) q = q.contains('tags', scope.tags);
+    if (scope.delegated_to) q = q.eq('delegated_to', scope.delegated_to);
 
     const { data: tasks } = await q;
     if (!tasks?.length) return '(no tasks)';
@@ -327,11 +443,11 @@ async function pullSectionData(
   }
 
   if (source === 'situation') {
-    const { data } = await supabase.from('user_situation').select('brief').eq('user_id', userId).eq('is_active', true).maybeSingle();
+    const { data } = await supabase
+      .from('user_situation').select('brief').eq('user_id', userId).eq('is_active', true).maybeSingle();
     return data?.brief?.trim() ?? '(no situation brief)';
   }
 
-  // 'extracts' source — list titles of existing extracts
   if (source === 'extracts') {
     const { data: extracts } = await supabase
       .from('external_reference').select('title').eq('user_id', userId)
