@@ -375,6 +375,20 @@ export default function ValueResolverModal({
   );
 }
 
+// ─── STYLES ───────────────────────────────────────────────────────────────────
+
+const inputSt: React.CSSProperties = {
+  width: '100%', background: '#fff', border: '1px solid #e5e7eb', color: '#222',
+  padding: '0.4rem 0.55rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.78rem',
+  outline: 'none', boxSizing: 'border-box',
+};
+
+const selectSt: React.CSSProperties = {
+  width: '100%', background: '#fff', border: '1px solid #e5e7eb', color: '#222',
+  padding: '0.4rem 0.55rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.78rem',
+  outline: 'none', boxSizing: 'border-box', cursor: 'pointer',
+};
+
 // ─── TAG SEARCH sub-component ─────────────────────────────────────────────────
 
 function TagSearch({ tags, selected, onToggle }: { tags: TagOption[]; selected: string[]; onToggle: (name: string) => void }) {
@@ -408,20 +422,4 @@ function TagSearch({ tags, selected, onToggle }: { tags: TagOption[]; selected: 
   );
 }
 
-// ─── STYLES ───────────────────────────────────────────────────────────────────
 
-const ACCENT        = '#14b8a6';
-const ACCENT_BG     = '#f0fdfa';
-const ACCENT_BORDER = '#99f6e4';
-
-const inputSt: React.CSSProperties = {
-  width: '100%', background: '#fff', border: '1px solid #e5e7eb', color: '#222',
-  padding: '0.4rem 0.55rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.78rem',
-  outline: 'none', boxSizing: 'border-box',
-};
-
-const selectSt: React.CSSProperties = {
-  width: '100%', background: '#fff', border: '1px solid #e5e7eb', color: '#222',
-  padding: '0.4rem 0.55rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.78rem',
-  outline: 'none', boxSizing: 'border-box', cursor: 'pointer',
-};
