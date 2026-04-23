@@ -453,7 +453,6 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const isEditing     = isNew || !!selected;
   const isSystem      = selected?.is_system ?? false;
   const templateIcon  = getObjectIcon(concepts, 'document_template') || '📄';
-  const templateIcon  = getObjectIcon(concepts, 'document_template') || '📄';
   const previewFilename = selected
     ? `${editName} · ${buildSuffix(editSuffixFormat, extractCounts[selected.document_template_id] ?? 0, editCustomSuffix)}.${formatExtension(editFormat)}`
     : '';
