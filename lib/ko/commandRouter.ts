@@ -1,13 +1,10 @@
 // lib/ko/commandRouter.ts
 // KarlOps L — Intent classification and enrichment
-// v1.4.1 — "save" after template preview correctly emits modify_pending with run_mode: save.
-// Enforced preview-first flow for run_template.
+// v1.5.0 — Split context for caching (static vs dynamic)
 
 import { createSupabaseAdmin } from '@/lib/supabase-server';
 import {
-  buildKarlContext,
   buildKarlDeepContext,
-  formatContextForPrompt,
   appendSessionMessage,
   writeKarlObservation,
   upsertKarlVocab,
@@ -81,6 +78,7 @@ export interface RouterResult {
   payload?: Record<string, any>;
   response?: string;
   error?: string;
+  usage?: any;
 }
 
 interface FieldMeta {
@@ -534,11 +532,15 @@ export async function routeCommand(
   user_id: string,
   input: string,
   pending: Record<string, any> | null = null,
-  context_filter: string | null = null
+  context_filter: string | null = null,
+  files: any[] = [],
+  contexts: { staticContext: string; dynamicContext: string }
 ): Promise<RouterResult> {
   const db = createSupabaseAdmin();
 
   try {
+    const { staticContext, dynamicContext } = contexts;
+
     const { data: allMeta } = await db
       .from('ko_field_metadata')
       .select('object_type, field, label, field_type, insert_behavior, update_behavior, description, llm_notes')
@@ -553,29 +555,16 @@ export async function routeCommand(
     const hasPending = !!pending;
     const isLong     = isLongInput(input);
 
-    const bundle = isDeep
-      ? await buildKarlDeepContext(user_id, context_filter)
-      : await buildKarlContext(user_id, context_filter);
-
-    const contextBlock = formatContextForPrompt(bundle);
     const pendingBlock = formatPendingForPrompt(pending);
 
-    const bucketConcepts = bundle.conceptRegistry.filter(c => c.concept_type === 'bucket');
-    const objectConcepts = bundle.conceptRegistry.filter(c => c.concept_type === 'object');
-    const actionConcepts = bundle.conceptRegistry.filter(c => c.concept_type === 'action');
-
-    const conceptRegistryGuide = bundle.conceptRegistry.length ? [
-      '## Concept Registry — Visual Language',
-      'Use these icons and labels in ALL responses, document previews, and template output.',
-      'Labels and icons come from this registry only — never use your own hardcoded labels or icons.',
-      '',
-      bucketConcepts.length ? 'Buckets: ' + bucketConcepts.map(c => `${c.icon ?? ''} ${c.label} (key: ${c.concept_key.replace('bucket_', '')})`).join(' · ') : '',
-      objectConcepts.length ? 'Objects: ' + objectConcepts.map(c => `${c.icon ?? ''} ${c.label} (key: ${c.concept_key})`).join(' · ') : '',
-      actionConcepts.length ? 'Actions: ' + actionConcepts.map(c => `${c.icon ?? ''} ${c.label}`).join(' · ') : '',
-    ].filter(Boolean).join('\n') : '';
+    const { data: sessionData } = await db.from('ko_session').select('messages').eq('user_id', user_id).maybeSingle();
+    const sessionMessages: any[] = sessionData?.messages ?? [];
+    const { data: situationData } = await db.from('user_situation').select('chat_history_depth').eq('user_id', user_id).eq('is_active', true).maybeSingle();
+    const historyDepth = situationData?.chat_history_depth ?? 15;
+    const recentMessages = sessionMessages.slice(-historyDepth);
 
     const anthropicMessages: { role: 'user' | 'assistant'; content: string }[] = [
-      ...bundle.recentMessages.map(m => ({
+      ...recentMessages.map(m => ({
         role: (m.role === 'karl' ? 'assistant' : 'user') as 'user' | 'assistant',
         content: m.content,
       })),
@@ -587,7 +576,7 @@ export async function routeCommand(
 
     const rejectedTags: string[] = [];
     const rejectPattern = /don'?t (?:use|want|include)\s+#?([A-Za-z0-9/_\-]+)/gi;
-    for (const msg of bundle.recentMessages) {
+    for (const msg of recentMessages) {
       if (msg.role !== 'user') continue;
       let match;
       rejectPattern.lastIndex = 0;
@@ -599,21 +588,13 @@ export async function routeCommand(
       ? `\n## Rejected Tags — NEVER suggest these\n${rejectedTags.join(', ')}`
       : '';
 
-    const observationInstructions = bundle.observations
-      ? `## Your Observations About This User\nYou have noticed these patterns. Use them actively.\n${bundle.observations}`
-      : '';
-
-    const systemPrompt = [
-      `You are Karl, an operational assistant inside KarlOps — a personal pressure system for getting things done. [v1.4.1]`,
+    const dynamicSystemPrompt = [
+      `You are Karl, an operational assistant inside KarlOps — a personal pressure system for getting things done. [v1.5.0]`,
       `Today's date: ${new Date().toISOString().slice(0, 10)}. When a user gives a date without a year, infer from today.`,
       '',
-      contextBlock,
+      dynamicContext,
       '',
       pendingBlock,
-      '',
-      observationInstructions,
-      '',
-      conceptRegistryGuide,
       '',
       '## Your Job',
       'Every user message comes to you. You decide what to do. No hardcoded action maps. No state machine. Just reason.',
@@ -778,7 +759,10 @@ export async function routeCommand(
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
         max_tokens: maxTokens,
-        system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
+        system: [
+          { type: 'text', text: staticContext, cache_control: { type: 'ephemeral' } },
+          { type: 'text', text: dynamicSystemPrompt },
+        ],
         messages: anthropicMessages,
       }),
     });
@@ -810,9 +794,9 @@ export async function routeCommand(
       if (text?.length > 10) {
         await appendSessionMessage(user_id, 'user', input);
         await appendSessionMessage(user_id, 'karl', text);
-        return { intent: 'question', response: text };
+        return { intent: 'question', response: text, usage };
       }
-      return { intent: 'unclear', response: 'Something went wrong parsing that. Try again.' };
+      return { intent: 'unclear', response: 'Something went wrong parsing that. Try again.', usage };
     }
 
     const intent       = parsed.intent as IntentType;
@@ -825,7 +809,6 @@ export async function routeCommand(
       persistLearning(user_id, parsed.learning).catch(() => {});
     }
 
-    // ── execute ────────────────────────────────────────────────────────────
     if (intent === 'execute') {
       const actions: KarlAction[] = parsed.actions ?? [];
       if (actions.length === 0 && parsed.title) {
@@ -834,10 +817,9 @@ export async function routeCommand(
           fields: { title: parsed.title, bucket_key: parsed.bucket_key ?? 'capture', context_id: parsed.context_id ?? null, tags: parsed.tags ?? [], notes: parsed.notes ?? null, target_date: parsed.target_date ?? null, delegated_to: parsed.delegated_to ?? null },
         });
       }
-      return { intent: 'execute', actions, response: karlResponse };
+      return { intent: 'execute', actions, response: karlResponse, usage };
     }
 
-    // ── pending / modify_pending ───────────────────────────────────────────
     if (intent === 'pending' || intent === 'modify_pending') {
       const isModify = intent === 'modify_pending';
       let actions: KarlAction[] = parsed.actions ?? [];
@@ -857,17 +839,15 @@ export async function routeCommand(
         }
       }
 
-      // ── allow_delete gate ──────────────────────────────────────────────
       for (const a of actions) {
         if ((a.action === 'delete_object' || a.action === 'delete') && a.object_type) {
           const allowed = await checkAllowDelete(user_id, a.object_type);
           if (!allowed) {
-            return { intent: 'question', response: `Delete on ${a.object_type} disabled by administrator.` };
+            return { intent: 'question', response: `Delete on ${a.object_type} disabled by administrator.`, usage };
           }
         }
       }
 
-      // Skip tag enrichment for run_template actions
       const nonTemplateActions = actions.filter(a => a.action !== 'run_template');
       const templateActions    = actions.filter(a => a.action === 'run_template');
       const enriched = nonTemplateActions.length > 0
@@ -885,25 +865,21 @@ export async function routeCommand(
         touchKarlVocabRule(user_id, rule.vocab_id).catch(() => {});
       }
 
-      return { intent, actions, response: karlResponse };
+      return { intent, actions, response: karlResponse, usage };
     }
 
-    // ── confirm / cancel / preview ─────────────────────────────────────────
-    if (intent === 'confirm_pending') return { intent: 'confirm_pending', response: karlResponse };
-    if (intent === 'cancel_pending')  return { intent: 'cancel_pending',  response: karlResponse };
-    if (intent === 'preview_pending') return { intent: 'preview_pending', response: karlResponse };
+    if (intent === 'confirm_pending') return { intent: 'confirm_pending', response: karlResponse, usage };
+    if (intent === 'cancel_pending')  return { intent: 'cancel_pending',  response: karlResponse, usage };
+    if (intent === 'preview_pending') return { intent: 'preview_pending', response: karlResponse, usage };
 
-    // ── open_form ──────────────────────────────────────────────────────────
     if (intent === 'open_form') {
-      return { intent: 'open_form', payload: { modal: parsed.modal, identifier: parsed.identifier ?? null, prefill: parsed.prefill ?? {} }, response: karlResponse };
+      return { intent: 'open_form', payload: { modal: parsed.modal, identifier: parsed.identifier ?? null, prefill: parsed.prefill ?? {} }, response: karlResponse, usage };
     }
 
-    // ── command ────────────────────────────────────────────────────────────
     if (intent === 'command' && parsed.command_type === 'open_tag_manager') {
-      return { intent: 'command', payload: { command_type: 'open_tag_manager' }, response: parsed.response ?? 'Opening tag manager.' };
+      return { intent: 'command', payload: { command_type: 'open_tag_manager' }, response: parsed.response ?? 'Opening tag manager.', usage };
     }
 
-    // ── question ───────────────────────────────────────────────────────────
     if (intent === 'question') {
       const qPayload: Record<string, any> = {};
       if (parsed.outcome_pending)    { qPayload.outcome_pending = true; qPayload.identifier = parsed.identifier; qPayload.object_type = parsed.object_type; }
@@ -913,10 +889,10 @@ export async function routeCommand(
         qPayload.template_choice_pending = true;
         qPayload.identifier = parsed.payload.identifier;
       }
-      return { intent: 'question', payload: Object.keys(qPayload).length ? qPayload : undefined, response: karlResponse };
+      return { intent: 'question', payload: Object.keys(qPayload).length ? qPayload : undefined, response: karlResponse, usage };
     }
 
-    return { intent, response: karlResponse };
+    return { intent, response: karlResponse, usage };
 
   } catch (err: any) {
     console.error('[commandRouter]', err);

@@ -35,7 +35,6 @@ interface BucketDef { key: string; label: string; icon: string; color: string; a
 interface Context { context_id: string; name: string; }
 interface TaskStatus { task_status_id: string; name: string; label: string; }
 
-
 interface PendingAction {
   intent: string;
   actions: any[];
@@ -44,13 +43,21 @@ interface PendingAction {
 }
 interface QueuedFile { name: string; type: string; data: string; size: number; }
 
-// Delegate modal state — used for both drag-drop and chat delegation_pending
 interface DelegateModalState {
   taskId: string;
   taskTitle: string;
   preselectedTagId?: string | null;
   preselectedName?: string | null;
   mode: 'drop' | 'update';
+}
+
+// ─── TOKEN TRACKING ──────────────────────────────────────────────────────────
+
+interface TokenUsage {
+  input: number;
+  output: number;
+  cache_write: number;
+  cache_read: number;
 }
 
 // ─── CONSTANTS ───────────────────────────────────────────────────────────────
@@ -138,6 +145,12 @@ function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)}KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+function formatTokens(n: number): string {
+  if (n < 1000) return `${n}`;
+  if (n < 1000000) return `${(n / 1000).toFixed(1)}k`;
+  return `${(n / 1000000).toFixed(2)}M`;
 }
 
 // ─── COMPONENTS: TaskPill ────────────────────────────────────────────────────
@@ -342,6 +355,10 @@ export default function WorkspacePage() {
   const [dragOverChat, setDragOverChat]       = useState(false);
   const [queuedFiles, setQueuedFiles]         = useState<QueuedFile[]>([]);
 
+  // ─── Token tracking ────────────────────────────────────────────────────────
+  const [sessionTokens, setSessionTokens]     = useState(0);
+  const [lastCallTokens, setLastCallTokens]   = useState<TokenUsage | null>(null);
+
   const draggedTask                            = useRef<Task | null>(null);
   const chatBottomRef                          = useRef<HTMLDivElement>(null);
   const inputRef                               = useRef<HTMLTextAreaElement>(null);
@@ -541,6 +558,19 @@ export default function WorkspacePage() {
    // ─── Unified command response handler ─────────────────────────────────────
 
   const handleCommandResponse = async (data: any) => {
+    // Track tokens if present
+    if (data.usage) {
+      const u = data.usage;
+      const total = (u.input_tokens ?? 0) + (u.output_tokens ?? 0);
+      setSessionTokens(prev => prev + total);
+      setLastCallTokens({
+        input: u.input_tokens ?? 0,
+        output: u.output_tokens ?? 0,
+        cache_write: u.cache_creation_input_tokens ?? 0,
+        cache_read: u.cache_read_input_tokens ?? 0,
+      });
+    }
+
     // Karl executed immediately (quick capture)
     if (data.intent === 'execute' || data.intent === 'capture_task') {
       setPending(null);
@@ -704,13 +734,12 @@ export default function WorkspacePage() {
     }
   };
 
-  // ─── File drop handler — queues files, waits for user hint ────────────────
+  // ─── File drop handler ─────────────────────────────────────────────────────
 
   const handleFileDrop = async (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     setDragOverChat(false);
 
-    // Ignore task drags from the left panel
     if (draggedTask.current) return;
 
     const droppedFiles = Array.from(e.dataTransfer.files);
@@ -753,7 +782,7 @@ export default function WorkspacePage() {
     }
   };
 
-  // ── Resolve identifier (e.g. "S1") to a task_id ───────────────────────────
+  // ── Resolve identifier ─────────────────────────────────────────────────────
 
   const resolveIdentifierToTaskId = (identifier: string): string | null => {
     if (!identifier) return null;
@@ -793,8 +822,6 @@ export default function WorkspacePage() {
     draggedTask.current = task;
   };
 
-  // ── Drop handler — intercepts delegate bucket, opens DelegateModal ─────────
-
   const handleDrop = async (targetBucketKey: string) => {
     const task = draggedTask.current;
     draggedTask.current = null;
@@ -819,8 +846,6 @@ export default function WorkspacePage() {
       await loadTasks(koUser.id);
     }
   };
-
-  // ── DelegateModal confirm — write bucket + delegated_to to DB ─────────────
 
   const handleDelegateConfirm = async (tagId: string, tagName: string) => {
     if (!delegateModal || !koUser) return;
@@ -848,8 +873,6 @@ export default function WorkspacePage() {
       addMessage('assistant', `Delegated to **${tagName}**. Task moved to Delegated bucket.`);
     }
   };
-
-  // ─── Reorder within bucket ────────────────────────────────────────────────
 
   const handleReorder = async (dropTargetId: string, dropIndex: number, bucketTasks: Task[]) => {
     const draggedId = draggedTask.current?.id;
@@ -902,6 +925,9 @@ export default function WorkspacePage() {
   const totalFiltered = filteredTasks.length;
   const hasFiles      = queuedFiles.length > 0;
   const canSend       = (input.trim() || hasFiles) && sessionReady && !thinking;
+
+  // Token counter color
+  const tokenColor = sessionTokens < 100000 ? '#4ade80' : sessionTokens < 500000 ? '#fbbf24' : '#ef4444';
 
   // ─── Render ────────────────────────────────────────────────────────────────
 
@@ -964,6 +990,19 @@ export default function WorkspacePage() {
           <span style={{ color: '#aaa', fontSize: '0.7rem' }}>{koUser?.implementation_type ?? '...'}</span>
           <span style={{ color: '#555', fontSize: '0.7rem' }}>|</span>
           <span style={{ color: '#aaa', fontSize: '0.7rem' }}>{koUser?.display_name ?? '...'}</span>
+          
+          {/* TOKEN COUNTER */}
+          <span style={{ color: '#555', fontSize: '0.7rem' }}>|</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.68rem' }}>
+            <span style={{ color: '#666' }}>tokens:</span>
+            <span style={{ color: tokenColor, fontWeight: 600 }}>{formatTokens(sessionTokens)}</span>
+            {lastCallTokens && (
+              <span style={{ color: '#444', fontSize: '0.62rem' }}>
+                (last: {formatTokens(lastCallTokens.input + lastCallTokens.output)}
+                {lastCallTokens.cache_read > 0 && <span style={{ color: '#4ade80' }}> ✓{formatTokens(lastCallTokens.cache_read)}</span>})
+              </span>
+            )}
+          </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -1020,11 +1059,10 @@ export default function WorkspacePage() {
           onMouseLeave={e => (e.currentTarget.style.background = '#1a1a1a')}
         />
 
-        {/* RIGHT: CHAT — file drop target */}
+        {/* RIGHT: CHAT */}
         <div
           style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative', outline: dragOverChat ? '1px dashed #4ade80' : '1px solid transparent', transition: 'outline 0.15s' }}
           onDragOver={e => {
-            // Only trigger for file drags, not task drags from the left panel
             if (!draggedTask.current && e.dataTransfer.types.includes('Files')) {
               e.preventDefault();
               setDragOverChat(true);
@@ -1036,7 +1074,6 @@ export default function WorkspacePage() {
           onDrop={handleFileDrop}
         >
 
-          {/* Drop overlay */}
           {dragOverChat && (
             <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.75)', zIndex: 10, pointerEvents: 'none' }}>
               <div style={{ color: '#4ade80', fontFamily: 'monospace', textAlign: 'center' }}>
@@ -1088,7 +1125,6 @@ export default function WorkspacePage() {
             <div ref={chatBottomRef} />
           </div>
 
-          {/* FILE QUEUE PILLS — shown above input when files are queued */}
           {hasFiles && (
             <div style={{ padding: '0.5rem 1.25rem 0', display: 'flex', flexWrap: 'wrap', gap: '0.4rem', borderTop: '1px solid #1a1a1a', background: '#0d0d0d' }}>
               {queuedFiles.map((f, i) => (
