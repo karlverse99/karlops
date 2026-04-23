@@ -25,6 +25,7 @@ export interface KarlContextBundle {
   observations: string;
   availableTags: string;
   availableContexts: string;
+  taskStatuses: string;
   vocab: string;
   fieldKnowledge: string;
   conceptRegistry: ConceptEntry[];
@@ -52,11 +53,9 @@ function trunc(text: string | null | undefined, max: number): string {
 }
 
 // ── Concept Registry ──────────────────────────────────────────────────────────
-// System table — no user_id. Filtered by implementation_type from ko_user.
 async function buildConceptRegistry(user_id: string): Promise<ConceptEntry[]> {
   const db = createSupabaseAdmin();
 
-  // Get implementation_type from ko_user (PK is `id`)
   const { data: koUser } = await db
     .from('ko_user')
     .select('implementation_type')
@@ -76,12 +75,10 @@ async function buildConceptRegistry(user_id: string): Promise<ConceptEntry[]> {
   return (data ?? []) as ConceptEntry[];
 }
 
-// Export for use in modals and other UI consumers
 export async function getConceptRegistry(user_id: string): Promise<ConceptEntry[]> {
   return buildConceptRegistry(user_id);
 }
 
-// Format concept registry for Karl's system prompt
 function formatConceptRegistry(concepts: ConceptEntry[]): string {
   if (!concepts.length) return '';
 
@@ -149,6 +146,7 @@ export async function buildKarlContext(user_id: string, context_filter: string |
     extractRes,
     templateRes,
     contactRes,
+    taskStatusRes,
     conceptRegistry,
   ] = await Promise.all([
     db.from('user_situation')
@@ -201,6 +199,12 @@ export async function buildKarlContext(user_id: string, context_filter: string |
       .select('contact_id, name, email, primary_contact_method, contact_method_detail, notes')
       .eq('user_id', user_id).eq('is_archived', false)
       .order('name', { ascending: true }).limit(20),
+    // ── Task statuses — Karl needs UUIDs to set task_status_id correctly ──────
+    db.from('task_status')
+      .select('task_status_id, label, display_order')
+      .eq('user_id', user_id)
+      .eq('is_active', true)
+      .order('display_order'),
     buildConceptRegistry(user_id),
   ]);
 
@@ -212,7 +216,6 @@ export async function buildKarlContext(user_id: string, context_filter: string |
   const allMessages: ChatMessage[] = sessionRes.data?.messages ?? [];
   const recentMessages = allMessages.slice(-historyDepth);
 
-  // Helper — look up icon from registry
   const getObjectIcon = (key: string): string => {
     const found = conceptRegistry.find(c => c.concept_key === key && c.concept_type === 'object');
     return found?.icon ?? '';
@@ -358,6 +361,11 @@ export async function buildKarlContext(user_id: string, context_filter: string |
     ? contextRes.data.map(c => `${c.name}|${c.context_id}`).join(', ')
     : 'none';
 
+  // ── Task statuses — label → UUID map for Karl ──────────────────────────────
+  const taskStatuses = taskStatusRes.data?.length
+    ? taskStatusRes.data.map(s => `  ${s.label} → ${s.task_status_id}`).join('\n')
+    : 'none';
+
   const vocab = vocabRes.data?.length
     ? vocabRes.data.map(v => {
         const base = `"${v.phrase}" → ${v.intent} (${v.object_type}) · used ${v.use_count}x`;
@@ -386,6 +394,7 @@ export async function buildKarlContext(user_id: string, context_filter: string |
     observations,
     availableTags,
     availableContexts,
+    taskStatuses,
     vocab,
     fieldKnowledge,
     conceptRegistry,
@@ -463,6 +472,11 @@ export function formatContextForPrompt(bundle: KarlContextBundle): string {
   parts.push(`## Available Tags\nOnly use tags from this list.\n${bundle.availableTags}`);
   parts.push(`## Available Contexts\nFormat: Name|context_id. Use the UUID when returning context_id in JSON.\n${bundle.availableContexts}`);
 
+  // ── Task statuses — Karl must use these UUIDs when setting task_status_id ──
+  if (bundle.taskStatuses && bundle.taskStatuses !== 'none') {
+    parts.push(`## Task Statuses\nAlways use the exact UUID when setting task_status_id. Never use the label string as the value.\n${bundle.taskStatuses}`);
+  }
+
   if (bundle.vocab) {
     parts.push(`## Learned Vocabulary & Rules
 Phrases and rules this user has defined. Rules marked [RULE] have structured actions that fire automatically.
@@ -476,7 +490,6 @@ Rules with confirm:false (silent) → apply automatically, mention briefly in re
     parts.push(`## Field Knowledge\nFor every FC object field: what it is (what:) and how this user tends to use it (how:).\n${bundle.fieldKnowledge}`);
   }
 
-  // Concept registry — Karl uses these icons/labels in all responses and document output
   if (bundle.conceptRegistry.length) {
     parts.push(`## Concept Registry
 Use these icons and labels when referencing buckets, objects, and actions in chat responses and document output.
@@ -542,7 +555,7 @@ export async function updateFieldLlmNotes(
   else console.log(`[updateFieldLlmNotes] updated ${object_type}.${field}`);
 }
 
-// ── Upsert karl_vocab — simple phrase/intent tracking ────────────────────────
+// ── Upsert karl_vocab ─────────────────────────────────────────────────────────
 export async function upsertKarlVocab(
   user_id: string,
   phrase: string,
