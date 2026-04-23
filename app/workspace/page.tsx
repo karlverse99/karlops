@@ -531,7 +531,7 @@ export default function WorkspacePage() {
     await loadTemplateCount(koUser.id);
   };
 
-  // ─── Unified command response handler ─────────────────────────────────────
+   // ─── Unified command response handler ─────────────────────────────────────
 
   const handleCommandResponse = async (data: any) => {
     // Karl executed immediately (quick capture)
@@ -572,7 +572,7 @@ export default function WorkspacePage() {
     if (data.intent === 'modify_pending') {
       const summary = data.payload?.title
         ?? (data.payload?.tasks?.length ? `${data.payload.tasks.length} tasks` : 'modified action');
-      setPending({ intent: data.payload?.action ?? 'capture_task', payload: data.payload ?? {}, summary });
+      setPending({ intent: data.payload?.action ?? 'capture_task', actions: data.actions ?? [], payload: data.payload ?? {}, summary });
       addMessage('assistant', data.response ?? 'Updated.');
       return;
     }
@@ -594,7 +594,7 @@ export default function WorkspacePage() {
     if (data.intent === 'pending') {
       const summary = data.payload?.title
         ?? (data.payload?.tasks?.length ? `${data.payload.tasks.length} tasks` : 'pending action');
-      setPending({ intent: data.payload?.action ?? 'capture_task', payload: data.payload ?? {}, summary });
+      setPending({ intent: data.payload?.action ?? 'capture_task', actions: data.actions ?? [], payload: data.payload ?? {}, summary });
       addMessage('assistant', data.response ?? '...');
       return;
     }
@@ -634,7 +634,7 @@ export default function WorkspacePage() {
     // Fallback — any other actionable intent with payload
     const isActionable = ['capture_task', 'capture_tasks', 'capture_completion', 'update_object', 'process_document'].includes(data.intent);
     if (isActionable && data.payload) {
-      setPending({ intent: data.intent, payload: data.payload, summary: buildPendingSummary(data) });
+      setPending({ intent: data.intent, actions: data.actions ?? [], payload: data.payload, summary: buildPendingSummary(data) });
     }
     addMessage('assistant', data.response ?? "I'm not sure what to do with that.");
   };
