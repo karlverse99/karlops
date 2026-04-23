@@ -34,7 +34,14 @@ interface ChatMessage { role: 'user' | 'assistant'; content: string; timestamp: 
 interface BucketDef { key: string; label: string; icon: string; color: string; accent: string; }
 interface Context { context_id: string; name: string; }
 interface TaskStatus { task_status_id: string; name: string; label: string; }
-interface PendingAction { intent: string; payload: Record<string, any>; summary: string; }
+
+
+interface PendingAction {
+  intent: string;
+  actions: any[];
+  payload: any;
+  summary: string;
+}
 interface QueuedFile { name: string; type: string; data: string; size: number; }
 
 // Delegate modal state — used for both drag-drop and chat delegation_pending
