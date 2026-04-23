@@ -1,27 +1,32 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createSupabaseAdmin } from '@/lib/supabase-server';
-import { buildKarlContext } from '@/lib/ko/buildKarlContext';
 import { encryptOutput } from '@/lib/ko/outputEncryption';
 
 export const dynamic = 'force-dynamic';
 
 // ─── POST /api/ko/template/run ────────────────────────────────────────────────
-// Unified template execution endpoint — used by both modal and chat.
 //
-// run_mode: 'preview'      = stub data, never saves
-// run_mode: 'preview_live' = real data, never saves
-// run_mode: 'generate'     = real data, encrypts and saves to external_reference
+// Architecture (v0.9.1):
+//   selected_elements[] — "object_type.field" strings — drives what data is pulled
+//   element_filters{}   — keyed by "object_type.field" — where clause per element
+//   karl_prompt         — Karl-generated formatting spec (prompt_template column)
+//   user_additions      — user free text appended to karl_prompt at run time
 //
-// Pass-through mode: if template has NO sections[] and NO selected_elements,
-// the prompt_template content is encrypted directly and saved. No Haiku call.
+// Full prompt sent to Haiku = karl_prompt + "\n\n" + user_additions (if any)
 //
-// resolved_values: Record<"object_type.field", value> — from ValueResolverModal.
-//   Merged into section scope before data pull. Values override section default_scope.
-//   Keyed by "object_type.field" e.g. "task.tags", "meeting.attendee".
+// run_mode:
+//   preview      — stub data, never saves
+//   preview_live — real data pulled via elements+filters, never saves
+//   generate     — real data, encrypts output, saves to external_reference
 //
 // Body: {
-//   template_id, override_instructions?, run_mode?,
-//   section_data?, resolved_values?, filename?, suffix?
+//   template_id,
+//   run_mode?,
+//   karl_prompt?,        // override stored prompt_template
+//   user_additions?,     // override stored user_prompt_additions
+//   selected_elements?,  // override stored selected_elements
+//   element_filters?,    // override stored element_filters
+//   filename?, suffix?
 // }
 
 export async function POST(req: NextRequest) {
@@ -37,12 +42,13 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const {
       template_id,
-      override_instructions,
-      run_mode = 'preview',
-      section_data      = {},
-      resolved_values   = {},   // from ValueResolverModal — "object_type.field" → value
-      filename: clientFilename,
-      suffix:   clientSuffix,
+      run_mode          = 'preview',
+      karl_prompt:      bodyKarlPrompt,
+      user_additions:   bodyUserAdditions,
+      selected_elements: bodyElements,
+      element_filters:   bodyFilters,
+      filename:         clientFilename,
+      suffix:           clientSuffix,
     } = body;
 
     if (!template_id) return NextResponse.json({ error: 'template_id required' }, { status: 400 });
@@ -53,70 +59,29 @@ export async function POST(req: NextRequest) {
     // ── Load template ────────────────────────────────────────────────────────
     const { data: template, error: tErr } = await supabase
       .from('document_template')
-      .select('name, description, prompt_template, sections, selected_elements, output_format, context_id, filename_suffix_format')
+      .select('name, description, prompt_template, user_prompt_additions, template_mode, selected_elements, element_filters, output_format, filename_suffix_format')
       .eq('document_template_id', template_id)
       .or(`user_id.eq.${user.id},is_system.eq.true`)
       .single();
 
     if (tErr || !template) return NextResponse.json({ error: 'Template not found' }, { status: 404 });
 
-    const instructions = override_instructions?.trim() || template.prompt_template;
+    // Body overrides take precedence over stored values (for live editing without save)
+    const karlPrompt    = (bodyKarlPrompt    ?? template.prompt_template         ?? '').trim();
+    const userAdditions = (bodyUserAdditions ?? template.user_prompt_additions   ?? '').trim();
+    const elements: string[] = bodyElements ?? (Array.isArray(template.selected_elements) ? template.selected_elements : []);
+    const filters: Record<string, any> = bodyFilters ?? (template.element_filters && typeof template.element_filters === 'object' ? template.element_filters : {});
 
-    const sections: Array<{ key: string; label: string; source: string; format: string; default_scope?: Record<string, any> }> =
-      Array.isArray(template.sections) ? template.sections : [];
-    const selectedElements: string[] =
-      Array.isArray(template.selected_elements) ? template.selected_elements : [];
+    // Combined prompt: Karl prompt + user additions
+    const fullPrompt = [karlPrompt, userAdditions].filter(Boolean).join('\n\n');
 
-    // ── PASS-THROUGH MODE ────────────────────────────────────────────────────
-    // No sections AND no selected_elements → this template is a plain document.
-    // For generate: encrypt prompt_template (or override_instructions) directly.
-    // For preview/preview_live: return the instructions as-is (nothing to generate).
-    if (sections.length === 0 && selectedElements.length === 0 && !isPreview) {
-      const content = instructions ?? '';
-      if (!content) return NextResponse.json({ error: 'Template has no content.' }, { status: 400 });
-
-      if (!isSave) {
-        // preview_live with no sections — just return the raw instructions
-        return NextResponse.json({ output: content, format: template.output_format ?? 'md', saved: false });
-      }
-
-      // Generate — encrypt and save directly, no Haiku call
-      const encryptedOutput = await encryptOutput(content);
-      const ext             = formatExtension(template.output_format ?? 'md');
-      const today           = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-      const resolvedFilename = clientFilename?.trim() || `${template.name.toLowerCase().replace(/\s+/g, '-')}-${today}.${ext}`;
-      const resolvedSuffix   = clientSuffix?.trim() || today;
-      const extractTitle     = `${template.name} · ${resolvedSuffix}`;
-
-      const { error: saveError } = await supabase.from('external_reference').insert({
-        user_id:              user.id,
-        title:                extractTitle,
-        description:          template.description ?? null,
-        filename:             resolvedFilename,
-        location:             'generated',
-        run_data:             content,
-        output:               encryptedOutput,
-        output_encrypted:     true,
-        section_data:         null,
-        document_template_id: template_id,
-        ref_type:             'generated',
-        tags:                 [],
-      });
-
-      if (saveError) {
-        console.error('[template/run] pass-through save failed:', saveError);
-        return NextResponse.json({ output: content, format: template.output_format ?? 'md', saved: false, save_error: saveError.message });
-      }
-
-      console.log('[template/run] pass-through save — no Haiku call used');
-      return NextResponse.json({ output: content, format: template.output_format ?? 'md', saved: true, filename: resolvedFilename, title: extractTitle });
+    if (!fullPrompt && !isPreview) {
+      return NextResponse.json({ error: 'Template has no prompt. Use Karl Assist to generate one first.' }, { status: 400 });
     }
 
-    // Instructions required for non-pass-through paths
-    if (!instructions) return NextResponse.json({ error: 'Template has no formatting instructions. Add them before running.' }, { status: 400 });
-
     // ── Load bucket labels ───────────────────────────────────────────────────
-    const { data: koUser } = await supabase.from('ko_user').select('implementation_type').eq('id', user.id).single();
+    const { data: koUser } = await supabase
+      .from('ko_user').select('implementation_type').eq('id', user.id).single();
     const implType = koUser?.implementation_type ?? 'personal';
 
     const { data: bucketConcepts } = await supabase
@@ -131,130 +96,80 @@ export async function POST(req: NextRequest) {
       bucketLabels[c.concept_key.replace(/^bucket_/, '')] = c.label;
     }
 
-    // ── Merge resolved_values into section_data ───────────────────────────
-    // resolved_values are keyed "object_type.field" — we need to map them into
-    // section scopes. Strategy: for each section, find resolved_values whose
-    // object_type matches the section source, and merge the field value in.
-    //
-    // e.g. "task.tags" = ["Jen Schroeder"] applies to sections with source = "tasks"
-    //      "meeting.attendee" = "Jen Schroeder" applies to sections with source = "meetings"
-    //      "completion.window_days" = 14 applies to sections with source = "completions"
-    //
-    // source-to-object_type map:
-    const SOURCE_OBJECT_MAP: Record<string, string> = {
-      tasks:        'task',
-      completions:  'completion',
-      meetings:     'meeting',
-      contacts:     'contact',
-      situation:    'user_situation',
-      extracts:     'external_reference',
-    };
+    // ── Build data block from selected_elements + element_filters ────────────
+    const today = new Date().toISOString().slice(0, 10);
 
-    const mergedSectionData: Record<string, Record<string, any>> = {};
-
-    for (const section of sections) {
-      const baseScope      = section_data[section.key] ?? section.default_scope ?? {};
-      const expectedObjType = SOURCE_OBJECT_MAP[section.source] ?? section.source;
-
-      // Collect resolved_values whose object_type matches this section's source
-      const patch: Record<string, any> = {};
-      for (const [elKey, val] of Object.entries(resolved_values)) {
-        const [objType, ...fieldParts] = elKey.split('.');
-        const field = fieldParts.join('.');
-        if (objType === expectedObjType && val !== '' && val !== null && val !== undefined) {
-          // Array values only override if non-empty
-          if (!Array.isArray(val) || val.length > 0) patch[field] = val;
-        }
-      }
-
-      mergedSectionData[section.key] = { ...baseScope, ...patch };
+    // Group elements by object_type to batch queries
+    const byType: Record<string, string[]> = {};
+    for (const el of elements) {
+      const [objType, ...fp] = el.split('.');
+      if (!byType[objType]) byType[objType] = [];
+      byType[objType].push(fp.join('.'));
     }
 
-    // ── Build section data blocks ────────────────────────────────────────────
-    const today = new Date().toISOString().slice(0, 10);
-    const sectionBlocks: string[] = [];
+    // Extract filter value for a given element key
+    const getFilter = (el: string) => filters[el] ?? null;
 
-    if (sections.length > 0) {
-      for (const section of sections) {
-        const scope = mergedSectionData[section.key] ?? {};
-        const content = isPreview
-          ? generateStub(section.source, bucketLabels)
-          : await pullSectionData(supabase, user.id, section.source, scope, bucketLabels);
-        sectionBlocks.push(`[${section.key}] ${section.label}\nFormat: ${section.format}\nData:\n${content}`);
+    const dataBlocks: string[] = [];
+
+    if (isPreview) {
+      // Stub data — one block per unique object type
+      for (const objType of Object.keys(byType)) {
+        dataBlocks.push(generateStub(objType, bucketLabels));
       }
     } else {
-      // selected_elements with no sections — describe what we pulled
-      if (isPreview) {
-        sectionBlocks.push(generateStub('tasks', bucketLabels));
-        sectionBlocks.push(generateStub('meetings', bucketLabels));
-        sectionBlocks.push(generateStub('completions', bucketLabels));
-      } else {
-        // Build a combined scope from all resolved_values
-        const combinedTaskScope       = buildCombinedScope(resolved_values, 'task');
-        const combinedCompletionScope = buildCombinedScope(resolved_values, 'completion');
-        const combinedMeetingScope    = buildCombinedScope(resolved_values, 'meeting');
-
-        const [tasks, meetings, completions] = await Promise.all([
-          pullSectionData(supabase, user.id, 'tasks',       { buckets: Object.keys(bucketLabels), ...combinedTaskScope }, bucketLabels),
-          pullSectionData(supabase, user.id, 'meetings',    combinedMeetingScope, bucketLabels),
-          pullSectionData(supabase, user.id, 'completions', combinedCompletionScope, bucketLabels),
-        ]);
-        if (tasks !== '(no data)')       sectionBlocks.push(`Tasks:\n${tasks}`);
-        if (meetings !== '(no data)')    sectionBlocks.push(`Meetings:\n${meetings}`);
-        if (completions !== '(no data)') sectionBlocks.push(`Completions:\n${completions}`);
+      // Real data — pull per object type, applying relevant element filters
+      for (const [objType, fields] of Object.entries(byType)) {
+        // Build a scope object from all filters for this object type
+        const scope: Record<string, any> = {};
+        for (const field of fields) {
+          const el  = `${objType}.${field}`;
+          const val = getFilter(el);
+          if (val !== null && val !== undefined && val !== '' && !(Array.isArray(val) && val.length === 0)) {
+            scope[field] = val;
+          }
+        }
+        const block = await pullObjectData(supabase, user.id, objType, scope, bucketLabels, fields);
+        if (block) dataBlocks.push(`${objType}:\n${block}`);
       }
     }
 
-    // ── Concept registry hints ───────────────────────────────────────────────
-    const bundle = await buildKarlContext(user.id, null);
-    const conceptHints = bundle.conceptRegistry.length
-      ? 'Concept registry (use these icons and labels only):\n' +
-        bundle.conceptRegistry
-          .filter(c => c.concept_type !== 'action')
-          .map(c => `  ${c.icon ?? ''} = ${c.label} (key: ${c.concept_key})`)
-          .join('\n')
-      : '';
+    const dataSection = dataBlocks.length > 0 ? dataBlocks.join('\n\n') : '(no data)';
 
-    const dataBlock = sectionBlocks.join('\n\n') || 'No data available.';
+    // ── Build Haiku prompt ───────────────────────────────────────────────────
+    const systemPrompt = `You are Karl, a precision document generator for a KarlOps user.
+Your job: follow the formatting prompt exactly, populate it with the provided data.
+Use only the data provided — never invent facts.
+${isPreview ? 'This is a STUB PREVIEW — demonstrate layout with sample data only.' : ''}
+Output format: ${template.output_format ?? 'md'}.
+Today: ${today}.
+Return ONLY the document — no preamble, no explanation, no code fences.`;
 
-    const fullPrompt = [
+    const userMessage = [
       `Template: ${template.name}`,
       template.description ? `Purpose: ${template.description}` : '',
-      `Date: ${today}`,
       '',
-      'Formatting Instructions:',
-      instructions,
+      '── Formatting Prompt ──',
+      fullPrompt || '(no prompt — format data clearly)',
       '',
-      conceptHints,
-      '',
-      isPreview ? 'NOTE: FORMATTING PREVIEW — use stub data as-is to demonstrate layout.' : '',
-      '',
-      'Section Data:',
-      dataBlock,
-    ].filter(Boolean).join('\n').trim();
+      '── Data ──',
+      dataSection,
+    ].filter(s => s !== undefined).join('\n').trim();
 
-    // ── Generate via Haiku ───────────────────────────────────────────────────
-    const systemPrompt = `You are Karl, generating a document for a KarlOps user.
-Follow the formatting instructions exactly. Use only the section data provided — do not invent data.
-${isPreview ? 'This is a formatting preview — demonstrate the layout using stub data.' : ''}
-Format output in ${template.output_format ?? 'md'}.
-Use concept registry icons/labels for section headers. Never hardcode labels.
-Replace {date} with today's date: ${today}.
-Return ONLY the document content — no preamble, no explanation, no code fences.`;
-
+    // ── Call Haiku ───────────────────────────────────────────────────────────
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': process.env.ANTHROPIC_API_KEY!,
+        'Content-Type':    'application/json',
+        'x-api-key':       process.env.ANTHROPIC_API_KEY!,
         'anthropic-version': '2023-06-01',
-        'anthropic-beta': 'prompt-caching-2024-07-31',
+        'anthropic-beta':  'prompt-caching-2024-07-31',
       },
       body: JSON.stringify({
         model:      'claude-haiku-4-5-20251001',
         max_tokens: 2000,
         system:     [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
-        messages:   [{ role: 'user', content: fullPrompt }],
+        messages:   [{ role: 'user', content: userMessage }],
       }),
     });
 
@@ -268,32 +183,27 @@ Return ONLY the document content — no preamble, no explanation, no code fences
 
     if (data.error) {
       const msg = data.error.message ?? 'Generation failed';
-      if (msg.toLowerCase().includes('rate limit')) {
-        return NextResponse.json({ error: 'Rate limit hit — try reducing the date window or filtering by context.' }, { status: 429 });
-      }
+      if (msg.toLowerCase().includes('rate limit'))
+        return NextResponse.json({ error: 'Rate limit hit — try narrowing your filters.' }, { status: 429 });
       return NextResponse.json({ error: msg }, { status: 500 });
     }
 
     const output = data.content?.[0]?.text ?? '';
     if (!output) return NextResponse.json({ error: 'Generation produced no output' }, { status: 500 });
 
-    // Preview (stub or live) — return immediately, never save
+    // Preview modes — return immediately, never save
     if (!isSave) {
       return NextResponse.json({ output, format: template.output_format ?? 'md', saved: false });
     }
 
-    // Generate — encrypt and save to external_reference
+    // Generate — encrypt and save
     const encryptedOutput = await encryptOutput(output);
-
-    const ext          = formatExtension(template.output_format ?? 'md');
-    const fallbackDate = today.replace(/-/g, '');
+    const ext             = formatExtension(template.output_format ?? 'md');
+    const fallbackDate    = today.replace(/-/g, '');
     const resolvedFilename = clientFilename?.trim()
       || `${template.name.toLowerCase().replace(/\s+/g, '-')}-${fallbackDate}.${ext}`;
-    const resolvedSuffix = clientSuffix?.trim() || fallbackDate;
-    const extractTitle   = `${template.name} · ${resolvedSuffix}`;
-
-    // Persist the merged scope (what actually ran) so extract is reproducible
-    const persistedSectionData = sections.length > 0 ? mergedSectionData : (Object.keys(resolved_values).length > 0 ? resolved_values : null);
+    const resolvedSuffix   = clientSuffix?.trim() || fallbackDate;
+    const extractTitle     = `${template.name} · ${resolvedSuffix}`;
 
     const { error: saveError } = await supabase.from('external_reference').insert({
       user_id:              user.id,
@@ -301,10 +211,10 @@ Return ONLY the document content — no preamble, no explanation, no code fences
       description:          template.description ?? null,
       filename:             resolvedFilename,
       location:             'generated',
-      run_data:             fullPrompt,
+      run_data:             userMessage,
       output:               encryptedOutput,
       output_encrypted:     true,
-      section_data:         persistedSectionData,
+      section_data:         Object.keys(filters).length > 0 ? filters : null,
       document_template_id: template_id,
       ref_type:             'generated',
       tags:                 [],
@@ -315,7 +225,10 @@ Return ONLY the document content — no preamble, no explanation, no code fences
       return NextResponse.json({ output, format: template.output_format ?? 'md', saved: false, save_error: saveError.message });
     }
 
-    return NextResponse.json({ output, format: template.output_format ?? 'md', saved: true, filename: resolvedFilename, title: extractTitle });
+    return NextResponse.json({
+      output, format: template.output_format ?? 'md',
+      saved: true, filename: resolvedFilename, title: extractTitle,
+    });
 
   } catch (err: any) {
     console.error('[template/run]', err);
@@ -327,51 +240,42 @@ Return ONLY the document content — no preamble, no explanation, no code fences
 
 function formatExtension(outputFormat: string): string {
   switch (outputFormat) {
-    case 'html':  return 'html';
-    case 'txt':   return 'txt';
-    case 'docx':  return 'docx';
-    case 'pdf':   return 'pdf';
-    default:      return 'md';
+    case 'html': return 'html';
+    case 'txt':  return 'txt';
+    case 'docx': return 'docx';
+    case 'pdf':  return 'pdf';
+    default:     return 'md';
   }
 }
 
-/** Build a flat scope object from resolved_values for a given object type */
-function buildCombinedScope(resolvedValues: Record<string, any>, objectType: string): Record<string, any> {
-  const scope: Record<string, any> = {};
-  for (const [key, val] of Object.entries(resolvedValues)) {
-    const [objType, ...fieldParts] = key.split('.');
-    if (objType === objectType && val !== '' && val !== null && val !== undefined) {
-      if (!Array.isArray(val) || val.length > 0) scope[fieldParts.join('.')] = val;
-    }
-  }
-  return scope;
-}
+// ─── Per-object data puller ───────────────────────────────────────────────────
+// scope: field → filter value (from element_filters, keyed by field name only)
+// fields: which fields were selected for this object type
+// RULE: notes and description NEVER included
 
-// ─── Section data puller ──────────────────────────────────────────────────────
-// RULE: notes and description NEVER included — display-only fields
-
-async function pullSectionData(
-  supabase: any,
-  userId: string,
-  source: string,
-  scope: Record<string, any>,
-  bucketLabels: Record<string, string>
+async function pullObjectData(
+  supabase:     any,
+  userId:       string,
+  objType:      string,
+  scope:        Record<string, any>,
+  bucketLabels: Record<string, string>,
+  fields:       string[],
 ): Promise<string> {
   const today = new Date().toISOString().slice(0, 10);
 
-  if (source === 'tasks') {
-    const buckets: string[] = scope.buckets ?? Object.keys(bucketLabels);
+  if (objType === 'task') {
+    const buckets: string[] = Array.isArray(scope.bucket_key) ? scope.bucket_key
+      : scope.bucket_key ? [scope.bucket_key] : Object.keys(bucketLabels);
     let q = supabase
       .from('task')
-      .select('title, bucket_key, tags, target_date, context:context_id(name), task_status:task_status_id(label)')
+      .select('title, bucket_key, tags, target_date, task_status:task_status_id(label)')
       .eq('user_id', userId)
       .eq('is_completed', false)
       .eq('is_archived', false)
       .in('bucket_key', buckets)
       .order('sort_order', { ascending: true, nullsFirst: false });
-    if (scope.context) q = q.eq('context_id', scope.context);
+    if (scope.context_id)  q = q.eq('context_id', scope.context_id);
     if (scope.tags?.length) q = q.contains('tags', scope.tags);
-    if (scope.delegated_to) q = q.eq('delegated_to', scope.delegated_to);
 
     const { data: tasks } = await q;
     if (!tasks?.length) return '(no tasks)';
@@ -382,58 +286,58 @@ async function pullSectionData(
       const status  = (t.task_status as any)?.label ?? '';
       const due     = t.target_date ? String(t.target_date).slice(0, 10) : null;
       const overdue = due && due < today ? ' [OVERDUE]' : '';
-      byBucket[t.bucket_key].push(`- ${t.title}${status ? ' · ' + status : ''}${due ? ' · Due: ' + due + overdue : ''}`);
+      byBucket[t.bucket_key].push(
+        `- ${t.title}${status ? ' · ' + status : ''}${due ? ' · Due: ' + due + overdue : ''}`
+      );
     }
     return Object.entries(byBucket)
       .map(([b, items]) => `${bucketLabels[b] ?? b}:\n${items.join('\n')}`)
       .join('\n\n');
   }
 
-  if (source === 'completions') {
-    const windowDays = scope.window_days ?? null;
+  if (objType === 'completion') {
     let q = supabase
       .from('completion')
-      .select('title, completed_at, outcome, context:context_id(name)')
+      .select('title, completed_at, outcome')
       .eq('user_id', userId)
       .order('completed_at', { ascending: false });
-    if (windowDays) {
+    if (scope.window_days) {
       const since = new Date();
-      since.setDate(since.getDate() - windowDays);
+      since.setDate(since.getDate() - Number(scope.window_days));
       q = q.gte('completed_at', since.toISOString());
     }
-    if (scope.context) q = q.eq('context_id', scope.context);
+    if (scope.context_id)  q = q.eq('context_id', scope.context_id);
     if (scope.tags?.length) q = q.contains('tags', scope.tags);
 
-    const { data: completions } = await q;
-    if (!completions?.length) return '(no completions)';
-    return completions.map((c: any) => {
+    const { data } = await q;
+    if (!data?.length) return '(no completions)';
+    return data.map((c: any) => {
       const date    = String(c.completed_at ?? '').slice(0, 10);
       const outcome = c.outcome ? ` · ${c.outcome}` : '';
       return `- ${c.title} · Completed: ${date}${outcome}`;
     }).join('\n');
   }
 
-  if (source === 'meetings') {
-    const windowDays = scope.window_days ?? null;
+  if (objType === 'meeting') {
     let q = supabase
       .from('meeting')
-      .select('title, meeting_date, attendees, outcome, context:context_id(name)')
+      .select('title, meeting_date, attendees, outcome')
       .eq('user_id', userId)
       .order('meeting_date', { ascending: false })
       .limit(50);
-    if (windowDays) {
+    if (scope.window_days) {
       const since = new Date();
-      since.setDate(since.getDate() - windowDays);
+      since.setDate(since.getDate() - Number(scope.window_days));
       q = q.gte('meeting_date', since.toISOString().slice(0, 10));
     }
     if (scope.completed_only) q = q.eq('is_completed', true);
-    if (scope.context) q = q.eq('context_id', scope.context);
-    if (scope.attendee) q = q.contains('attendees', [scope.attendee]);
-    if (scope.tags?.length) q = q.contains('tags', scope.tags);
+    if (scope.context_id)     q = q.eq('context_id', scope.context_id);
+    if (scope.attendee)       q = q.contains('attendees', [scope.attendee]);
+    if (scope.tags?.length)   q = q.contains('tags', scope.tags);
 
-    const { data: meetings } = await q;
-    if (!meetings?.length) return '(no meetings)';
-    return meetings.map((m: any) => {
+    const { data } = await q;
+    if (!data?.length) return '(no meetings)';
+    return data.map((m: any) => {
       const date    = String(m.meeting_date ?? '').slice(0, 10);
       const att     = m.attendees?.length ? ` · ${m.attendees.join(', ')}` : '';
       const outcome = m.outcome ? ` · ${m.outcome}` : '';
@@ -442,34 +346,34 @@ async function pullSectionData(
     }).join('\n');
   }
 
-  if (source === 'situation') {
+  if (objType === 'contact') {
+    const { data } = await supabase
+      .from('contact').select('name').eq('user_id', userId).eq('is_archived', false)
+      .order('name').limit(Number(scope.limit) || 20);
+    if (!data?.length) return '(no contacts)';
+    return data.map((c: any) => `- ${c.name}`).join('\n');
+  }
+
+  if (objType === 'user_situation') {
     const { data } = await supabase
       .from('user_situation').select('brief').eq('user_id', userId).eq('is_active', true).maybeSingle();
     return data?.brief?.trim() ?? '(no situation brief)';
   }
 
-  if (source === 'extracts') {
-    const { data: extracts } = await supabase
+  if (objType === 'external_reference') {
+    const { data } = await supabase
       .from('external_reference').select('title').eq('user_id', userId)
-      .order('created_at', { ascending: false }).limit(scope.limit ?? 10);
-    if (!extracts?.length) return '(no extracts)';
-    return extracts.map((r: any) => `- ${r.title}`).join('\n');
+      .order('created_at', { ascending: false }).limit(Number(scope.limit) || 10);
+    if (!data?.length) return '(no extracts)';
+    return data.map((r: any) => `- ${r.title}`).join('\n');
   }
 
-  if (source === 'contacts') {
-    const { data: contacts } = await supabase
-      .from('contact').select('name').eq('user_id', userId).eq('is_archived', false)
-      .order('name').limit(scope.limit ?? 20);
-    if (!contacts?.length) return '(no contacts)';
-    return contacts.map((c: any) => `- ${c.name}`).join('\n');
-  }
-
-  return `(unknown source: ${source})`;
+  return `(no handler for ${objType})`;
 }
 
 // ─── Stub data for preview ────────────────────────────────────────────────────
 
-function generateStub(source: string, bucketLabels: Record<string, string>): string {
+function generateStub(objType: string, bucketLabels: Record<string, string>): string {
   const today     = new Date().toISOString().slice(0, 10);
   const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
   const lastWeek  = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
@@ -477,38 +381,35 @@ function generateStub(source: string, bucketLabels: Record<string, string>): str
   const overdue   = new Date(Date.now() - 3 * 86400000).toISOString().slice(0, 10);
   const labels    = Object.values(bucketLabels);
 
-  switch (source) {
-    case 'tasks':
+  switch (objType) {
+    case 'task':
       return [
         `${labels[0] ?? 'Now'}:`,
         `- Sample Task A · Active · Due: ${today}`,
         `- Sample Task B · Waiting · Due: ${overdue} [OVERDUE]`,
-        ``,
+        '',
         `${labels[1] ?? 'Soon'}:`,
         `- Sample Task C · Active · Due: ${nextWeek}`,
-        ``,
-        `${labels[4] ?? 'Delegate'}:`,
-        `- Sample Task D · Waiting · Due: ${overdue} [OVERDUE]`,
       ].join('\n');
-    case 'completions':
+    case 'completion':
       return [
         `- Completed Item A · Completed: ${today} · Delivered on schedule`,
         `- Completed Item B · Completed: ${yesterday} · Reviewed and approved`,
         `- Completed Item C · Completed: ${lastWeek}`,
       ].join('\n');
-    case 'meetings':
+    case 'meeting':
       return [
         `- Weekly Sync · Alice, Bob · ${yesterday}`,
         `- Project Kickoff · Alice, Carol · ${lastWeek} · Aligned on scope`,
         `- Planning Session · Bob, Dave · ${nextWeek} [upcoming]`,
       ].join('\n');
-    case 'situation':
-      return `Currently focused on Q2 delivery with active projects across multiple contexts.`;
-    case 'extracts':
-      return `- Sample Extract Document\n- Another Extract`;
-    case 'contacts':
-      return `- Alice Smith\n- Bob Jones`;
+    case 'user_situation':
+      return 'Currently focused on Q2 delivery with active projects across multiple contexts.';
+    case 'external_reference':
+      return '- Sample Extract A\n- Sample Extract B';
+    case 'contact':
+      return '- Alice Smith\n- Bob Jones';
     default:
-      return `(stub data for ${source})`;
+      return `(stub data for ${objType})`;
   }
 }

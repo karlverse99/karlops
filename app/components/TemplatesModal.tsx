@@ -11,7 +11,6 @@ interface Template {
   document_template_id: string;
   name: string;
   description: string | null;
-  doc_type: string | null;
   prompt_template: string;
   output_format: string;
   filename_suffix_format: string | null;
@@ -20,8 +19,10 @@ interface Template {
   is_active: boolean;
   implementation_type: string | null;
   context_id: string | null;
-  sections: SectionDef[];
-  selected_elements: string[];        // "object_type.field" strings
+  selected_elements: string[];
+  element_filters: Record<string, any>;
+  user_prompt_additions: string | null;
+  template_mode: string;
   created_at: string;
 }
 
@@ -56,18 +57,6 @@ const SUFFIX_OPTIONS = [
   { value: 'version',  label: 'Version (v1, v2, v3…)' },
   { value: 'custom',   label: 'Custom suffix' },
 ];
-
-// ─── SECTION SCOPE TYPES ──────────────────────────────────────────────────────
-
-interface SectionDef {
-  key: string;
-  label: string;
-  source: string;
-  format: string;
-  default_scope?: Record<string, any>;
-}
-
-interface SectionScope { [key: string]: Record<string, any>; }
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 
@@ -162,27 +151,27 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const [isMaximized, setIsMaximized]     = useState(false);
 
   // Edit state
-  const [editName, setEditName]                 = useState('');
-  const [editDesc, setEditDesc]                 = useState('');
-  const [editFormat, setEditFormat]             = useState('md');
-  const [editInstructions, setEditInstructions] = useState('');
-  const [editSuffixFormat, setEditSuffixFormat] = useState<string>('datetime');
-  const [editCustomSuffix, setEditCustomSuffix] = useState('');
-  const [editElements, setEditElements]         = useState<string[]>([]);
-  const [saving, setSaving]                     = useState(false);
-  const [saveErr, setSaveErr]                   = useState('');
-  const [savedFlash, setSavedFlash]             = useState(false);
+  const [editName, setEditName]                       = useState('');
+  const [editDesc, setEditDesc]                       = useState('');
+  const [editFormat, setEditFormat]                   = useState('md');
+  const [editKarlPrompt, setEditKarlPrompt]           = useState('');   // prompt_template — Karl-generated
+  const [editUserAdditions, setEditUserAdditions]     = useState('');   // user_prompt_additions
+  const [editTemplateMode, setEditTemplateMode]       = useState('karl');
+  const [editSuffixFormat, setEditSuffixFormat]       = useState<string>('datetime');
+  const [editCustomSuffix, setEditCustomSuffix]       = useState('');
+  const [editElements, setEditElements]               = useState<string[]>([]);
+  const [editFilters, setEditFilters]                 = useState<Record<string, any>>({});
+  const [saving, setSaving]                           = useState(false);
+  const [saveErr, setSaveErr]                         = useState('');
+  const [savedFlash, setSavedFlash]                   = useState(false);
 
-  // Run / iteration state
+  // Run state
   const [running, setRunning]               = useState(false);
   const [runOutput, setRunOutput]           = useState<string | null>(null);
   const [runErr, setRunErr]                 = useState('');
   const [runMode, setRunMode]               = useState<'preview' | 'preview_live' | 'generate'>('preview');
   const [copied, setCopied]                 = useState(false);
   const [savedToExtracts, setSavedToExtracts] = useState(false);
-
-  // Data Filters (section scope) — kept for legacy templates with sections[]
-  const [sectionData, setSectionData]       = useState<SectionScope>({});
 
   // Element Picker modal
   const [pickerOpen, setPickerOpen]         = useState(false);
@@ -308,59 +297,52 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     setEditName(t.name);
     setEditDesc(t.description ?? '');
     setEditFormat(t.output_format === 'markdown' ? 'md' : (t.output_format ?? 'md'));
-    setEditInstructions(t.prompt_template ?? '');
+    setEditKarlPrompt(t.prompt_template ?? '');
+    setEditUserAdditions(t.user_prompt_additions ?? '');
+    setEditTemplateMode(t.template_mode ?? 'karl');
     setEditSuffixFormat(t.filename_suffix_format ?? 'datetime');
     setEditCustomSuffix('');
     setEditElements(Array.isArray(t.selected_elements) ? t.selected_elements : []);
+    setEditFilters(t.element_filters && typeof t.element_filters === 'object' ? t.element_filters : {});
     setRunOutput(null); setRunErr(''); setSaveErr('');
     setAssistHistory([]); setAssistOpen(false); setAssistInput('');
     setSavedToExtracts(false); setSavedFlash(false);
-    // Seed sectionData from default_scope on each section
-    const sections: SectionDef[] = Array.isArray(t.sections) ? t.sections : [];
-    const seed: SectionScope = {};
-    for (const s of sections) seed[s.key] = { ...(s.default_scope ?? {}) };
-    setSectionData(seed);
   };
 
   const startNew = () => {
     setSelected(null); setIsNew(true); setDeleteConfirm(false);
-    setEditName(''); setEditDesc(''); setEditFormat('md'); setEditInstructions('');
+    setEditName(''); setEditDesc(''); setEditFormat('md');
+    setEditKarlPrompt(''); setEditUserAdditions(''); setEditTemplateMode('karl');
     setEditSuffixFormat('datetime'); setEditCustomSuffix('');
-    setEditElements([]); 
+    setEditElements([]); setEditFilters({});
     setRunOutput(null); setRunErr(''); setSaveErr('');
     setAssistHistory([]); setAssistOpen(false); setAssistInput('');
     setSavedToExtracts(false); setSavedFlash(false);
-    setSectionData({});
   };
 
   const handleSave = async () => {
     if (!editName.trim()) { setSaveErr('Name is required'); return; }
     setSaving(true); setSaveErr('');
     try {
-      const baseSections: SectionDef[] = selected ? (Array.isArray(selected.sections) ? selected.sections : []) : [];
-      const updatedSections = baseSections.map(s => ({
-        ...s,
-        default_scope: sectionData[s.key] ?? s.default_scope ?? {},
-      }));
-
+      const payload = {
+        name:                  editName.trim(),
+        description:           editDesc.trim() || null,
+        output_format:         editFormat,
+        prompt_template:       editKarlPrompt.trim() || '',
+        user_prompt_additions: editUserAdditions.trim() || null,
+        template_mode:         editTemplateMode,
+        filename_suffix_format: editSuffixFormat,
+        selected_elements:     editElements,
+        element_filters:       editFilters,
+      };
       if (isNew) {
         const { error } = await supabase.from('document_template').insert({
-          user_id: userId, name: editName.trim(), description: editDesc.trim() || null,
-          doc_type: '', output_format: editFormat, prompt_template: editInstructions.trim() || '',
-          filename_suffix_format: editSuffixFormat,
-          sections: updatedSections,
-          selected_elements: editElements,
-          is_system: false, is_active: true,
+          user_id: userId, ...payload, is_system: false, is_active: true,
         });
         if (error) throw error;
       } else if (selected && !selected.is_system) {
         const { error } = await supabase.from('document_template').update({
-          name: editName.trim(), description: editDesc.trim() || null,
-          output_format: editFormat, prompt_template: editInstructions.trim() || '',
-          filename_suffix_format: editSuffixFormat,
-          sections: updatedSections,
-          selected_elements: editElements,
-          updated_at: new Date().toISOString(),
+          ...payload, updated_at: new Date().toISOString(),
         }).eq('document_template_id', selected.document_template_id);
         if (error) throw error;
       }
@@ -405,10 +387,11 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
         body: JSON.stringify({
           template_id:           templateId,
-          override_instructions: editInstructions.trim() || undefined,
           run_mode:              mode,
-          section_data:          sectionData,
+          karl_prompt:           editKarlPrompt.trim() || undefined,
+          user_additions:        editUserAdditions.trim() || undefined,
           selected_elements:     editElements,
+          element_filters:       editFilters,
           filename,
           suffix,
         }),
@@ -451,12 +434,12 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
       const res = await fetch('/api/ko/template/assist', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
-        body: JSON.stringify({ message: msg, history: assistHistory, current_instructions: editInstructions }),
+        body: JSON.stringify({ message: msg, history: assistHistory, current_instructions: editKarlPrompt, selected_elements: editElements, element_filters: editFilters }),
       });
       const data = await res.json();
       const assistResponse = data.response ?? '';
       setAssistHistory(h => [...h, { role: 'assistant', content: assistResponse }]);
-      if (data.suggested_instructions) setEditInstructions(stripEmoji(data.suggested_instructions));
+      if (data.suggested_instructions) setEditKarlPrompt(stripEmoji(data.suggested_instructions));
     } catch {
       setAssistHistory(h => [...h, { role: 'assistant', content: 'Something went wrong. Try again.' }]);
     } finally { setAssistLoading(false); }
@@ -469,6 +452,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   );
   const isEditing     = isNew || !!selected;
   const isSystem      = selected?.is_system ?? false;
+  const templateIcon  = getObjectIcon(concepts, 'document_template') || '📄';
   const templateIcon  = getObjectIcon(concepts, 'document_template') || '📄';
   const previewFilename = selected
     ? `${editName} · ${buildSuffix(editSuffixFormat, extractCounts[selected.document_template_id] ?? 0, editCustomSuffix)}.${formatExtension(editFormat)}`
@@ -630,54 +614,39 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
 
                   {/* ── DATA ELEMENTS STRIP ─────────────────────────────── */}
                   {!isNew && !isSystem && (
-                    <div style={{
-                      flexShrink: 0, padding: '0.4rem 0.75rem',
-                      borderBottom: '1px solid #e5e7eb', background: '#fafafa',
-                      display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap',
-                    }}>
-                      <span style={{ fontSize: '0.6rem', color: '#aaa', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', flexShrink: 0 }}>
-                        Data Elements
-                      </span>
-
-                      {/* Element chips — show object_type.field from field metadata keys */}
+                    <div style={{ flexShrink: 0, padding: '0.4rem 0.75rem', borderBottom: '1px solid #e5e7eb', background: '#fafafa', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: '0.6rem', color: '#aaa', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', flexShrink: 0 }}>Data Elements</span>
                       {editElements.length === 0
-                        ? <span style={{ fontSize: '0.65rem', color: '#ccc', fontStyle: 'italic' }}>
-                            none — runs use section defaults
-                          </span>
+                        ? <span style={{ fontSize: '0.65rem', color: '#ccc', fontStyle: 'italic' }}>none</span>
                         : editElements.map(el => (
-                            <span key={el} style={{
-                              background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`,
-                              color: '#0f766e', fontSize: '0.62rem', padding: '0.1rem 0.45rem',
-                              borderRadius: 3, fontFamily: 'monospace',
-                            }}>
-                              {el}
-                            </span>
+                            <span key={el} style={{ background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, color: '#0f766e', fontSize: '0.62rem', padding: '0.1rem 0.45rem', borderRadius: 3, fontFamily: 'monospace' }}>{el}</span>
                           ))
                       }
-
                       <span style={{ flex: 1 }} />
-
-                      {/* Edit / New button */}
-                      <button
-                        onClick={() => setPickerOpen(true)}
-                        style={{
-                          background: 'transparent', border: `1px solid ${editElements.length > 0 ? ACCENT : '#ddd'}`,
-                          color: editElements.length > 0 ? ACCENT : '#aaa',
-                          padding: '0.2rem 0.55rem', borderRadius: 3,
-                          fontSize: '0.62rem', fontFamily: 'monospace', cursor: 'pointer',
-                        }}>
+                      <button onClick={() => setPickerOpen(true)}
+                        style={{ background: 'transparent', border: `1px solid ${editElements.length > 0 ? ACCENT : '#ddd'}`, color: editElements.length > 0 ? ACCENT : '#aaa', padding: '0.2rem 0.55rem', borderRadius: 3, fontSize: '0.62rem', fontFamily: 'monospace', cursor: 'pointer' }}>
                         {editElements.length > 0 ? '⚙ Edit Elements' : '+ Add Elements'}
                       </button>
                     </div>
                   )}
 
-                  {/* ── MAIN WORK AREA: instructions left, output right ── */}
+                  {/* ── ELEMENT FILTERS STRIP ───────────────────────────── */}
+                  {!isNew && !isSystem && editElements.length > 0 && (
+                    <ElementFiltersStrip
+                      elements={editElements}
+                      filters={editFilters}
+                      onChange={setEditFilters}
+                      userId={userId}
+                    />
+                  )}
+
+                  {/* ── MAIN WORK AREA: prompt left, output right ────── */}
                   <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
 
-                    {/* ── INSTRUCTIONS COLUMN ─────────────────────────── */}
+                    {/* ── PROMPT COLUMN ───────────────────────────────── */}
                     <div style={{ flex: '1 1 40%', display: 'flex', flexDirection: 'column', overflow: 'hidden', borderRight: '1px solid #e5e7eb', minWidth: 0 }}>
                       <div style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #f0f0f0', display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0, background: '#fafafa' }}>
-                        <span style={{ ...labelSt, marginBottom: 0 }}>Formatting Instructions</span>
+                        <span style={{ ...labelSt, marginBottom: 0 }}>Karl Prompt</span>
                         {!isSystem && (
                           <button onClick={() => setAssistOpen(v => !v)}
                             style={{ marginLeft: 'auto', background: assistOpen ? ACCENT_BG : 'transparent', border: `1px solid ${assistOpen ? ACCENT : '#ddd'}`, color: assistOpen ? ACCENT : '#888', padding: '0.15rem 0.5rem', borderRadius: 3, fontSize: '0.62rem', fontFamily: 'monospace', cursor: 'pointer' }}>
@@ -710,7 +679,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                               value={assistInput}
                               onChange={e => setAssistInput(e.target.value)}
                               onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAssist(); } }}
-                              placeholder={editInstructions ? 'Describe a change...' : 'Describe what you want this template to produce...'}
+                              placeholder={editKarlPrompt ? 'Describe a change to the prompt...' : 'Describe what you want this template to produce...'}
                               rows={2}
                               style={{ flex: 1, background: '#fff', border: '1px solid #ddd', color: '#222', padding: '0.3rem 0.5rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.7rem', outline: 'none', resize: 'none', minHeight: 32 }}
                             />
@@ -722,16 +691,33 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                         </div>
                       )}
 
-                      {/* Instructions textarea */}
+                      {/* Karl Prompt textarea */}
                       <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
                         <textarea
-                          value={editInstructions}
-                          onChange={e => setEditInstructions(e.target.value)}
+                          value={editKarlPrompt}
+                          onChange={e => setEditKarlPrompt(e.target.value)}
                           disabled={isSystem}
-                          placeholder={isSystem ? '' : 'Write formatting instructions here, or use Karl Assist above to draft them.\n\nDescribe: sections to include, fields to show per section, visual layout, heading style.'}
-                          style={{ flex: 1, width: '100%', background: isSystem ? '#f5f5f5' : '#fff', border: 'none', borderTop: '1px solid #f0f0f0', color: isSystem ? '#aaa' : '#222', padding: '0.75rem', fontFamily: 'monospace', fontSize: '0.8rem', outline: 'none', resize: 'none', lineHeight: 1.6, boxSizing: 'border-box' } as any}
+                          placeholder={isSystem ? '' : 'Karl generates this from your elements, filters, and Karl Assist conversation.\n\nOr type directly — describe what sections to show, what fields per section, how to format.'}
+                          style={{ flex: 1, width: '100%', background: isSystem ? '#f5f5f5' : '#fff', border: 'none', borderTop: '1px solid #f0f0f0', color: isSystem ? '#aaa' : '#222', padding: '0.75rem', fontFamily: 'monospace', fontSize: '0.78rem', outline: 'none', resize: 'none', lineHeight: 1.6, boxSizing: 'border-box' } as any}
                         />
                       </div>
+
+                      {/* User Additions */}
+                      {!isSystem && (
+                        <div style={{ flexShrink: 0, borderTop: '1px solid #e5e7eb' }}>
+                          <div style={{ padding: '0.3rem 0.75rem', background: '#fafafa', borderBottom: '1px solid #f0f0f0', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            <span style={{ ...labelSt, marginBottom: 0, color: '#bbb' }}>User Additions</span>
+                            <span style={{ fontSize: '0.58rem', color: '#ccc' }}>appended to prompt at run time · Karl never touches this</span>
+                          </div>
+                          <textarea
+                            value={editUserAdditions}
+                            onChange={e => setEditUserAdditions(e.target.value)}
+                            placeholder={'e.g. "Merry Christmas everyone." or "Focus on overdue items only."'}
+                            rows={3}
+                            style={{ width: '100%', background: '#fff', border: 'none', color: '#555', padding: '0.6rem 0.75rem', fontFamily: 'monospace', fontSize: '0.75rem', outline: 'none', resize: 'none', lineHeight: 1.5, boxSizing: 'border-box' } as any}
+                          />
+                        </div>
+                      )}
 
                       {/* Left footer */}
                       {!isSystem && (
@@ -907,3 +893,228 @@ const inputSt = (disabled: boolean): React.CSSProperties => ({
   fontFamily: 'monospace', fontSize: '0.78rem', outline: 'none',
   boxSizing: 'border-box', cursor: disabled ? 'not-allowed' : 'text',
 });
+
+// ─── ELEMENT FILTERS STRIP ────────────────────────────────────────────────────
+// Reads field_type from ko_field_metadata for each selected element.
+// Renders appropriate filter input per field.
+// No hardcoding — field_type drives picker type.
+
+interface FilterMeta {
+  field:       string;
+  object_type: string;
+  label:       string | null;
+  field_type:  string | null;
+  description: string | null;
+}
+
+interface ElementFiltersStripProps {
+  elements: string[];
+  filters:  Record<string, any>;
+  onChange: (filters: Record<string, any>) => void;
+  userId:   string;
+}
+
+function ElementFiltersStrip({ elements, filters, onChange, userId }: ElementFiltersStripProps) {
+  const [meta, setMeta]         = useState<Record<string, FilterMeta>>({});
+  const [tags, setTags]         = useState<string[]>([]);
+  const [tagSearch, setTagSearch] = useState<Record<string, string>>({});
+  const [loading, setLoading]   = useState(false);
+
+  useEffect(() => {
+    if (elements.length === 0) return;
+    loadMeta();
+  }, [elements.join(',')]);
+
+  const loadMeta = async () => {
+    setLoading(true);
+    try {
+      const objTypes  = Array.from(new Set(elements.map(e => e.split('.')[0])));
+      const fieldNames = elements.map(e => e.split('.').slice(1).join('.'));
+
+      const [metaRes, tagRes] = await Promise.all([
+        supabase
+          .from('ko_field_metadata')
+          .select('object_type, field, label, field_type, description')
+          .eq('user_id', userId)
+          .in('object_type', objTypes),
+        supabase
+          .from('tag')
+          .select('name')
+          .eq('user_id', userId)
+          .order('name'),
+      ]);
+
+      const map: Record<string, FilterMeta> = {};
+      for (const row of metaRes.data ?? []) {
+        map[`${row.object_type}.${row.field}`] = row as FilterMeta;
+      }
+      // Fill in any elements that have no metadata row with sensible defaults
+      for (const el of elements) {
+        if (!map[el]) {
+          const [objType, ...fp] = el.split('.');
+          map[el] = { object_type: objType, field: fp.join('.'), label: fp.join('.'), field_type: 'text', description: null };
+        }
+      }
+      setMeta(map);
+      setTags((tagRes.data ?? []).map((t: any) => t.name));
+    } catch (err) {
+      console.error('[ElementFiltersStrip] load failed:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const set = (key: string, val: any) => onChange({ ...filters, [key]: val });
+
+  const toggleArr = (key: string, item: string) => {
+    const arr: string[] = Array.isArray(filters[key]) ? [...filters[key]] : [];
+    const idx = arr.indexOf(item);
+    if (idx >= 0) arr.splice(idx, 1); else arr.push(item);
+    onChange({ ...filters, [key]: arr });
+  };
+
+  const clearFilter = (key: string) => {
+    const next = { ...filters };
+    delete next[key];
+    onChange(next);
+  };
+
+  // Infer picker from field_type + field name
+  const pickerFor = (el: string): 'tags' | 'number' | 'text' | 'boolean' | 'select_buckets' => {
+    const m    = meta[el];
+    const ft   = (m?.field_type ?? '').toLowerCase();
+    const f    = (m?.field ?? el.split('.').pop() ?? '').toLowerCase();
+    if (ft === 'tags' || f === 'tags' || f === 'attendees')   return 'tags';
+    if (ft === 'boolean' || f.startsWith('is_') || f === 'completed_only') return 'boolean';
+    if (ft === 'number' || ft === 'integer' || f.includes('days') || f === 'limit') return 'number';
+    if (f === 'bucket_key' || f === 'buckets') return 'select_buckets';
+    return 'text';
+  };
+
+  const hasAnyFilter = elements.some(el => {
+    const v = filters[el];
+    return v !== undefined && v !== null && v !== '' && !(Array.isArray(v) && v.length === 0);
+  });
+
+  if (loading) return (
+    <div style={{ padding: '0.4rem 0.75rem', borderBottom: '1px solid #e5e7eb', background: '#fafafa', fontSize: '0.65rem', color: '#bbb' }}>
+      Loading filter fields...
+    </div>
+  );
+
+  return (
+    <div style={{ flexShrink: 0, borderBottom: '1px solid #e5e7eb', background: '#fafafa' }}>
+      {/* Header */}
+      <div style={{ padding: '0.3rem 0.75rem', display: 'flex', alignItems: 'center', gap: '0.5rem', borderBottom: '1px solid #f0f0f0' }}>
+        <span style={{ fontSize: '0.6rem', color: '#aaa', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Filters</span>
+        {hasAnyFilter && (
+          <span style={{ fontSize: '0.58rem', color: ACCENT, background: '#ccfbf1', padding: '0.02rem 0.35rem', borderRadius: 2 }}>active</span>
+        )}
+        {hasAnyFilter && (
+          <button onClick={() => onChange({})}
+            style={{ marginLeft: 'auto', background: 'none', border: 'none', color: '#bbb', fontSize: '0.6rem', cursor: 'pointer', fontFamily: 'monospace' }}>
+            clear all
+          </button>
+        )}
+      </div>
+
+      {/* Per-element filter inputs */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', padding: '0.5rem 0.75rem', maxHeight: 160, overflowY: 'auto', scrollbarWidth: 'thin', scrollbarColor: '#ddd transparent' }}>
+        {elements.map(el => {
+          const m       = meta[el];
+          const label   = m?.label ?? el.split('.').pop() ?? el;
+          const picker  = pickerFor(el);
+          const val     = filters[el];
+          const arr     = Array.isArray(val) ? val as string[] : [];
+          const hasVal  = val !== undefined && val !== null && val !== '' && !(Array.isArray(val) && val.length === 0);
+
+          return (
+            <div key={el} style={{ flex: '1 1 180px', minWidth: 160, maxWidth: 280 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', marginBottom: '0.2rem' }}>
+                <span style={{ fontSize: '0.58rem', color: hasVal ? ACCENT : '#bbb', fontWeight: hasVal ? 600 : 400, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+                  {label}
+                </span>
+                <span style={{ fontSize: '0.55rem', color: '#ddd', fontFamily: 'monospace' }}>{el}</span>
+                {hasVal && (
+                  <button onClick={() => clearFilter(el)}
+                    style={{ marginLeft: 'auto', background: 'none', border: 'none', color: '#ccc', cursor: 'pointer', fontSize: '0.6rem', padding: 0, lineHeight: 1 }}>✕</button>
+                )}
+              </div>
+
+              {/* TAGS picker */}
+              {picker === 'tags' && (
+                <div>
+                  {arr.length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.2rem', marginBottom: '0.2rem' }}>
+                      {arr.map(t => (
+                        <span key={t} style={{ background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, color: '#0f766e', fontSize: '0.6rem', padding: '0.05rem 0.35rem', borderRadius: 3, display: 'flex', alignItems: 'center', gap: '0.2rem' }}>
+                          {t}
+                          <button onClick={() => toggleArr(el, t)} style={{ background: 'none', border: 'none', color: ACCENT, cursor: 'pointer', fontSize: '0.6rem', padding: 0, lineHeight: 1 }}>✕</button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <input
+                    value={tagSearch[el] ?? ''}
+                    onChange={e => setTagSearch(p => ({ ...p, [el]: e.target.value }))}
+                    placeholder="Search tags..."
+                    style={filterInputSt}
+                  />
+                  {(tagSearch[el] ?? '').length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.2rem', marginTop: '0.2rem' }}>
+                      {tags.filter(t => t.toLowerCase().includes((tagSearch[el] ?? '').toLowerCase())).slice(0, 8).map(t => {
+                        const sel = arr.includes(t);
+                        return (
+                          <button key={t} onClick={() => { toggleArr(el, t); setTagSearch(p => ({ ...p, [el]: '' })); }}
+                            style={{ background: sel ? ACCENT_BG : '#f5f5f5', border: `1px solid ${sel ? ACCENT_BORDER : '#e5e7eb'}`, color: sel ? ACCENT : '#555', padding: '0.1rem 0.4rem', borderRadius: 3, fontSize: '0.62rem', fontFamily: 'monospace', cursor: 'pointer' }}>
+                            {sel ? '✓ ' : ''}{t}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* NUMBER input */}
+              {picker === 'number' && (
+                <input type="number" min={1} value={val ?? ''} onChange={e => set(el, e.target.value ? Number(e.target.value) : null)}
+                  placeholder="empty = no limit" style={filterInputSt} />
+              )}
+
+              {/* TEXT input */}
+              {picker === 'text' && (
+                <input value={val ?? ''} onChange={e => set(el, e.target.value || null)}
+                  placeholder="empty = no filter" style={filterInputSt} />
+              )}
+
+              {/* BOOLEAN toggle */}
+              {picker === 'boolean' && (
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.7rem', color: '#555', cursor: 'pointer', paddingTop: '0.2rem' }}>
+                  <input type="checkbox" checked={!!val} onChange={e => set(el, e.target.checked || undefined)}
+                    style={{ accentColor: ACCENT }} />
+                  Yes
+                </label>
+              )}
+
+              {/* BUCKET select */}
+              {picker === 'select_buckets' && (
+                <input value={Array.isArray(val) ? val.join(', ') : (val ?? '')}
+                  onChange={e => set(el, e.target.value ? e.target.value.split(',').map((s: string) => s.trim()).filter(Boolean) : null)}
+                  placeholder="now, soon, later… (empty = all)"
+                  style={filterInputSt} />
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+
+const filterInputSt: React.CSSProperties = {
+  width: '100%', background: '#fff', border: '1px solid #e5e7eb', color: '#222',
+  padding: '0.3rem 0.5rem', borderRadius: 4, fontFamily: 'monospace',
+  fontSize: '0.72rem', outline: 'none', boxSizing: 'border-box',
+};
