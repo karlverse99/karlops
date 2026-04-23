@@ -538,18 +538,11 @@ export async function routeCommand(
 ): Promise<RouterResult> {
   const db = createSupabaseAdmin();
 
-  try {
+try {
     const { staticContext, dynamicContext } = contexts;
 
-    const { data: allMeta } = await db
-      .from('ko_field_metadata')
-      .select('object_type, field, label, field_type, insert_behavior, update_behavior, description, llm_notes')
-      .eq('user_id', user_id)
-      .in('object_type', ['task', 'meeting', 'completion', 'external_reference', 'document_template', 'contact', 'task_status']);
-
-    const meta = allMeta ?? [];
-    const objectSummaries = buildObjectSummaries(meta);
-    const fieldKnowledge  = buildFieldKnowledge(meta);
+    // objectSummaries and fieldKnowledge come from staticContext via buildKarlStaticContext.
+    // No need to re-fetch allMeta here — removed.
 
     const isDeep     = isAnalysisRequest(input);
     const hasPending = !!pending;
@@ -557,6 +550,9 @@ export async function routeCommand(
 
     const pendingBlock = formatPendingForPrompt(pending);
 
+    // Chat history already in dynamicContext via buildKarlDynamicContext.
+    // We still need recentMessages for rejectedTags extraction and anthropicMessages assembly.
+    const db = createSupabaseAdmin();
     const { data: sessionData } = await db.from('ko_session').select('messages').eq('user_id', user_id).maybeSingle();
     const sessionMessages: any[] = sessionData?.messages ?? [];
     const { data: situationData } = await db.from('user_situation').select('chat_history_depth').eq('user_id', user_id).eq('is_active', true).maybeSingle();
@@ -588,13 +584,12 @@ export async function routeCommand(
       ? `\n## Rejected Tags — NEVER suggest these\n${rejectedTags.join(', ')}`
       : '';
 
-    const dynamicSystemPrompt = [
+    // ── Static system prompt — NEVER changes between calls, cache hits every time ──
+    // Contains: Karl persona, instructions, action list, JSON format rules.
+    // staticContext (tags, field knowledge, concept registry) prepended via system block.
+    const staticSystemPrompt = [
       `You are Karl, an operational assistant inside KarlOps — a personal pressure system for getting things done. [v1.5.0]`,
-      `Today's date: ${new Date().toISOString().slice(0, 10)}. When a user gives a date without a year, infer from today.`,
-      '',
-      dynamicContext,
-      '',
-      pendingBlock,
+      `When a user gives a date without a year, infer from today's date (provided in each message).`,
       '',
       '## Your Job',
       'Every user message comes to you. You decide what to do. No hardcoded action maps. No state machine. Just reason.',
@@ -699,15 +694,6 @@ export async function routeCommand(
       '## Identifiers',
       'N=now S=soon RW=realwork L=later D=delegate CP=capture CM=completion MT=meeting EX=extract TM=template CT=contact',
       '',
-      '## Available Object Types + Required Fields',
-      objectSummaries,
-      '',
-      '## Field Knowledge',
-      fieldKnowledge,
-      '',
-      rejectedTagsNote,
-      isDeep ? '\n## Analysis Mode\nInclude learning.observation with pattern noticed.' : '',
-      '',
       '## Response Format — ONLY valid JSON, no markdown, no code fences',
       '',
       '// question — STEP 1 of run_template:',
@@ -742,9 +728,27 @@ export async function routeCommand(
       '',
       '// question:',
       '{ "intent": "question", "response": "Karl answer in plain English" }',
-      '',
-      isDeep ? '{ "intent": "question", "response": "...", "learning": { "observation": { "content": "pattern", "observation_type": "pattern" } } }' : '',
     ].filter(Boolean).join('\n');
+
+    // ── Dynamic context — prepended to first user message, never in system ──
+    // Contains: today's date, task snapshot, completions, meetings, pending, observations.
+    // Changes every call — keeping it out of system preserves the cache key on staticSystemPrompt.
+    const dynamicPrefix = [
+      `Today's date: ${new Date().toISOString().slice(0, 10)}.`,
+      '',
+      dynamicContext,
+      '',
+      pendingBlock,
+      '',
+      isDeep ? '## Analysis Mode\nInclude learning.observation with pattern noticed.' : '',
+      rejectedTagsNote,
+    ].filter(Boolean).join('\n');
+
+    // Prepend dynamic context to first user message
+    const messagesWithContext = anthropicMessages.map((m, i) => {
+      if (i === 0) return { ...m, content: dynamicPrefix + '\n\n---\n\n' + m.content };
+      return m;
+    });
 
     const maxTokens = isDeep ? 1500 : hasPending ? 3000 : isLong ? 2000 : 1200;
 
@@ -761,11 +765,15 @@ export async function routeCommand(
         max_tokens: maxTokens,
         system: [
           { type: 'text', text: staticContext, cache_control: { type: 'ephemeral' } },
-          { type: 'text', text: dynamicSystemPrompt },
+          { type: 'text', text: staticSystemPrompt, cache_control: { type: 'ephemeral' } },
         ],
-        messages: anthropicMessages,
+        messages: messagesWithContext,
       }),
     });
+
+
+
+
 
     const rawData = await res.json();
     console.log('[commandRouter] anthropic status:', res.status);
