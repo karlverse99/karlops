@@ -745,10 +745,13 @@ try {
     ].filter(Boolean).join('\n');
 
     // Prepend dynamic context to first user message
-    const messagesWithContext = anthropicMessages.map((m, i) => {
-      if (i === 0) return { ...m, content: dynamicPrefix + '\n\n---\n\n' + m.content };
-      return m;
-    });
+
+
+    const lastIndex = anthropicMessages.length - 1;
+const messagesWithContext = anthropicMessages.map((m, i) => {
+  if (i === lastIndex) return { ...m, content: dynamicPrefix + '\n\n---\n\n' + m.content };
+  return m;
+});
 
     const maxTokens = isDeep ? 1500 : hasPending ? 3000 : isLong ? 2000 : 1200;
 
