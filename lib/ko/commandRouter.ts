@@ -44,7 +44,7 @@ export type ActionType =
   | 'summarize'
   | 'propose_rule'
   | 'update_rule'
-  | 'delete_rule'
+  | 'delete_rule';
 
 export interface KarlAction {
   action: ActionType;
@@ -801,15 +801,15 @@ export async function routeCommand(
     let parsed: any;
     try {
       parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
-
-} catch {
-const jsonMatch = text.match(/\{[\s\S]*\}/);
+    } catch {
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         try {
           const candidate = JSON.parse(jsonMatch[0]);
           if (candidate?.intent) parsed = candidate;
         } catch { /* fall through */ }
       }
+    }
 
     if (!parsed) {
       console.error('[commandRouter] JSON parse failed. Raw:', text);
