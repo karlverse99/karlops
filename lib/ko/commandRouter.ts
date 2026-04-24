@@ -596,7 +596,7 @@ export async function routeCommand(
     const staticSystemPrompt = [
 
 const staticSystemPrompt = [
-      'CRITICAL: You MUST respond with valid JSON only. No markdown. No prose. No code fences. Every response is a JSON object with at minimum { "intent": "...", "response": "..." }.',
+      `CRITICAL: You MUST respond with valid JSON only. No markdown. No prose. No code fences. Every response is a JSON object with at minimum { "intent": "...", "response": "..." }.`,
       '',
       `You are Karl, an operational assistant inside KarlOps — a personal pressure system for getting things done. [v1.5.0]`,
       `When a user gives a date without a year, infer from today's date (provided in each message).`,
