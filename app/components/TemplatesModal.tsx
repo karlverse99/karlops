@@ -135,6 +135,21 @@ function Tooltip({ text, children }: { text: string; children: React.ReactNode }
   );
 }
 
+/** Full `element_filters` JSON. Use `__scope` for per-object query params (merged with per-field keys in the API). */
+function parseElementFiltersJson(text: string): { ok: true; value: Record<string, any> } | { ok: false; error: string } {
+  const t = text.trim();
+  if (!t) return { ok: true, value: {} };
+  try {
+    const v = JSON.parse(t);
+    if (v === null || typeof v !== 'object' || Array.isArray(v)) {
+      return { ok: false, error: 'Data scope must be a single JSON object.' };
+    }
+    return { ok: true, value: v as Record<string, any> };
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? 'Invalid JSON' };
+  }
+}
+
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
 
 export default function TemplatesModal({ userId, accessToken, onClose, onCountChange, onOpenExtracts }: TemplatesModalProps) {
@@ -160,7 +175,9 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const [editSuffixFormat, setEditSuffixFormat]       = useState<string>('datetime');
   const [editCustomSuffix, setEditCustomSuffix]       = useState('');
   const [editElements, setEditElements]               = useState<string[]>([]);
-  const [editFilters, setEditFilters]                 = useState<Record<string, any>>({});
+  /** Pretty-printed JSON for entire `element_filters` row (includes `__scope` for WHERE-style params). */
+  const [filterJsonText, setFilterJsonText]           = useState('{}');
+  const [filterJsonError, setFilterJsonError]         = useState('');
   const [saving, setSaving]                           = useState(false);
   const [saveErr, setSaveErr]                         = useState('');
   const [savedFlash, setSavedFlash]                   = useState(false);
@@ -303,7 +320,9 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     setEditSuffixFormat(t.filename_suffix_format ?? 'datetime');
     setEditCustomSuffix('');
     setEditElements(Array.isArray(t.selected_elements) ? t.selected_elements : []);
-    setEditFilters(t.element_filters && typeof t.element_filters === 'object' ? t.element_filters : {});
+    const rawF = t.element_filters && typeof t.element_filters === 'object' ? t.element_filters : {};
+    setFilterJsonText(JSON.stringify(rawF, null, 2));
+    setFilterJsonError('');
     setRunOutput(null); setRunErr(''); setSaveErr('');
     setAssistHistory([]); setAssistOpen(false); setAssistInput('');
     setSavedToExtracts(false); setSavedFlash(false);
@@ -314,7 +333,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     setEditName(''); setEditDesc(''); setEditFormat('md');
     setEditKarlPrompt(''); setEditUserAdditions(''); setEditTemplateMode('karl');
     setEditSuffixFormat('datetime'); setEditCustomSuffix('');
-    setEditElements([]); setEditFilters({});
+    setEditElements([]); setFilterJsonText('{}'); setFilterJsonError('');
     setRunOutput(null); setRunErr(''); setSaveErr('');
     setAssistHistory([]); setAssistOpen(false); setAssistInput('');
     setSavedToExtracts(false); setSavedFlash(false);
@@ -322,6 +341,8 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
 
   const handleSave = async () => {
     if (!editName.trim()) { setSaveErr('Name is required'); return; }
+    const parsedFilters = parseElementFiltersJson(filterJsonText);
+    if (!parsedFilters.ok) { setSaveErr(parsedFilters.error); return; }
     setSaving(true); setSaveErr('');
     try {
       const payload = {
@@ -333,7 +354,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
         template_mode:         editTemplateMode,
         filename_suffix_format: editSuffixFormat,
         selected_elements:     editElements,
-        element_filters:       editFilters,
+        element_filters:       parsedFilters.value,
       };
       if (isNew) {
         const { error } = await supabase.from('document_template').insert({
@@ -363,8 +384,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
 
   // ── Run flow ───────────────────────────────────────────────────────────────
   // Preview (stub) — always immediate.
-  // Preview with Data / Generate — run directly using stored element_filters.
-  // No resolver modal — filters are set in ElementPickerModal and saved to template.
+  // Preview with Data / Generate — element_filters JSON (incl. __scope) is parsed from the Data scope textarea.
 
   const initiateRun = (mode: 'preview' | 'preview_live' | 'generate') => {
     executeRun(mode);
@@ -373,6 +393,11 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const executeRun = async (mode: 'preview' | 'preview_live' | 'generate') => {
     const templateId = selected?.document_template_id;
     if (!templateId) return;
+    const parsedFilters = parseElementFiltersJson(filterJsonText);
+    if (!parsedFilters.ok) {
+      setRunErr(`Data scope JSON: ${parsedFilters.error}`);
+      return;
+    }
     setRunMode(mode);
     setRunning(true); setRunErr(''); setSavedToExtracts(false);
 
@@ -389,10 +414,11 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
           template_id:           templateId,
           run_mode:              mode,
           karl_prompt:           editKarlPrompt.trim() || undefined,
-          user_additions:        editUserAdditions.trim() || undefined,
+          // Always send so clearing the box clears additions for this run (server uses key presence).
+          user_additions:        editUserAdditions,
           output_format:         editFormat,
           selected_elements:     editElements,
-          element_filters:       editFilters,
+          element_filters:       parsedFilters.value,
           filename,
           suffix,
         }),
@@ -426,6 +452,26 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     URL.revokeObjectURL(url);
   };
 
+  const filtersForAssist = (): Record<string, any> => {
+    const p = parseElementFiltersJson(filterJsonText);
+    return p.ok ? p.value : {};
+  };
+
+  const mergeSuggestedDataScope = (suggested: unknown) => {
+    if (!suggested || typeof suggested !== 'object' || Array.isArray(suggested)) return;
+    const parsed = parseElementFiltersJson(filterJsonText);
+    const cur = parsed.ok ? parsed.value : {};
+    const next = {
+      ...cur,
+      __scope: {
+        ...(typeof cur.__scope === 'object' && cur.__scope && !Array.isArray(cur.__scope) ? cur.__scope : {}),
+        ...(suggested as Record<string, any>),
+      },
+    };
+    setFilterJsonText(JSON.stringify(next, null, 2));
+    setFilterJsonError('');
+  };
+
   const handleAssist = async () => {
     const msg = assistInput.trim();
     if (!msg || assistLoading) return;
@@ -435,12 +481,45 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
       const res = await fetch('/api/ko/template/assist', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
-        body: JSON.stringify({ message: msg, history: assistHistory, current_instructions: editKarlPrompt, selected_elements: editElements, element_filters: editFilters }),
+        body: JSON.stringify({
+          message: msg,
+          history: assistHistory,
+          current_instructions: editKarlPrompt,
+          selected_elements: editElements,
+          element_filters: filtersForAssist(),
+        }),
       });
       const data = await res.json();
       const assistResponse = data.response ?? '';
       setAssistHistory(h => [...h, { role: 'assistant', content: assistResponse }]);
       if (data.suggested_instructions) setEditKarlPrompt(stripEmoji(data.suggested_instructions));
+      if (data.suggested_data_scope) mergeSuggestedDataScope(data.suggested_data_scope);
+    } catch {
+      setAssistHistory(h => [...h, { role: 'assistant', content: 'Something went wrong. Try again.' }]);
+    } finally { setAssistLoading(false); }
+  };
+
+  const handleRegeneratePrompt = async () => {
+    if (assistLoading || assistHistory.length === 0) return;
+    setAssistLoading(true);
+    try {
+      const res = await fetch('/api/ko/template/assist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
+        body: JSON.stringify({
+          message: 'Regenerate',
+          history: assistHistory,
+          current_instructions: editKarlPrompt,
+          selected_elements: editElements,
+          element_filters: filtersForAssist(),
+          regenerate_prompt: true,
+        }),
+      });
+      const data = await res.json();
+      const assistResponse = data.response ?? '';
+      setAssistHistory(h => [...h, { role: 'assistant', content: assistResponse || 'Prompt updated.' }]);
+      if (data.suggested_instructions) setEditKarlPrompt(stripEmoji(data.suggested_instructions));
+      if (data.suggested_data_scope) mergeSuggestedDataScope(data.suggested_data_scope);
     } catch {
       setAssistHistory(h => [...h, { role: 'assistant', content: 'Something went wrong. Try again.' }]);
     } finally { setAssistLoading(false); }
@@ -630,14 +709,37 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                     </div>
                   )}
 
-                  {/* ── ELEMENT FILTERS STRIP ───────────────────────────── */}
+                  {/* ── DATA SCOPE (JSON) — WHERE-style params per object type ───── */}
                   {!isNew && !isSystem && editElements.length > 0 && (
-                    <ElementFiltersStrip
-                      elements={editElements}
-                      filters={editFilters}
-                      onChange={setEditFilters}
-                      userId={userId}
-                    />
+                    <div style={{ flexShrink: 0, borderBottom: '1px solid #e5e7eb', background: '#fafafa' }}>
+                      <div style={{ padding: '0.35rem 0.75rem', display: 'flex', alignItems: 'center', gap: '0.5rem', borderBottom: '1px solid #f0f0f0', flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: '0.6rem', color: '#aaa', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Data scope</span>
+                        <span style={{ fontSize: '0.58rem', color: '#999', flex: 1, minWidth: 200 }}>
+                          JSON for <span style={{ fontFamily: 'monospace' }}>element_filters</span>. Put query-style params under{' '}
+                          <span style={{ fontFamily: 'monospace' }}>__scope</span> by object type (merged when pulling data). Example:{' '}
+                          <span style={{ fontFamily: 'monospace', color: '#0f766e' }}>{'{"__scope":{"completion":{"window_days":7}}}'}</span>
+                        </span>
+                      </div>
+                      <textarea
+                        value={filterJsonText}
+                        onChange={e => {
+                          const v = e.target.value;
+                          setFilterJsonText(v);
+                          const p = parseElementFiltersJson(v);
+                          setFilterJsonError(p.ok ? '' : p.error);
+                        }}
+                        spellCheck={false}
+                        rows={5}
+                        style={{
+                          width: '100%', boxSizing: 'border-box', border: 'none', borderBottom: filterJsonError ? '2px solid #ef4444' : undefined,
+                          background: '#fff', color: '#222', padding: '0.5rem 0.75rem', fontFamily: 'monospace', fontSize: '0.72rem',
+                          outline: 'none', resize: 'vertical', minHeight: 88, lineHeight: 1.45,
+                        }}
+                      />
+                      {filterJsonError && (
+                        <div style={{ padding: '0.25rem 0.75rem 0.45rem', fontSize: '0.62rem', color: '#ef4444' }}>{filterJsonError}</div>
+                      )}
+                    </div>
                   )}
 
                   {/* ── MAIN WORK AREA: prompt left, output right ────── */}
@@ -674,17 +776,23 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                               <div ref={assistBottom} />
                             </div>
                           )}
-                          <div style={{ display: 'flex', gap: '0.4rem', padding: '0.4rem 0.6rem' }}>
+                          <div style={{ display: 'flex', gap: '0.4rem', padding: '0.4rem 0.6rem', alignItems: 'flex-end', flexWrap: 'wrap' }}>
                             <textarea
                               value={assistInput}
                               onChange={e => setAssistInput(e.target.value)}
                               onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAssist(); } }}
                               placeholder={editKarlPrompt ? 'Describe a change to the prompt...' : 'Describe what you want this template to produce...'}
                               rows={2}
-                              style={{ flex: 1, background: '#fff', border: '1px solid #ddd', color: '#222', padding: '0.3rem 0.5rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.7rem', outline: 'none', resize: 'none', minHeight: 32 }}
+                              style={{ flex: 1, minWidth: 160, background: '#fff', border: '1px solid #ddd', color: '#222', padding: '0.3rem 0.5rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.7rem', outline: 'none', resize: 'none', minHeight: 32 }}
                             />
+                            <Tooltip text="Rewrite the full Karl prompt from this thread and apply it to the prompt field.">
+                              <button type="button" onClick={handleRegeneratePrompt} disabled={assistLoading || assistHistory.length === 0}
+                                style={{ background: assistHistory.length > 0 ? '#fff' : 'transparent', border: '1px solid #ddd', color: assistHistory.length > 0 ? '#0f766e' : '#ccc', padding: '0.3rem 0.55rem', borderRadius: 4, fontSize: '0.65rem', fontFamily: 'monospace', cursor: assistHistory.length > 0 && !assistLoading ? 'pointer' : 'not-allowed', whiteSpace: 'nowrap' }}>
+                                retry prompt
+                              </button>
+                            </Tooltip>
                             <button onClick={handleAssist} disabled={!assistInput.trim() || assistLoading}
-                              style={{ background: assistInput.trim() ? ACCENT_BG : 'transparent', border: `1px solid ${assistInput.trim() ? ACCENT : '#ddd'}`, color: assistInput.trim() ? ACCENT : '#aaa', padding: '0.3rem 0.6rem', borderRadius: 4, fontSize: '0.68rem', fontFamily: 'monospace', cursor: assistInput.trim() ? 'pointer' : 'not-allowed', alignSelf: 'flex-end' }}>
+                              style={{ background: assistInput.trim() ? ACCENT_BG : 'transparent', border: `1px solid ${assistInput.trim() ? ACCENT : '#ddd'}`, color: assistInput.trim() ? ACCENT : '#aaa', padding: '0.3rem 0.6rem', borderRadius: 4, fontSize: '0.68rem', fontFamily: 'monospace', cursor: assistInput.trim() ? 'pointer' : 'not-allowed' }}>
                               ask
                             </button>
                           </div>
@@ -707,7 +815,9 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                         <div style={{ flexShrink: 0, borderTop: '1px solid #e5e7eb' }}>
                           <div style={{ padding: '0.3rem 0.75rem', background: '#fafafa', borderBottom: '1px solid #f0f0f0', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                             <span style={{ ...labelSt, marginBottom: 0, color: '#bbb' }}>User Additions</span>
-                            <span style={{ fontSize: '0.58rem', color: '#ccc' }}>appended to prompt at run time · Karl never touches this</span>
+                            <span style={{ fontSize: '0.58rem', color: '#ccc' }}>
+                              Sent on Preview with Data and Run + Create Extract (stub Preview uses sample data only). Shown to the model as binding constraints together with the Karl prompt.
+                            </span>
                           </div>
                           <textarea
                             value={editUserAdditions}
@@ -894,227 +1004,3 @@ const inputSt = (disabled: boolean): React.CSSProperties => ({
   boxSizing: 'border-box', cursor: disabled ? 'not-allowed' : 'text',
 });
 
-// ─── ELEMENT FILTERS STRIP ────────────────────────────────────────────────────
-// Reads field_type from ko_field_metadata for each selected element.
-// Renders appropriate filter input per field.
-// No hardcoding — field_type drives picker type.
-
-interface FilterMeta {
-  field:       string;
-  object_type: string;
-  label:       string | null;
-  field_type:  string | null;
-  description: string | null;
-}
-
-interface ElementFiltersStripProps {
-  elements: string[];
-  filters:  Record<string, any>;
-  onChange: (filters: Record<string, any>) => void;
-  userId:   string;
-}
-
-function ElementFiltersStrip({ elements, filters, onChange, userId }: ElementFiltersStripProps) {
-  const [meta, setMeta]         = useState<Record<string, FilterMeta>>({});
-  const [tags, setTags]         = useState<string[]>([]);
-  const [tagSearch, setTagSearch] = useState<Record<string, string>>({});
-  const [loading, setLoading]   = useState(false);
-
-  useEffect(() => {
-    if (elements.length === 0) return;
-    loadMeta();
-  }, [elements.join(',')]);
-
-  const loadMeta = async () => {
-    setLoading(true);
-    try {
-      const objTypes  = Array.from(new Set(elements.map(e => e.split('.')[0])));
-      const fieldNames = elements.map(e => e.split('.').slice(1).join('.'));
-
-      const [metaRes, tagRes] = await Promise.all([
-        supabase
-          .from('ko_field_metadata')
-          .select('object_type, field, label, field_type, description')
-          .eq('user_id', userId)
-          .in('object_type', objTypes),
-        supabase
-          .from('tag')
-          .select('name')
-          .eq('user_id', userId)
-          .order('name'),
-      ]);
-
-      const map: Record<string, FilterMeta> = {};
-      for (const row of metaRes.data ?? []) {
-        map[`${row.object_type}.${row.field}`] = row as FilterMeta;
-      }
-      // Fill in any elements that have no metadata row with sensible defaults
-      for (const el of elements) {
-        if (!map[el]) {
-          const [objType, ...fp] = el.split('.');
-          map[el] = { object_type: objType, field: fp.join('.'), label: fp.join('.'), field_type: 'text', description: null };
-        }
-      }
-      setMeta(map);
-      setTags((tagRes.data ?? []).map((t: any) => t.name));
-    } catch (err) {
-      console.error('[ElementFiltersStrip] load failed:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const set = (key: string, val: any) => onChange({ ...filters, [key]: val });
-
-  const toggleArr = (key: string, item: string) => {
-    const arr: string[] = Array.isArray(filters[key]) ? [...filters[key]] : [];
-    const idx = arr.indexOf(item);
-    if (idx >= 0) arr.splice(idx, 1); else arr.push(item);
-    onChange({ ...filters, [key]: arr });
-  };
-
-  const clearFilter = (key: string) => {
-    const next = { ...filters };
-    delete next[key];
-    onChange(next);
-  };
-
-  // Infer picker from field_type + field name
-  const pickerFor = (el: string): 'tags' | 'number' | 'text' | 'boolean' | 'select_buckets' => {
-    const m    = meta[el];
-    const ft   = (m?.field_type ?? '').toLowerCase();
-    const f    = (m?.field ?? el.split('.').pop() ?? '').toLowerCase();
-    if (ft === 'tags' || f === 'tags' || f === 'attendees')   return 'tags';
-    if (ft === 'boolean' || f.startsWith('is_') || f === 'completed_only') return 'boolean';
-    if (ft === 'number' || ft === 'integer' || f.includes('days') || f === 'limit') return 'number';
-    if (f === 'bucket_key' || f === 'buckets') return 'select_buckets';
-    return 'text';
-  };
-
-  const hasAnyFilter = elements.some(el => {
-    const v = filters[el];
-    return v !== undefined && v !== null && v !== '' && !(Array.isArray(v) && v.length === 0);
-  });
-
-  if (loading) return (
-    <div style={{ padding: '0.4rem 0.75rem', borderBottom: '1px solid #e5e7eb', background: '#fafafa', fontSize: '0.65rem', color: '#bbb' }}>
-      Loading filter fields...
-    </div>
-  );
-
-  return (
-    <div style={{ flexShrink: 0, borderBottom: '1px solid #e5e7eb', background: '#fafafa' }}>
-      {/* Header */}
-      <div style={{ padding: '0.3rem 0.75rem', display: 'flex', alignItems: 'center', gap: '0.5rem', borderBottom: '1px solid #f0f0f0' }}>
-        <span style={{ fontSize: '0.6rem', color: '#aaa', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Filters</span>
-        {hasAnyFilter && (
-          <span style={{ fontSize: '0.58rem', color: ACCENT, background: '#ccfbf1', padding: '0.02rem 0.35rem', borderRadius: 2 }}>active</span>
-        )}
-        {hasAnyFilter && (
-          <button onClick={() => onChange({})}
-            style={{ marginLeft: 'auto', background: 'none', border: 'none', color: '#bbb', fontSize: '0.6rem', cursor: 'pointer', fontFamily: 'monospace' }}>
-            clear all
-          </button>
-        )}
-      </div>
-
-      {/* Per-element filter inputs */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', padding: '0.5rem 0.75rem', maxHeight: 160, overflowY: 'auto', scrollbarWidth: 'thin', scrollbarColor: '#ddd transparent' }}>
-        {elements.map(el => {
-          const m       = meta[el];
-          const label   = m?.label ?? el.split('.').pop() ?? el;
-          const picker  = pickerFor(el);
-          const val     = filters[el];
-          const arr     = Array.isArray(val) ? val as string[] : [];
-          const hasVal  = val !== undefined && val !== null && val !== '' && !(Array.isArray(val) && val.length === 0);
-
-          return (
-            <div key={el} style={{ flex: '1 1 180px', minWidth: 160, maxWidth: 280 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', marginBottom: '0.2rem' }}>
-                <span style={{ fontSize: '0.58rem', color: hasVal ? ACCENT : '#bbb', fontWeight: hasVal ? 600 : 400, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                  {label}
-                </span>
-                <span style={{ fontSize: '0.55rem', color: '#ddd', fontFamily: 'monospace' }}>{el}</span>
-                {hasVal && (
-                  <button onClick={() => clearFilter(el)}
-                    style={{ marginLeft: 'auto', background: 'none', border: 'none', color: '#ccc', cursor: 'pointer', fontSize: '0.6rem', padding: 0, lineHeight: 1 }}>✕</button>
-                )}
-              </div>
-
-              {/* TAGS picker */}
-              {picker === 'tags' && (
-                <div>
-                  {arr.length > 0 && (
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.2rem', marginBottom: '0.2rem' }}>
-                      {arr.map(t => (
-                        <span key={t} style={{ background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, color: '#0f766e', fontSize: '0.6rem', padding: '0.05rem 0.35rem', borderRadius: 3, display: 'flex', alignItems: 'center', gap: '0.2rem' }}>
-                          {t}
-                          <button onClick={() => toggleArr(el, t)} style={{ background: 'none', border: 'none', color: ACCENT, cursor: 'pointer', fontSize: '0.6rem', padding: 0, lineHeight: 1 }}>✕</button>
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  <input
-                    value={tagSearch[el] ?? ''}
-                    onChange={e => setTagSearch(p => ({ ...p, [el]: e.target.value }))}
-                    placeholder="Search tags..."
-                    style={filterInputSt}
-                  />
-                  {(tagSearch[el] ?? '').length > 0 && (
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.2rem', marginTop: '0.2rem' }}>
-                      {tags.filter(t => t.toLowerCase().includes((tagSearch[el] ?? '').toLowerCase())).slice(0, 8).map(t => {
-                        const sel = arr.includes(t);
-                        return (
-                          <button key={t} onClick={() => { toggleArr(el, t); setTagSearch(p => ({ ...p, [el]: '' })); }}
-                            style={{ background: sel ? ACCENT_BG : '#f5f5f5', border: `1px solid ${sel ? ACCENT_BORDER : '#e5e7eb'}`, color: sel ? ACCENT : '#555', padding: '0.1rem 0.4rem', borderRadius: 3, fontSize: '0.62rem', fontFamily: 'monospace', cursor: 'pointer' }}>
-                            {sel ? '✓ ' : ''}{t}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* NUMBER input */}
-              {picker === 'number' && (
-                <input type="number" min={1} value={val ?? ''} onChange={e => set(el, e.target.value ? Number(e.target.value) : null)}
-                  placeholder="empty = no limit" style={filterInputSt} />
-              )}
-
-              {/* TEXT input */}
-              {picker === 'text' && (
-                <input value={val ?? ''} onChange={e => set(el, e.target.value || null)}
-                  placeholder="empty = no filter" style={filterInputSt} />
-              )}
-
-              {/* BOOLEAN toggle */}
-              {picker === 'boolean' && (
-                <label style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.7rem', color: '#555', cursor: 'pointer', paddingTop: '0.2rem' }}>
-                  <input type="checkbox" checked={!!val} onChange={e => set(el, e.target.checked || undefined)}
-                    style={{ accentColor: ACCENT }} />
-                  Yes
-                </label>
-              )}
-
-              {/* BUCKET select */}
-              {picker === 'select_buckets' && (
-                <input value={Array.isArray(val) ? val.join(', ') : (val ?? '')}
-                  onChange={e => set(el, e.target.value ? e.target.value.split(',').map((s: string) => s.trim()).filter(Boolean) : null)}
-                  placeholder="now, soon, later… (empty = all)"
-                  style={filterInputSt} />
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-
-const filterInputSt: React.CSSProperties = {
-  width: '100%', background: '#fff', border: '1px solid #e5e7eb', color: '#222',
-  padding: '0.3rem 0.5rem', borderRadius: 4, fontFamily: 'monospace',
-  fontSize: '0.72rem', outline: 'none', boxSizing: 'border-box',
-};

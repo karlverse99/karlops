@@ -23,7 +23,7 @@ export const dynamic = 'force-dynamic';
 //   template_id,
 //   run_mode?,
 //   karl_prompt?,        // override stored prompt_template
-//   user_additions?,     // override stored user_prompt_additions
+//   user_additions?,     // if key present: use value (may be empty); if omitted: use stored user_prompt_additions
 //   selected_elements?,  // override stored selected_elements
 //   element_filters?,    // override stored element_filters
 //   filename?, suffix?
@@ -44,13 +44,15 @@ export async function POST(req: NextRequest) {
       template_id,
       run_mode          = 'preview',
       karl_prompt:      bodyKarlPrompt,
-      user_additions:   bodyUserAdditions,
       output_format:    bodyOutputFormat,
       selected_elements: bodyElements,
       element_filters:   bodyFilters,
       filename:         clientFilename,
       suffix:           clientSuffix,
     } = body;
+    const bodyUserAdditions = Object.prototype.hasOwnProperty.call(body, 'user_additions')
+      ? String(body.user_additions ?? '').trim()
+      : null;
 
     if (!template_id) return NextResponse.json({ error: 'template_id required' }, { status: 400 });
 
@@ -69,12 +71,14 @@ export async function POST(req: NextRequest) {
 
     // Body overrides take precedence over stored values (for live editing without save)
     const karlPrompt    = (bodyKarlPrompt    ?? template.prompt_template         ?? '').trim();
-    const userAdditions = (bodyUserAdditions ?? template.user_prompt_additions   ?? '').trim();
+    const userAdditions = bodyUserAdditions !== null
+      ? bodyUserAdditions
+      : String(template.user_prompt_additions ?? '').trim();
     const outputFormat  = (bodyOutputFormat  ?? template.output_format            ?? 'md').trim() || 'md';
     const elements: string[] = bodyElements ?? (Array.isArray(template.selected_elements) ? template.selected_elements : []);
     const filters: Record<string, any> = bodyFilters ?? (template.element_filters && typeof template.element_filters === 'object' ? template.element_filters : {});
 
-    // Combined prompt: Karl prompt + user additions
+    // Combined prompt (still used for empty checks); user message splits Karl vs additions for clarity.
     const fullPrompt = [karlPrompt, userAdditions].filter(Boolean).join('\n\n');
 
     if (!fullPrompt && !isPreview) {
@@ -125,8 +129,15 @@ export async function POST(req: NextRequest) {
       } else {
         // Real data — pull per object type, applying relevant element filters
         for (const [objType, fields] of Object.entries(byType)) {
-          // Build a scope object from all filters for this object type
+          // Build a scope object: optional bulk __scope per object type, then per-element keys overlay.
           const scope: Record<string, any> = {};
+          const bulk =
+            filters.__scope && typeof filters.__scope === 'object' && !Array.isArray(filters.__scope)
+              ? (filters.__scope as Record<string, any>)[objType]
+              : null;
+          if (bulk && typeof bulk === 'object' && !Array.isArray(bulk)) {
+            Object.assign(scope, bulk);
+          }
           for (const field of fields) {
             const el  = `${objType}.${field}`;
             const val = getFilter(el);
@@ -134,7 +145,8 @@ export async function POST(req: NextRequest) {
               scope[field] = val;
             }
           }
-          const block = await pullObjectData(supabase, user.id, objType, scope, bucketLabels, fields);
+          const normalizedScope = normalizeQueryScope(objType, scope);
+          const block = await pullObjectData(supabase, user.id, objType, normalizedScope, bucketLabels, fields);
           if (block) dataBlocks.push(`${objType}:\n${block}`);
         }
       }
@@ -157,9 +169,10 @@ export async function POST(req: NextRequest) {
 
     // ── Build Haiku prompt ───────────────────────────────────────────────────
     const systemPrompt = `You are Karl, a precision document generator for a KarlOps user.
-Your job: follow the formatting prompt exactly, populate it with the provided data.
+Your job: follow the formatting instructions exactly and populate them with the provided data.
 Use only the data provided — never invent facts.
-${isPreview ? 'This is a STUB PREVIEW — demonstrate layout with sample data only.' : ''}
+${isPreview ? 'This is a STUB PREVIEW — demonstrate layout with sample data only.' : 'The Data section may use ## headings to group rows (e.g. by context). Preserve that structure in your output when it matches the formatting instructions.'}
+${userAdditions ? 'User additions (when present) are binding constraints on tone, emphasis, inclusions, or exclusions — apply them together with the formatting instructions.' : ''}
 Output format: ${outputFormat}.
 Today: ${today}.
 Return ONLY the document — no preamble, no explanation, no code fences.`;
@@ -168,12 +181,17 @@ Return ONLY the document — no preamble, no explanation, no code fences.`;
       `Template: ${template.name}`,
       template.description ? `Purpose: ${template.description}` : '',
       '',
-      '── Formatting Prompt ──',
-      fullPrompt || '(no prompt — format data clearly)',
+      '── Formatting instructions (Karl prompt) ──',
+      karlPrompt || '(no formatting instructions — format the Data section clearly)',
+      userAdditions ? `\n── User additions (apply strictly; together with instructions above) ──\n${userAdditions}` : '',
+      '',
+      '── Data contract ──',
+      'The Data block is workspace-sourced. Each bullet belongs to the group heading above it when headings are present.',
+      `Selected element keys: ${elements.length ? elements.join(', ') : '(none — passthrough or sections mode)'}`,
       '',
       '── Data ──',
       dataSection,
-    ].filter(s => s !== undefined).join('\n').trim();
+    ].filter(s => s !== undefined && s !== '').join('\n').trim();
 
     // ── Call Haiku ───────────────────────────────────────────────────────────
     const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -300,6 +318,33 @@ function mapSectionSourceToObjectType(source: string): string {
   }
 }
 
+// Map element_filters (often keyed by object_type.field) into query scope.
+// UI quirk: a numeric filter on completion.completed_at usually means "last N days" → window_days.
+function normalizeQueryScope(objType: string, scope: Record<string, any>): Record<string, any> {
+  const s = { ...scope };
+  if (objType === 'completion') {
+    const n = typeof s.completed_at === 'number' ? s.completed_at
+      : typeof s.completed_at === 'string' && /^\d+$/.test(String(s.completed_at).trim())
+        ? Number(String(s.completed_at).trim())
+        : null;
+    if (n != null && n > 0 && s.window_days == null) {
+      s.window_days = n;
+      delete s.completed_at;
+    }
+  }
+  if (objType === 'meeting') {
+    const n = typeof s.meeting_date === 'number' ? s.meeting_date
+      : typeof s.meeting_date === 'string' && /^\d+$/.test(String(s.meeting_date).trim())
+        ? Number(String(s.meeting_date).trim())
+        : null;
+    if (n != null && n > 0 && s.window_days == null) {
+      s.window_days = n;
+      delete s.meeting_date;
+    }
+  }
+  return s;
+}
+
 async function normalizeSectionScope(
   supabase: any,
   userId: string,
@@ -378,11 +423,23 @@ async function pullObjectData(
   }
 
   if (objType === 'completion') {
+    const displayFields = fields.length > 0 ? fields : ['title', 'completed_at', 'outcome'];
+    const wantContext = displayFields.includes('context_id');
+    const selectCols = [
+      'title',
+      'completed_at',
+      'outcome',
+      ...(wantContext || scope.context_id ? ['context_id', 'context:context_id(name)'] : []),
+      ...(scope.tags?.length ? ['tags'] : []),
+    ];
+    const selectUnique = Array.from(new Set(selectCols)).join(', ');
+
     let q = supabase
       .from('completion')
-      .select('title, completed_at, outcome')
+      .select(selectUnique)
       .eq('user_id', userId)
-      .order('completed_at', { ascending: false });
+      .order('completed_at', { ascending: false })
+      .limit(500);
     if (scope.window_days) {
       const since = new Date();
       since.setDate(since.getDate() - Number(scope.window_days));
@@ -393,11 +450,42 @@ async function pullObjectData(
 
     const { data } = await q;
     if (!data?.length) return '(no completions)';
-    return data.map((c: any) => {
-      const date    = String(c.completed_at ?? '').slice(0, 10);
-      const outcome = c.outcome ? ` · ${c.outcome}` : '';
-      return `- ${c.title} · Completed: ${date}${outcome}`;
-    }).join('\n');
+
+    const formatRow = (c: any, groupedByContext: boolean): string => {
+      const bits: string[] = [];
+      if (displayFields.includes('title'))         bits.push(String(c.title ?? ''));
+      if (displayFields.includes('completed_at')) {
+        bits.push(`Completed: ${String(c.completed_at ?? '').slice(0, 10)}`);
+      }
+      if (displayFields.includes('outcome') && c.outcome) bits.push(String(c.outcome));
+      if (displayFields.includes('context_id') && !groupedByContext) {
+        const nm = (c.context as any)?.name ?? (c.context_id ? String(c.context_id).slice(0, 8) + '…' : 'No context');
+        bits.push(`Context: ${nm}`);
+      }
+      const core = bits.filter(Boolean).join(' · ');
+      return `- ${core || '(row)'}`;
+    };
+
+    if (wantContext) {
+      const groups = new Map<string, any[]>();
+      for (const c of data) {
+        const nm = (c.context as any)?.name ?? 'No context';
+        if (!groups.has(nm)) groups.set(nm, []);
+        groups.get(nm)!.push(c);
+      }
+      const ordered = Array.from(groups.entries()).sort((a, b) => {
+        const maxA = Math.max(...a[1].map((x: any) => new Date(x.completed_at ?? 0).getTime()));
+        const maxB = Math.max(...b[1].map((x: any) => new Date(x.completed_at ?? 0).getTime()));
+        return maxB - maxA;
+      });
+      return ordered.map(([ctxName, rows]) => {
+        rows.sort((a: any, b: any) =>
+          new Date(b.completed_at ?? 0).getTime() - new Date(a.completed_at ?? 0).getTime());
+        return `## ${ctxName}\n${rows.map((r: any) => formatRow(r, true)).join('\n')}`;
+      }).join('\n\n');
+    }
+
+    return data.map((c: any) => formatRow(c, false)).join('\n');
   }
 
   if (objType === 'meeting') {

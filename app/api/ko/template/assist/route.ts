@@ -18,8 +18,38 @@ export async function POST(req: NextRequest) {
     const { data: { user }, error: authErr } = await supabase.auth.getUser(token);
     if (authErr || !user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-    const { message, history = [], current_instructions = '' } = await req.json();
+    const body = await req.json();
+    const {
+      message: rawMessage,
+      history = [],
+      current_instructions = '',
+      regenerate_prompt = false,
+      selected_elements = [],
+      element_filters = {},
+    } = body;
+    const message = String(rawMessage ?? '').trim() || (regenerate_prompt ? 'Regenerate' : '');
     if (!message) return NextResponse.json({ error: 'message required' }, { status: 400 });
+
+    const elementsLine = Array.isArray(selected_elements) && selected_elements.length
+      ? `\nSelected element keys (data columns): ${JSON.stringify(selected_elements)}`
+      : '';
+    const filtersLine = element_filters && typeof element_filters === 'object' && !Array.isArray(element_filters)
+      ? `\nCurrent element_filters JSON (use __scope for per-object query params): ${JSON.stringify(element_filters)}`
+      : '';
+
+    const regenBlock = regenerate_prompt ? `
+
+## REGENERATE PROMPT (required)
+The user clicked **retry**: synthesize the **full** replacement formatting instructions as suggested_instructions by combining **current instructions** with **every** user/assistant turn in history. Do not output a diff — output the entire new instruction block the model should follow.
+Your "response" field should be one short sentence (e.g. what you changed).` : '';
+
+    const dataScopeBlock = Array.isArray(selected_elements) && selected_elements.length ? `
+
+## Optional: suggested_data_scope
+When this template pulls workspace data, you MAY return **suggested_data_scope**: an object whose keys are **object_type** strings present in selected_elements (e.g. "completion", "task"). Values are plain filter objects the backend merges into queries, for example:
+- completion: { "window_days": 7, "context_id": "<uuid>", "tags": ["tag1"] }
+- task: { "bucket_key": ["now","soon"], "context_id": "<uuid>" }
+Only include suggested_data_scope when you are confident; otherwise omit the key entirely.` : '';
 
     const systemPrompt = `You are Karl, an operational AI assistant helping a user build formatting instructions for a KarlOps document template.
 
@@ -33,7 +63,7 @@ These instructions tell the generation model:
 - How to format each section (bullets, table, prose, etc.)
 - Any ordering, grouping, or conditional display rules
 
-The data itself is pulled automatically based on sections[] defined on the template — the user does NOT write data queries. They just describe what they want to see.
+The user may also edit **element_filters** JSON (including a __scope object per object type) to narrow pulled data. You can propose updates via suggested_data_scope when appropriate.
 
 ## Available data sources (for your reference when suggesting instructions)
 
@@ -77,7 +107,7 @@ Bullet per completion. Show: title · completed date · outcome.
 When you have enough info to suggest instructions, respond ONLY with valid JSON (no markdown fences, no preamble):
 {
   "response": "your conversational reply",
-  "suggested_instructions": "the full formatting instructions text"
+  "suggested_instructions": "the full formatting instructions text"${Array.isArray(selected_elements) && selected_elements.length ? ',\n  "suggested_data_scope": { "completion": { "window_days": 7 } }' : ''}
 }
 
 If you need more info first:
@@ -85,10 +115,10 @@ If you need more info first:
   "response": "your question or reply"
 }
 
-NEVER include data_sources, JSON queries, or technical config in suggested_instructions.
-The instructions should read like a document spec — sections, fields, format. That's it.
+suggested_instructions must read like a document spec — sections, fields, format. Do not put SQL or raw JSON **inside** suggested_instructions.
+suggested_data_scope (when returned) is separate machine-oriented filter JSON only.${regenBlock}${dataScopeBlock}
 
-Current instructions: ${current_instructions || '(none yet)'}`;
+Current instructions: ${current_instructions || '(none yet)'}${elementsLine}${filtersLine}`;
 
     const trimmedHistory = history.slice(-6);
     const messages = [
@@ -106,7 +136,7 @@ Current instructions: ${current_instructions || '(none yet)'}`;
       },
       body: JSON.stringify({
         model:      'claude-sonnet-4-20250514',
-        max_tokens: 1000,
+        max_tokens: regenerate_prompt ? 1800 : 1200,
         system:     [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
         messages,
       }),
@@ -128,6 +158,7 @@ Current instructions: ${current_instructions || '(none yet)'}`;
       return NextResponse.json({
         response:               parsed.response ?? '',
         suggested_instructions: parsed.suggested_instructions ?? null,
+        suggested_data_scope:   parsed.suggested_data_scope ?? null,
       });
     } catch (_) {
       // Fallback — plain text response, no instructions suggested
