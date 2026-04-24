@@ -59,7 +59,7 @@ export async function POST(req: NextRequest) {
     // ── Load template ────────────────────────────────────────────────────────
     const { data: template, error: tErr } = await supabase
       .from('document_template')
-      .select('name, description, prompt_template, user_prompt_additions, template_mode, selected_elements, element_filters, output_format, filename_suffix_format')
+      .select('name, description, prompt_template, user_prompt_additions, template_mode, selected_elements, element_filters, output_format, filename_suffix_format, sections')
       .eq('document_template_id', template_id)
       .or(`user_id.eq.${user.id},is_system.eq.true`)
       .single();
@@ -111,26 +111,43 @@ export async function POST(req: NextRequest) {
     const getFilter = (el: string) => filters[el] ?? null;
 
     const dataBlocks: string[] = [];
+    const sections: Array<{ key: string; label: string; source: string; default_scope?: Record<string, any> }> =
+      Array.isArray((template as any).sections) ? (template as any).sections : [];
 
-    if (isPreview) {
-      // Stub data — one block per unique object type
-      for (const objType of Object.keys(byType)) {
-        dataBlocks.push(generateStub(objType, bucketLabels));
-      }
-    } else {
-      // Real data — pull per object type, applying relevant element filters
-      for (const [objType, fields] of Object.entries(byType)) {
-        // Build a scope object from all filters for this object type
-        const scope: Record<string, any> = {};
-        for (const field of fields) {
-          const el  = `${objType}.${field}`;
-          const val = getFilter(el);
-          if (val !== null && val !== undefined && val !== '' && !(Array.isArray(val) && val.length === 0)) {
-            scope[field] = val;
-          }
+    if (Object.keys(byType).length > 0) {
+      if (isPreview) {
+        // Stub data — one block per unique object type
+        for (const objType of Object.keys(byType)) {
+          dataBlocks.push(generateStub(objType, bucketLabels));
         }
-        const block = await pullObjectData(supabase, user.id, objType, scope, bucketLabels, fields);
-        if (block) dataBlocks.push(`${objType}:\n${block}`);
+      } else {
+        // Real data — pull per object type, applying relevant element filters
+        for (const [objType, fields] of Object.entries(byType)) {
+          // Build a scope object from all filters for this object type
+          const scope: Record<string, any> = {};
+          for (const field of fields) {
+            const el  = `${objType}.${field}`;
+            const val = getFilter(el);
+            if (val !== null && val !== undefined && val !== '' && !(Array.isArray(val) && val.length === 0)) {
+              scope[field] = val;
+            }
+          }
+          const block = await pullObjectData(supabase, user.id, objType, scope, bucketLabels, fields);
+          if (block) dataBlocks.push(`${objType}:\n${block}`);
+        }
+      }
+    } else if (sections.length > 0) {
+      // Section/default_scope mode — used by chat-saved templates.
+      for (const section of sections) {
+        const source = String(section.source ?? '').toLowerCase();
+        const label = section.label ?? section.key ?? source;
+        const baseScope = section.default_scope && typeof section.default_scope === 'object' ? section.default_scope : {};
+        const scope = await normalizeSectionScope(supabase, user.id, source, baseScope);
+        const objType = mapSectionSourceToObjectType(source);
+        const sectionBlock = isPreview
+          ? generateStub(objType, bucketLabels)
+          : await pullObjectData(supabase, user.id, objType, scope, bucketLabels, []);
+        dataBlocks.push(`${label}:\n${sectionBlock || '(no data)'}`);
       }
     }
 
@@ -246,6 +263,48 @@ function formatExtension(outputFormat: string): string {
     case 'pdf':  return 'pdf';
     default:     return 'md';
   }
+}
+
+function mapSectionSourceToObjectType(source: string): string {
+  switch (source) {
+    case 'tasks': return 'task';
+    case 'completions': return 'completion';
+    case 'meetings': return 'meeting';
+    case 'references': return 'external_reference';
+    case 'situation': return 'user_situation';
+    case 'contacts': return 'contact';
+    default: return source;
+  }
+}
+
+async function normalizeSectionScope(
+  supabase: any,
+  userId: string,
+  source: string,
+  scope: Record<string, any>
+): Promise<Record<string, any>> {
+  const out: Record<string, any> = { ...scope };
+  const rawContext = out.context_id ?? out.context ?? null;
+  if (rawContext && typeof rawContext === 'string') {
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawContext);
+    if (isUuid) {
+      out.context_id = rawContext;
+    } else {
+      const { data } = await supabase
+        .from('context')
+        .select('context_id')
+        .eq('user_id', userId)
+        .ilike('name', rawContext)
+        .maybeSingle();
+      if (data?.context_id) out.context_id = data.context_id;
+    }
+  }
+  delete out.context;
+
+  if (source === 'tasks' && Array.isArray(out.buckets) && !out.bucket_key) {
+    out.bucket_key = out.buckets;
+  }
+  return out;
 }
 
 // ─── Per-object data puller ───────────────────────────────────────────────────
