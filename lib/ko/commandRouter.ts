@@ -803,15 +803,13 @@ export async function routeCommand(
       parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
 
 } catch {
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
+const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         try {
           const candidate = JSON.parse(jsonMatch[0]);
-          // Only accept if it has a valid intent — never accept bare partial matches
           if (candidate?.intent) parsed = candidate;
         } catch { /* fall through */ }
       }
-    }
 
     if (!parsed) {
       console.error('[commandRouter] JSON parse failed. Raw:', text);
