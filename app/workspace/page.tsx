@@ -609,7 +609,13 @@ export default function WorkspacePage() {
     if (data.intent === 'modify_pending') {
       const summary = data.payload?.title
         ?? (data.payload?.tasks?.length ? `${data.payload.tasks.length} tasks` : 'modified action');
-      setPending({ intent: data.payload?.action ?? 'capture_task', actions: data.actions ?? [], payload: data.payload ?? {}, summary });
+      const primaryAction = data.actions?.[0]?.action;
+      setPending({
+        intent: primaryAction ?? data.payload?.action ?? 'capture_task',
+        actions: data.actions ?? [],
+        payload: data.payload ?? {},
+        summary,
+      });
       addMessage('assistant', data.response ?? 'Updated.');
       return;
     }
@@ -631,7 +637,13 @@ export default function WorkspacePage() {
     if (data.intent === 'pending') {
       const summary = data.payload?.title
         ?? (data.payload?.tasks?.length ? `${data.payload.tasks.length} tasks` : 'pending action');
-      setPending({ intent: data.payload?.action ?? 'capture_task', actions: data.actions ?? [], payload: data.payload ?? {}, summary });
+      const primaryAction = data.actions?.[0]?.action;
+      setPending({
+        intent: primaryAction ?? data.payload?.action ?? 'capture_task',
+        actions: data.actions ?? [],
+        payload: data.payload ?? {},
+        summary,
+      });
       addMessage('assistant', data.response ?? '...');
       return;
     }
@@ -683,7 +695,7 @@ export default function WorkspacePage() {
     if ((!text && queuedFiles.length === 0) || !sessionReady) return;
 
     const pendingForKarl = pending
-      ? { ...pending.payload, action: pending.intent, intent: pending.intent }
+      ? { ...pending.payload, actions: pending.actions, action: pending.intent, intent: pending.intent }
       : null;
 
     // ── File path: queued files + user hint ──────────────────────────────────

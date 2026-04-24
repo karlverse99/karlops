@@ -1102,6 +1102,22 @@
       }];
     }
 
+    if (action === 'save_as_template') {
+      return [{
+        action: 'save_as_template',
+        object_type: 'document_template',
+        fields: flat.fields ?? {
+          name: flat.name,
+          description: flat.description,
+          doc_type: flat.doc_type,
+          prompt_template: flat.prompt_template,
+          sections: flat.sections,
+          output_format: flat.output_format ?? 'md',
+          tags: flat.tags ?? [],
+        },
+      }];
+    }
+
     if (tasks.length > 0) return [{ action: 'capture_tasks', object_type: 'task', modal: 'TaskAddModal', tasks }];
 
     if (action === 'capture_task' || action === 'insert') {
