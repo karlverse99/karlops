@@ -779,21 +779,21 @@
         ?? actionAny.selected_elements
         ?? [];
       if (Array.isArray(value)) {
-        return [...new Set(
+        return Array.from(new Set(
           value
             .map((s: unknown) => (typeof s === 'string' ? s.trim() : String(s ?? '').trim()))
             .filter(Boolean),
-        )];
+        ));
       }
       if (typeof value === 'string') {
         try {
           const parsed = JSON.parse(value);
           if (!Array.isArray(parsed)) return [];
-          return [...new Set(
+          return Array.from(new Set(
             parsed
               .map((s: unknown) => (typeof s === 'string' ? s.trim() : String(s ?? '').trim()))
               .filter(Boolean),
-          )];
+          ));
         } catch {
           return [];
         }
