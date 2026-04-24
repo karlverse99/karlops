@@ -538,28 +538,8 @@ export async function routeCommand(
 ): Promise<RouterResult> {
   const db = createSupabaseAdmin();
 
-try {
+  try {
     const { staticContext, dynamicContext } = contexts;
-const { data: allMeta } = await db
-
-  .from('ko_field_metadata')
-  .select('object_type, field, label, field_type, insert_behavior, update_behavior, description, llm_notes')
-  .eq('user_id', user_id)
-  .in('object_type', ['task', 'meeting', 'completion', 'external_reference', 'document_template', 'contact', 'task_status']);
-
-const meta = allMeta ?? [];
-const objectSummaries = buildObjectSummaries(meta);
-const fieldKnowledge  = buildFieldKnowledge(meta);
-
-    const isDeep     = isAnalysisRequest(input);
-    const hasPending = !!pending;
-    const isLong     = isLongInput(input);
-
-    const pendingBlock = formatPendingForPrompt(pending);
-
-const { staticContext, dynamicContext } = contexts;
-
-    const db = createSupabaseAdmin();
 
     const { data: allMeta } = await db
       .from('ko_field_metadata')
@@ -609,6 +589,7 @@ const { staticContext, dynamicContext } = contexts;
     const rejectedTagsNote = rejectedTags.length > 0
       ? `\n## Rejected Tags — NEVER suggest these\n${rejectedTags.join(', ')}`
       : '';
+
     // ── Static system prompt — NEVER changes between calls, cache hits every time ──
     // Contains: Karl persona, instructions, action list, JSON format rules.
     // staticContext (tags, field knowledge, concept registry) prepended via system block.
@@ -719,17 +700,12 @@ const { staticContext, dynamicContext } = contexts;
       '## Identifiers',
       'N=now S=soon RW=realwork L=later D=delegate CP=capture CM=completion MT=meeting EX=extract TM=template CT=contact',
       '',
-
-'## Available Object Types + Required Fields',
-objectSummaries,
-'',
-'## Field Knowledge',
-fieldKnowledge,
-'',
-
-
-
-
+      '## Available Object Types + Required Fields',
+      objectSummaries,
+      '',
+      '## Field Knowledge',
+      fieldKnowledge,
+      '',
       '## Response Format — ONLY valid JSON, no markdown, no code fences',
       '',
       '// question — STEP 1 of run_template:',
@@ -766,7 +742,7 @@ fieldKnowledge,
       '{ "intent": "question", "response": "Karl answer in plain English" }',
     ].filter(Boolean).join('\n');
 
-    // ── Dynamic context — prepended to first user message, never in system ──
+    // ── Dynamic context — prepended to last user message, never in system ──
     // Contains: today's date, task snapshot, completions, meetings, pending, observations.
     // Changes every call — keeping it out of system preserves the cache key on staticSystemPrompt.
     const dynamicPrefix = [
@@ -780,14 +756,12 @@ fieldKnowledge,
       rejectedTagsNote,
     ].filter(Boolean).join('\n');
 
-    // Prepend dynamic context to first user message
-
-
+    // Prepend dynamic context to last user message (current input)
     const lastIndex = anthropicMessages.length - 1;
-const messagesWithContext = anthropicMessages.map((m, i) => {
-  if (i === lastIndex) return { ...m, content: dynamicPrefix + '\n\n---\n\n' + m.content };
-  return m;
-});
+    const messagesWithContext = anthropicMessages.map((m, i) => {
+      if (i === lastIndex) return { ...m, content: dynamicPrefix + '\n\n---\n\n' + m.content };
+      return m;
+    });
 
     const maxTokens = isDeep ? 1500 : hasPending ? 3000 : isLong ? 2000 : 1200;
 
@@ -809,10 +783,6 @@ const messagesWithContext = anthropicMessages.map((m, i) => {
         messages: messagesWithContext,
       }),
     });
-
-
-
-
 
     const rawData = await res.json();
     console.log('[commandRouter] anthropic status:', res.status);
