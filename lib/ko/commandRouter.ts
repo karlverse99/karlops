@@ -541,8 +541,15 @@ export async function routeCommand(
 try {
     const { staticContext, dynamicContext } = contexts;
 
-    // objectSummaries and fieldKnowledge come from staticContext via buildKarlStaticContext.
-    // No need to re-fetch allMeta here — removed.
+const { data: allMeta } = await db
+  .from('ko_field_metadata')
+  .select('object_type, field, label, field_type, insert_behavior, update_behavior, description, llm_notes')
+  .eq('user_id', user_id)
+  .in('object_type', ['task', 'meeting', 'completion', 'external_reference', 'document_template', 'contact', 'task_status']);
+
+const meta = allMeta ?? [];
+const objectSummaries = buildObjectSummaries(meta);
+const fieldKnowledge  = buildFieldKnowledge(meta);
 
     const isDeep     = isAnalysisRequest(input);
     const hasPending = !!pending;
@@ -694,6 +701,17 @@ try {
       '## Identifiers',
       'N=now S=soon RW=realwork L=later D=delegate CP=capture CM=completion MT=meeting EX=extract TM=template CT=contact',
       '',
+
+'## Available Object Types + Required Fields',
+objectSummaries,
+'',
+'## Field Knowledge',
+fieldKnowledge,
+'',
+
+
+
+
       '## Response Format — ONLY valid JSON, no markdown, no code fences',
       '',
       '// question — STEP 1 of run_template:',
