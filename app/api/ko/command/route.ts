@@ -788,9 +788,21 @@
     const name = fields.name;
     if (!name) throw new Error('save_as_template missing name');
 
+    const filenameSeed = (typeof fields.description === 'string' && fields.description.trim().length > 0)
+      ? fields.description
+      : String(fields.name);
+    const filenameStub = filenameSeed
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 64)
+      || `template-${Date.now()}`;
+
     const templateInsertBase = {
       user_id,
       name:            String(fields.name).trim(),
+      filename_stub:   filenameStub,
       description:     typeof fields.description === 'string' ? fields.description.trim() : null,
       prompt_template: typeof fields.prompt_template === 'string' ? fields.prompt_template.trim() : '',
       sections:        fields.sections ?? [],
