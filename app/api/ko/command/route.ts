@@ -771,6 +771,48 @@
       }
       return [];
     })();
+
+    const parsedSelectedElements = (() => {
+      const value =
+        rawFields.selected_elements
+        ?? rawFields.data_elements
+        ?? actionAny.selected_elements
+        ?? [];
+      if (Array.isArray(value)) {
+        return [...new Set(
+          value
+            .map((s: unknown) => (typeof s === 'string' ? s.trim() : String(s ?? '').trim()))
+            .filter(Boolean),
+        )];
+      }
+      if (typeof value === 'string') {
+        try {
+          const parsed = JSON.parse(value);
+          if (!Array.isArray(parsed)) return [];
+          return [...new Set(
+            parsed
+              .map((s: unknown) => (typeof s === 'string' ? s.trim() : String(s ?? '').trim()))
+              .filter(Boolean),
+          )];
+        } catch {
+          return [];
+        }
+      }
+      return [];
+    })();
+
+    const parsedElementFilters = (() => {
+      const value = rawFields.element_filters ?? actionAny.element_filters ?? {};
+      if (value && typeof value === 'object' && !Array.isArray(value)) return { ...value };
+      if (typeof value === 'string') {
+        try {
+          const parsed = JSON.parse(value);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return { ...parsed };
+        } catch { /* ignore */ }
+      }
+      return {};
+    })();
+
     const fields = {
       name: rawFields.name ?? actionAny.name ?? null,
       description: rawFields.description ?? actionAny.description ?? null,
@@ -784,6 +826,21 @@
       sections: parsedSections,
       output_format: rawFields.output_format ?? actionAny.output_format ?? 'md',
       tags: Array.isArray(rawFields.tags ?? actionAny.tags) ? (rawFields.tags ?? actionAny.tags) : [],
+      selected_elements: parsedSelectedElements,
+      element_filters: parsedElementFilters,
+      user_prompt_additions:
+        typeof (rawFields.user_prompt_additions ?? actionAny.user_prompt_additions) === 'string'
+          ? String(rawFields.user_prompt_additions ?? actionAny.user_prompt_additions).trim() || null
+          : null,
+      template_mode: typeof (rawFields.template_mode ?? actionAny.template_mode) === 'string'
+        ? String(rawFields.template_mode ?? actionAny.template_mode).trim() || 'karl'
+        : 'karl',
+      filename_suffix_format: typeof (rawFields.filename_suffix_format ?? actionAny.filename_suffix_format) === 'string'
+        ? String(rawFields.filename_suffix_format ?? actionAny.filename_suffix_format).trim() || 'datetime'
+        : 'datetime',
+      context_id: typeof (rawFields.context_id ?? actionAny.context_id) === 'string'
+        ? String(rawFields.context_id ?? actionAny.context_id).trim() || null
+        : null,
     };
     const name = fields.name;
     if (!name) throw new Error('save_as_template missing name');
@@ -808,6 +865,12 @@
       sections:        fields.sections ?? [],
       output_format:   fields.output_format ?? 'md',
       tags:            fields.tags ?? [],
+      selected_elements: fields.selected_elements.length > 0 ? fields.selected_elements : [],
+      element_filters:   Object.keys(fields.element_filters).length > 0 ? fields.element_filters : {},
+      user_prompt_additions: fields.user_prompt_additions,
+      template_mode:         fields.template_mode,
+      filename_suffix_format: fields.filename_suffix_format,
+      context_id:            fields.context_id,
       is_system:       false,
       is_active:       true,
     };
@@ -1165,6 +1228,12 @@
           sections: flat.sections,
           output_format: flat.output_format ?? 'md',
           tags: flat.tags ?? [],
+          selected_elements: flat.selected_elements,
+          element_filters: flat.element_filters,
+          user_prompt_additions: flat.user_prompt_additions,
+          template_mode: flat.template_mode,
+          filename_suffix_format: flat.filename_suffix_format,
+          context_id: flat.context_id,
         },
       }];
     }
