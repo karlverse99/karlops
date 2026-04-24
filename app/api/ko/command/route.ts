@@ -788,18 +788,27 @@
     const name = fields.name;
     if (!name) throw new Error('save_as_template missing name');
 
-    const { error } = await db.from('document_template').insert({
+    const templateInsertBase = {
       user_id,
       name:            String(fields.name).trim(),
       description:     typeof fields.description === 'string' ? fields.description.trim() : null,
-      doc_type:        typeof fields.doc_type === 'string' ? fields.doc_type.trim() : '',
       prompt_template: typeof fields.prompt_template === 'string' ? fields.prompt_template.trim() : '',
       sections:        fields.sections ?? [],
       output_format:   fields.output_format ?? 'md',
       tags:            fields.tags ?? [],
       is_system:       false,
       is_active:       true,
-    });
+    };
+
+    const templateInsertWithDocType = {
+      ...templateInsertBase,
+      doc_type: typeof fields.doc_type === 'string' ? fields.doc_type.trim() : '',
+    };
+
+    let { error } = await db.from('document_template').insert(templateInsertWithDocType);
+    if (error && error.message?.includes("Could not find the 'doc_type' column")) {
+      ({ error } = await db.from('document_template').insert(templateInsertBase));
+    }
     if (error) throw new Error(error.message);
 
     writeKarlObservation(user_id, `Saved template: "${name}"`, 'pattern').catch(() => {});
