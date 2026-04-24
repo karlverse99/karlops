@@ -801,10 +801,15 @@ export async function routeCommand(
     let parsed: any;
     try {
       parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
-    } catch {
+
+} catch {
       const jsonMatch = text.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
-        try { parsed = JSON.parse(jsonMatch[0]); } catch { /* fall through */ }
+        try {
+          const candidate = JSON.parse(jsonMatch[0]);
+          // Only accept if it has a valid intent — never accept bare partial matches
+          if (candidate?.intent) parsed = candidate;
+        } catch { /* fall through */ }
       }
     }
 
