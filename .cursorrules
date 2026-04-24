@@ -1,0 +1,998 @@
+# KARLOPS_L_MASTER_CONTEXT.md
+# KarlOps L — Single Source of Truth
+# Version: v0.9.1 | Updated: 2026-04-24
+
+---
+
+## NOTE TO AI — START OF SESSION
+
+This is the consolidated context file for KarlOps L. Load ONLY this file plus specific code
+files being modified in the current session.
+
+**CRITICAL SESSION RULE: Always read the current file before modifying it.
+Never patch from memory or a previous version. File drift is real.**
+
+**EDITOR: Development moved to Cursor as of Apr 24, 2026.**
+
+**FULL FILE RULE: Never patch files with small edits. Always generate the complete file
+and let the developer replace it entirely. Patching causes brace mismatches, duplicate
+declarations, and drift. This has burned multiple sessions.**
+
+**V1 REFERENCE:** The original KarlOps v1 context is available at:
+`KO_MASTER_CONTEXT_v0771_2026-03-30.md`
+Load it only when you need to port specific architecture or patterns from v1.
+Do NOT load it by default — it will bloat context unnecessarily.
+
+**COST RULE: Every new Anthropic API call must have prompt caching added at the same time.
+Never add a new Anthropic call without cache_control. See API Cost Management section.**
+
+---
+
+## SYSTEM OVERVIEW
+
+**KarlOps L** is a streamlined, chat-first operational system built on the learnings of KarlOps v1.
+Named after Karl the bad llama (Llamas with Hats). Logo: target reticle KO icon (SVG at public/ko-icon.svg).
+
+**Tagline:** "Chaos, polished."
+**Working name:** KarlopsL ("L for Light, which it really isn't")
+
+**Design philosophy:**
+- Chat is the primary interface
+- Modal-first for find/work interactions — split panel (list left, edit right) for FC objects
+- Bucket view for priority pulse
+- LLM is an active participant — intake, restructure, inference
+- No hierarchy navigation — search and chat replace it
+- Implementation type drives vocabulary AND is the future licensing/feature gate
+- Tags do the organizational work hierarchy used to do
+- Field metadata drives ALL display, validation, and form rendering — no exceptions
+- User situation brief is Karl's brain — he reads it before every response
+
+**Core loop:** Capture → Prioritize → Work → Communicate → Document
+
+---
+
+## WHAT KARLOPS L IS NOT
+
+- Not a project manager
+- Not a hierarchy navigator
+- Not infinitely configurable by the user
+
+It is a **pressure system**. Everything lives in one pool, constantly re-ranked by what's on fire.
+Tags tell you what domain it belongs to. Buckets tell you when. Chat helps you restack when the day shifts.
+
+---
+
+## PRODUCT FAMILY — IMPLEMENTATION TYPE AS PRODUCT LINE
+
+KarlOps L is the engine. The `implementation_type` field is a product line selector, not just a feature flag.
+Each product is a skin on the same engine — same DB, same Karl, same FC objects — different vocabulary,
+seeded templates, and UI focus.
+
+**Confirmed product lines:**
+- `personal` — default, full KarlOps L experience
+- `pip` — PIP Buster: evidence logging, requirement mapping, formal response generation
+- `grade` — Grade Booster: assignment tracking, evidence of work, professor-facing reports (future)
+- `enterprise` — multi-user, shared data (future)
+
+**Key insight from first demo (Apr 12):**
+PIP Buster needs a radically simplified UI skin. Users under PIP stress cannot learn a system.
+The PIP Buster UI should show ONE thing: "What did you do today? Tell me."
+Karl captures, files, maps to requirements in the background.
+Report generation is a separate flow — possibly manager/advocate facing.
+The full KarlOps L UI is too complex for high-stress single-purpose use.
+
+**Architecture implication:**
+Same DB, same Karl, same FC objects underneath.
+PIP Buster = stripped UI wrapper over KarlOps L engine.
+This is a strong commercial angle — purpose-built interfaces for high-stakes moments.
+
+**Product/business notes (Apr 24):**
+- Productization is an open question — Mike may prefer keeping this as a personal ops system
+- Partner model (like ghostwriter) is an option if commercialization happens
+- Internal Airtable dashboard integration is a near-term goal (push extract output to Airtable)
+
+---
+
+## USE CASE: PIP BUSTER
+
+KarlOps L was originally built under PIP pressure and is proven for that use case.
+The `pip` implementation type configures vocabulary for PIP response tracking.
+
+**PIP workflow:**
+- Capture — log what you did, fast, as it happened
+- Chat as analyst — Karl reads activity against requirements
+- Karl surfaces patterns — what's covered, what's thin, what needs more evidence
+- Document generation — pull into a formal PIP response template via Extracts
+
+**Key vocabulary differences (pip vs personal):**
+- completion → Evidence
+- context → Requirement Area
+- Everything else identical
+
+---
+
+## ARCHITECTURE DECISIONS
+
+### Hierarchy
+- **REMOVED:** Global layer, Focus Area layer
+- **Context** — lightweight FK on task (NOT a scope parent). Four seeded: The Unobsolete, Job Hunt, Personal, Work
+- **TOP LEVEL:** Task — context is just a label/grouping
+- Tags provide domain grouping, not structural hierarchy
+
+### Task Promotion (Curation Gate)
+- Tasks land in `capture` bucket by default
+- A task is **curated** when it has: a non-capture bucket + at least one tag
+- Task pills: single line — identifier, title (truncated), status (if not Open), target date. Tags REMOVED from pills.
+- Capture tasks display: identifier + title only
+- Cannot move a task TO capture via the detail modal (must move OUT)
+- Delegate bucket — requires delegated_to (uuid FK to People tag). Use DelegateModal.
+
+### Task Identifiers — ALL FC OBJECTS HAVE IDENTIFIERS
+Hardcoded in UI — stable, never changes per implementation type.
+```
+N   = now
+S   = soon
+RW  = realwork
+L   = later
+D   = delegate
+CP  = capture
+CM  = completion
+MT  = meeting
+EX  = extract (external_reference)
+TM  = template (document_template)
+CT  = contact
+```
+Format: `PrefixN` e.g. `N1`, `RW2`, `CM1`, `MT3`, `EX1`, `TM1`, `CT1`
+- Identifiers computed at display time from sorted list position — NOT stored in DB
+- Karl references tasks by identifier in chat commands
+- **CRITICAL:** Identifier positions are context-filter-dependent. When UI is filtered to a context,
+  Karl resolves identifiers against the same filtered list. context_filter is passed from workspace
+  through the full stack: page.tsx → route.ts → routeCommand() → buildKarlContext() → resolveIdentifier()
+
+### Implementation Type
+- Drives vocabulary, starter tags, UI labels, and future feature gating
+- Set per user at onboarding
+- NOT configurable by the user after setup
+- Is the product line selector for the product family
+
+### Concept Registry (SYSTEM TABLE)
+- No user_id — filtered by `ko_user.implementation_type`
+- RLS: authenticated read, no user writes
+- Admin panel Concepts tab is read-only
+- Two implementation types seeded: `personal` (19 rows), `pip` (19 rows)
+- Unique constraint: `(implementation_type, concept_key)`
+- **Also used as `ko_concept_registry` in backend queries** — Karl reads bucket/object icons from here
+
+### User Situation
+- `user_situation` table — free text brain dump Karl reads before every response
+- One active situation per user (`is_active` unique index)
+- Fields: `name`, `brief` (free text), `is_active`, `chat_history_depth`, `completion_window_days`
+- Defaults: `chat_history_depth = 15`, `completion_window_days = 7`
+- Managed via Admin → My Situation tab
+
+### Karl's Context Bundle — SPLIT ARCHITECTURE (v0.9.1)
+
+Context is split into static and dynamic for prompt caching efficiency.
+
+**Static context (cached — `buildKarlStaticContext`):**
+- Field metadata (description + llm_notes per field)
+- Concept registry (bucket/object icons and labels)
+- Task statuses (label → uuid map)
+- Learned vocab and rules
+- Available tags (names only)
+- Available contexts (name|uuid pairs)
+
+**Dynamic context (never cached — `buildKarlDynamicContext`):**
+- Situation brief
+- Last N chat messages (trimmed to chat_history_depth)
+- Bucket snapshot — titled tasks with identifiers AND tags in brackets, capture as count only
+- Recent completions — titles only, windowed by completion_window_days
+- Open meetings snapshot
+- FC snapshots (completions, extracts, templates, contacts)
+- Karl observations
+
+**How it flows through the stack:**
+```
+route.ts → buildKarlContextSplit(user_id, context_filter)
+         → formatStaticContextForPrompt(ctx.static)   → system block with cache_control
+         → formatDynamicContextForPrompt(ctx.dynamic)  → prepended to last user message
+```
+
+**Context filter:** When UI is filtered to a context, task query is filtered to match.
+Karl's snapshot matches exactly what the user sees.
+
+**Deep bundle (analysis calls only — `buildKarlDeepContext`):**
+- Everything in base
+- Full completions with outcomes in window
+- Open tasks grouped by context (includes tags)
+
+**Analysis triggers:**
+analyze, analysis, review, summarize, summary, make the case, what have i done,
+show me, evidence, how am i doing, this week, this month, against my, pip, requirement, progress
+
+### Session History
+- `ko_session.messages` — JSONB array, one row per user
+- Format: `[{ role: 'user'|'karl', content: string, ts: string }]`
+- Trimmed to `chat_history_depth * 2` on every append
+- Cleared on every login (fresh session each day)
+- Anthropic requires first message to be `user` role — leading assistant messages stripped
+
+### Field Metadata Model
+- `ko_field_metadata` drives ALL field rendering, validation, and form behavior
+- `insert_behavior`: `required` | `optional` | `automatic`
+- `update_behavior`: `editable` | `readonly` | `automatic`
+- `fk_table` + `fk_label`: drives FK dropdown resolution
+- `display_order`: < 999 = show, 999 = hide
+- **Field metadata is the source of truth — never hardcode field behavior in UI**
+- Column name is `field` (not `field_name`)
+- Unique constraint: `(user_id, object_type, field)` — added Apr 14
+- Two columns: `description` (canonical what-it-is) and `llm_notes` (Karl's working notes)
+  Both seeded for all FC object fields. Both included in every Karl call via fieldKnowledge block.
+
+### Defaults System
+- `ko_default_registry` stores per-user defaults per object_type/field
+- Task defaults: `bucket_key = capture`, `task_status_id = <open>`
+- Tag default: `tag_group_id = <General>`
+
+### Tag System — CORE ARCHITECTURE
+Tags are the organizational backbone. Everything is tagged. Tags replace hierarchy.
+
+**Tag groups (seeded for Mike):**
+- People — one tag auto-created per contact
+- Organizations — companies and institutions
+- Systems — tools and platforms
+- Activities — domains of work and life
+- Projects — discrete bounded efforts
+- Personal — health, learning, finances
+- Places — locations
+- General — catch-all
+- Roles — Manager, Colleague, Client, Partner, Vendor, Recruiter, Advocate, Personal
+
+**Tag rules:**
+- Max 5 tags per object (meetings: 5 for tags, 15 for attendees — separate fields)
+- Tags stored as raw name strings NOT UUIDs
+- Chat: Karl suggests from existing tags only — never creates tags in chat
+- Modal: TagPicker with Karl suggest can create new tags (saves to DB)
+- TagManagerModal: standalone tag/group creation with Karl suggest
+
+**Attendees architecture (REVISED in v0.7.0):**
+- `meeting.attendees` — RESTORED as `text[]` column. Separate from `tags[]`.
+- Rationale: meetings can have 15+ people; mixing attendees into tags[] pollutes the tag signal.
+  "Was in the room" ≠ "is involved in this situation". Critical distinction for PIP Buster.
+- Attendees picker: People tags only, maxTags=15
+- Tags picker: all tags, maxTags=5
+- task.delegated_to — uuid FK to People tag. Required when bucket = delegate.
+- DelegateModal — standalone component for delegation. Triggered by drag-drop or chat delegation_pending.
+
+### Contact System
+- `contact` table — lightweight people directory
+- Auto-creates a People tag on contact save (tag name = contact name)
+- Role and Organization are tag FKs (filtered pickers — Roles group and Organizations group)
+- FC object: `CT` identifier, `#991b1b` wine/maroon accent
+
+**Contact schema:**
+```
+contact_id              uuid PK
+user_id                 uuid FK ko_user
+name                    text NOT NULL
+email                   text
+primary_contact_method  text
+contact_method_detail   text
+role_tag_id             uuid FK tag (Roles group only)
+organization_tag_id     uuid FK tag (Organizations group only)
+notes                   text
+tag_id                  uuid FK tag (auto-created People tag)
+is_archived             boolean DEFAULT false
+created_at              timestamptz
+updated_at              timestamptz
+```
+
+### LLM Role
+- **Intake:** Dump new info, LLM classifies intent and structures it
+- **Confirmation before write** — Karl always asks before inserting/updating
+- **Tag suggestion on capture:** After classifying capture_task/capture_tasks, Karl makes a second
+  lightweight call to suggest tags from existing set. Tags included in confirmation message.
+- **Long text dumps:** If user pastes a long description (500+ chars or doc signals), treat as
+  process_document — identify content type, map to correct FC object fields, return pending.
+
+---
+
+## DOCUMENT SYSTEM — v0.9.0
+
+### Architecture — Template + Default Scope + Extract
+
+**Three-layer data ownership (CONFIRMED Apr 22):**
+
+```
+Template.sections[].default_scope  →  base parameters (what this template always wants)
+         ↓ copied at generate time
+Extract.section_data               →  actual filters used for this run (tweakable, never writes back)
+```
+
+- **Template** = intent. "Here's how I always want this report to work."
+- **Extract** = audit trail. "Here's exactly what ran on April 22nd."
+- Tweaking a parameter at generate time saves to the extract only — template unchanged.
+- If you find yourself tweaking the same parameter every run, go update the template default_scope.
+- One-way flow. No bleedback from extract to template.
+
+### Template Schema
+
+- `prompt_template` — formatting instructions (section layout, field order, display rules).
+  Pure human-readable spec. No placeholders. No data references. No `{{variables}}`.
+- `sections[]` — array of section definitions. Each maps a `key` to a `source`, `format`, and `default_scope`.
+- `output_format` — md (only active format currently)
+
+**sections[] schema (v0.9.0 — includes default_scope):**
+```json
+[
+  {
+    "key": "DELEGATED",
+    "label": "Delegated Tasks",
+    "source": "tasks",
+    "format": "bullet per task, fields: title · status · due date",
+    "default_scope": {
+      "buckets": ["delegate"],
+      "tags": [],
+      "context": null,
+      "window_days": null
+    }
+  },
+  {
+    "key": "MEETINGS",
+    "label": "Meetings",
+    "source": "meetings",
+    "format": "bullet per meeting, fields: title · date · attendees · outcome if completed",
+    "default_scope": {
+      "window_days": 7,
+      "attendee": "Jen Schroeder",
+      "completed_only": false
+    }
+  },
+  {
+    "key": "JEN_TASKS",
+    "label": "Open Tasks (Tagged: Jen Schroeder)",
+    "source": "tasks",
+    "format": "bullet per task, fields: title · bucket · status · due date",
+    "default_scope": {
+      "buckets": ["now","soon","realwork","later","delegate","capture"],
+      "tags": ["Jen Schroeder"],
+      "context": null
+    }
+  },
+  {
+    "key": "COMPLETIONS",
+    "label": "Recent Completions",
+    "source": "completions",
+    "format": "bullet per completion, fields: title · completed date · outcome",
+    "default_scope": {
+      "window_days": 7,
+      "context": null,
+      "tags": []
+    }
+  }
+]
+```
+
+**section sources:** tasks | completions | meetings | references | situation | contacts
+
+**default_scope fields by source:**
+- tasks: `buckets[]`, `tags[]`, `context` (uuid|null), `delegated_to`
+- completions: `window_days`, `tags[]`, `context` (uuid|null)
+- meetings: `window_days`, `attendee`, `completed_only`, `tags[]`, `context` (uuid|null)
+- references: `limit`, `tags[]`
+- contacts: `limit`
+- situation: (no scope fields)
+
+### Extract Storage
+- `run_data` TEXT — full generation prompt (recipe). Plaintext. Reproducible.
+- `output` TEXT — encrypted ciphertext (gzip → AES-256-GCM → base64)
+- `output_encrypted` BOOLEAN — flag for read path
+- `section_data` JSONB — exact filters used for this run (copied from default_scope, possibly tweaked)
+- `document_template_id` — FK to template
+
+### Encryption
+- Algorithm: AES-256-GCM (authenticated — detects tampering)
+- Key: `KO_OUTPUT_KEY` in Vercel env (64-char hex, 32 bytes)
+- Key also stored in user vault as backup
+- Only readable through KO with the key
+- `lib/ko/outputEncryption.ts` — `encryptOutput()` and `decryptOutput()`
+- **Key loss = permanent loss of all encrypted outputs**
+
+### Run Flow
+
+**From modal (v0.9.0):**
+1. User clicks `▶ preview` → stub data → output renders in right panel alongside instructions
+2. User tweaks instructions → clicks `▶ preview` again → output updates in place
+3. User clicks `⚡ generate` → default_scope copied to section_data → data picker shows (tweak if needed) → confirm → real data run → encrypted output saved to extract
+
+**From chat:**
+1. "preview TM1" → stub data → document bubble in chat
+2. "generate TM1" → Karl proposes section_data from default_scope → user confirms → real run → document bubble
+
+**Route:**
+- Both modal and chat use `/api/ko/template/run` — unified endpoint
+- `run_mode: 'preview'` = stub data, never saves
+- `run_mode: 'generate'` = real data, encrypts and saves to external_reference
+
+### Generation Models
+- Routing: `claude-sonnet-4-20250514`
+- Generation (document output): `claude-haiku-4-5-20251001` (separate rate limit — prevents collision)
+
+### Data Rules — NON-NEGOTIABLE
+- `notes` — NEVER in generation prompts or API payloads. Display-only. Export via file only.
+- `description` — NEVER in generation prompts or API payloads.
+- `outcome` — short one-liner only, included for completions and meetings
+- Section pullers select minimum fields: title, date, status, context, due date, attendees, outcome
+
+### Document Flow
+```
+Chat → Karl designs → save_as_template (pending) → confirm → DB
+                                                              ↓
+Modal or Chat → preview (stub data) → iterate instructions → looks good
+                                                              ↓
+                                                    ⚡ generate
+                                                              ↓
+                                             default_scope → section_data
+                                             (user tweaks at run time if needed)
+                                                              ↓
+                                              executeRunTemplate (Haiku)
+                                                              ↓
+                                              gzip → AES-256-GCM → base64
+                                                              ↓
+                                              extract saved (run_data + output + section_data)
+                                                              ↓
+                                              output shown (modal panel or chat document bubble)
+                                                              ↓
+                                              ExtractsModal → view / decrypt / download / rerun
+```
+
+### DB Changes for Document System
+```sql
+-- Template sections (v0.8.0 — confirmed run)
+ALTER TABLE document_template ADD COLUMN sections JSONB DEFAULT '[]';
+
+-- Extract output storage (v0.8.0 — confirmed run)
+ALTER TABLE external_reference ADD COLUMN output TEXT;
+ALTER TABLE external_reference ADD COLUMN output_encrypted BOOLEAN DEFAULT false;
+ALTER TABLE external_reference ADD COLUMN run_data TEXT;
+ALTER TABLE external_reference ADD COLUMN section_data JSONB;
+
+-- output_format constraint (v0.8.0 — confirmed run)
+UPDATE document_template
+SET output_format = 'md'
+WHERE output_format IS NULL OR output_format = 'markdown'
+   OR output_format NOT IN ('md', 'html', 'pdf', 'txt', 'docx');
+ALTER TABLE document_template ALTER COLUMN output_format SET NOT NULL;
+ALTER TABLE document_template ALTER COLUMN output_format SET DEFAULT 'md';
+ALTER TABLE document_template ADD CONSTRAINT output_format_check
+CHECK (output_format IN ('md', 'html', 'pdf', 'txt', 'docx'));
+
+-- default_scope lives INSIDE sections[] JSONB — no new column needed
+-- sections[] schema updated to include default_scope per section (v0.9.0)
+```
+
+### Current Templates (Mike)
+- **TM1 (formerly TM3) — Jen Schroeder Status Update** — sections: DELEGATED, MEETINGS, JEN_TASKS, COMPLETIONS. Working, output generating, encrypted, preview confirmed working Apr 22.
+- **TM1, TM2** — legacy, no sections[], hit legacy full-pull path. Still functional.
+
+---
+
+## API COST MANAGEMENT — CRITICAL
+
+**Prompt caching is MANDATORY on all Anthropic calls.**
+
+### Caching Architecture (v0.9.1 — CONFIRMED WORKING)
+
+The command router uses a two-block system prompt for maximum cache efficiency:
+
+```typescript
+system: [
+  { type: 'text', text: staticContext, cache_control: { type: 'ephemeral' } },
+  { type: 'text', text: staticSystemPrompt, cache_control: { type: 'ephemeral' } },
+]
+```
+
+- `staticContext` — output of `formatStaticContextForPrompt()` — tags, field knowledge, concept registry
+- `staticSystemPrompt` — Karl persona, instructions, action list, JSON format rules, objectSummaries, fieldKnowledge
+
+Dynamic context (task snapshot, pending, date, observations) is prepended to the **last user message**, NOT the system block. This keeps the system block byte-identical between calls so the cache hits.
+
+```typescript
+const lastIndex = anthropicMessages.length - 1;
+const messagesWithContext = anthropicMessages.map((m, i) => {
+  if (i === lastIndex) return { ...m, content: dynamicPrefix + '\n\n---\n\n' + m.content };
+  return m;
+});
+```
+
+**Confirmed cache performance (Apr 24):**
+- cache_write: ~9,867 tokens on first message
+- cache_read: ~9,867 tokens on subsequent messages
+- Savings: ~90% cost reduction on cached tokens
+
+Every fetch to `https://api.anthropic.com/v1/messages` must include:
+```typescript
+headers: {
+  'anthropic-beta': 'prompt-caching-2024-07-31',
+},
+body: JSON.stringify({
+  system: [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }],
+  // NOT: system: systemPrompt
+})
+```
+
+**Token logging — add to every route:**
+```typescript
+const usage = data.usage;
+if (usage) console.log('[route-name] tokens:', {
+  input:       usage.input_tokens,
+  output:      usage.output_tokens,
+  cache_write: usage.cache_creation_input_tokens ?? 0,
+  cache_read:  usage.cache_read_input_tokens ?? 0,
+});
+```
+
+**Current pricing (Sonnet 4, April 2026):**
+- Input: $3/million tokens
+- Output: $15/million tokens
+- Cache write: $3.75/million tokens (1.25x)
+- Cache read: $0.30/million tokens (0.1x)
+
+**Routes with caching implemented:**
+- `app/api/ko/command/route.ts` ✓
+- `app/api/ko/suggest-tags/route.ts` ✓
+- `app/api/ko/template/run/route.ts` ✓
+- `app/api/ko/template/assist/route.ts` ✓
+- `app/api/ko/extract/refine/route.ts` ✓
+- `suggestTagsForCapture()` in commandRouter.ts ✓
+
+**Generation model split (v0.8.0):**
+- Routing/reasoning: `claude-sonnet-4-20250514`
+- Document generation: `claude-haiku-4-5-20251001` — separate rate limit, prevents collision with routing call
+
+---
+
+## FC OBJECTS (FIRST-CLASS OBJECTS)
+
+Seven FC objects total. All follow consistent patterns:
+- Draggable, resizable modals
+- White background, colored header matching button accent
+- List left, edit right (except TaskListModal which is full-table)
+- Identifiers on rows
+- Export where applicable
+
+### Header buttons
+```
++add task(s)      green    — TaskAddModal (quick capture, single/multi mode)
++complete(n)      orange   — CompletionsModal
++meeting(n)       blue     — MeetingsModal
++extracts(n)      purple   — ExtractsModal
++template(n)      teal     — TemplatesModal
++contacts(n)      wine     #991b1b — ContactsModal
+open(n)           yellow   — TaskListModal
+```
+
+### TagPicker (`app/components/TagPicker.tsx`) — PRODUCTION HARDENED
+Shared component used across ALL FC objects that have tags.
+
+**Three-layer UX:**
+1. **Search** — type to find tag by name, dropdown shows matches, click to add
+2. **✦ suggest / ↺ retry** — Karl suggest strip
+3. **⊞ browse** — opens fixed-position panel (escapes modal clipping entirely)
+
+**Browse panel:**
+- Fixed position — renders outside modal DOM, never clips
+- Smart positioning — opens RIGHT of anchor if room, falls back left, flips UP if not enough room below
+- Left column: tag groups + "All" filter
+- Right column: tag rows with checkboxes, click to add/remove
+- `+ create new tag` collapsible footer
+- Closes on outside click or ✕
+
+**Props:**
+```
+selected, allTags, tagGroups, onChange, onTagCreated?, accentColor,
+objectType, contextText, accessToken, userId, maxTags (default 5), label
+```
+
+**Key prop:** pass `key={someCount}` to force remount and close browse panel (saveCount pattern in ExtractsModal)
+
+**Wired into:** TaskAddModal ✓ TaskDetailModal ✓ MeetingsModal ✓ CompletionsModal ✓ ExtractsModal ✓ ContactsModal ✓
+
+### TemplatesModal (`app/components/TemplatesModal.tsx`) — REWRITTEN v0.9.0
+- Accent: `#14b8a6` teal
+- **Split layout** — instructions left column, output right column. Iterate in place.
+- **Top strip** — name, description, format in one compact row
+- **Karl Assist** — button in instructions header, expands inline. Shows conversation history.
+  Sends `current_instructions` only. Never sends data_sources (dead).
+- **`▶ preview`** — stub data, output renders in right panel, never saves. Iterate freely.
+- **`⚡ generate`** — real data, saves encrypted output to extract.
+- **No "← back" button** — output stays visible while editing instructions.
+- **No all/system/mine filter** — search only in left panel.
+- `DataSourcesEditor` — REMOVED entirely. Dead code gone.
+- `data_sources` / `filterType` state — REMOVED.
+- Extract count badge on template list items (TM1: 3×)
+- "N× runs →" button opens ExtractsModal filtered to this template
+- **NEXT:** data picker for `default_scope` per section — shown at generate time
+
+### ExtractsModal (`app/components/ExtractsModal.tsx`)
+- Accent: `#8b5cf6` purple
+- Notes/Content field — shows empty for generated extracts (output is encrypted in `output` column)
+- **PENDING:** Needs to read `output` column, decrypt with `decryptOutput()`, display for `ref_type = 'generated'`
+- **PENDING:** "New version" button — re-run template with stored `section_data`
+
+### MeetingsModal (`app/components/MeetingsModal.tsx`) — UPDATED v0.8.0
+- Inline delete confirm — same pattern as Templates/Extracts
+- `allow_delete` gated via `ko_list_view_config`
+
+### Other modals unchanged from v0.7.1
+- TaskAddModal, TaskDetailModal, CompletionsModal, ContactsModal, TagManagerModal, DelegateModal, TaskListModal
+
+---
+
+## API ROUTES
+
+```
+app/api/ko/session/route.ts          — POST: initialize user workspace on login
+app/api/ko/command/route.ts          — POST: classify input, confirm/execute actions (v1.5.1)
+app/api/ko/admin/route.ts            — GET/POST/PATCH/DELETE for admin tables
+app/api/ko/template/run/route.ts     — POST: unified run endpoint — preview + generate (v0.9.0)
+app/api/ko/template/assist/route.ts  — POST: Karl Assist — formatting instructions only (v0.9.0)
+app/api/ko/extract/refine/route.ts   — POST: refine extract content
+app/api/ko/suggest-tags/route.ts     — POST: tag suggestion (inline + admin modes)
+```
+
+---
+
+## FILE STRUCTURE
+
+### Pages
+```
+app/page.tsx                    — root, onAuthStateChange → /workspace or /login
+app/login/page.tsx              — Google OAuth sign in
+app/workspace/page.tsx          — main workspace shell (v0.9.0)
+app/admin/page.tsx              — admin panel (9 tabs, metadata-driven)
+app/auth/callback/route.ts      — OAuth callback
+```
+
+### Components
+```
+app/components/KarlSpinner.tsx       — reusable KO reticle spinner
+app/components/TagPicker.tsx         — shared tag picker, production hardened
+app/components/TagManagerModal.tsx   — standalone tag/group manager
+app/components/ContactsModal.tsx     — contacts FC object
+app/components/DelegateModal.tsx     — delegation modal (drag-drop + chat)
+app/components/TaskDetailModal.tsx   — light theme, notes field, shared TagPicker
+app/components/TaskAddModal.tsx      — light theme, single/multi, flow reorder
+app/components/CompletionsModal.tsx  — split panel, orange, shared TagPicker
+app/components/MeetingsModal.tsx     — split panel, blue, inline delete, allow_delete gated
+app/components/ExtractsModal.tsx     — purple, edit mode, saveCount pattern, shared TagPicker
+app/components/TemplatesModal.tsx    — teal, split layout, iterate in place, preview+generate (v0.9.0)
+app/components/TaskListModal.tsx     — yellow, full task table
+```
+
+### Lib
+```
+lib/supabase.ts                        — anon key client (frontend)
+lib/supabase-server.ts                 — createSupabaseAdmin() service role (backend only)
+lib/ko/commandRouter.ts                — v1.5.1 routeCommand(user_id, input, pending, context_filter, files, contexts)
+lib/ko/buildKarlContext.ts             — buildKarlContextSplit(), buildKarlStaticContext(), buildKarlDynamicContext()
+lib/ko/outputEncryption.ts             — encryptOutput() / decryptOutput() AES-256-GCM
+lib/ko/commands/captureTask.ts         — inserts a task
+lib/ko/commands/captureCompletion.ts   — inserts a standalone completion record
+lib/ko/templateParameters.ts          — DEAD CODE — safe to delete
+```
+
+---
+
+## COMMAND ENGINE — v0.9.1 (commandRouter.ts v1.5.1)
+
+### Design Philosophy
+Karl decides everything. No word lists, no state machine. Every message goes to Karl — including
+when a pending action exists. Karl sees the full picture and returns an intent.
+
+### Data Flow
+```
+User types anything
+→ workspace sends { input, pending, context_filter }
+→ route.ts calls buildKarlContextSplit(user_id, context_filter)
+→ formatStaticContextForPrompt() → system block (cached)
+→ formatDynamicContextForPrompt() → prepended to last user message
+→ routeCommand(user_id, input, pending, context_filter, [], { staticContext, dynamicContext })
+→ Karl receives: input + pending payload + full context bundle
+→ Karl returns intent (always JSON)
+→ route/workspace executes
+```
+
+### Intent Types
+- `execute` — Quick capture. Karl writes immediately, no confirm step.
+- `pending` — Karl proposes action. Workspace sets pending state.
+- `modify_pending` — User changed something. Complete updated payload returned. Tag enrichment SKIPPED.
+- `confirm_pending` — Karl detected confirmation. Route executes pending payload.
+- `cancel_pending` — Karl detected cancellation. Workspace clears pending.
+- `preview_pending` — User asked what pending looks like. Pending stays alive.
+- `open_form` — User wants full form. Workspace opens appropriate modal.
+- `question` — Karl answers conversationally. Pending state NEVER touched.
+- `command` — System command. Currently: `open_tag_manager`.
+- `unclear` — Last resort. Karl should almost never return this.
+
+### Actions Karl Can Propose
+```
+insert, update, complete, archive, delete, delete_object,
+refine, run_template, save_as_template, capture_tasks, create_tag, summarize
+```
+
+### run_template Flow Rules (CRITICAL)
+- "run TM1" with no mode → Karl ALWAYS asks preview or generate first. NON-NEGOTIABLE.
+- "preview TM1" → skip step 1, go straight to `run_mode: preview`
+- "generate TM1" / "run TM1 save" → skip step 1, go to `run_mode: generate` with section_data from default_scope
+- preview executes immediately via `executeTemplateDraftRun` in page.tsx — does NOT go through pending
+- generate goes through pending for section_data confirmation
+- `flattenLegacyPending` — explicit `run_template` handler. NEVER falls through to insert task.
+- `confirm_pending` handler in route.ts — forces `run_mode: generate` on any `run_template` action (safety net)
+
+### Pending State — CRITICAL FIX (v0.9.0)
+- `pending` in page.tsx now carries `actions[]` array — NOT just `payload`
+- `pendingForKarl` sends `{ actions: pending.actions, action: pending.intent, ...pending.payload }`
+- `flattenLegacyPending` reads `pending.actions?.length` first — this is how it finds the real actions
+- **Root cause of phantom task creation:** pendingForKarl was sending null payload, flattenLegacyPending
+  fell through to insert task. Fixed by carrying actions array through pending state.
+
+### JSON Parse Fallback (v0.9.1)
+Karl must always return valid JSON. When parse fails, the fallback only accepts responses with a valid `intent` field — preventing malformed partial matches from triggering phantom inserts:
+
+```typescript
+} catch {
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      const candidate = JSON.parse(jsonMatch[0]);
+      if (candidate?.intent) parsed = candidate;  // MUST have intent
+    } catch { /* fall through */ }
+  }
+}
+```
+
+### Template Draft State (v0.9.0)
+- `templateDraft` state in page.tsx — isolated from pending, lives for duration of template work session
+- Interface: `{ templateId, identifier, instructions, output, running, name }`
+- Preview mode executes immediately via `executeTemplateDraftRun()` — bypasses pending entirely
+- Generate mode uses pending with full actions array intact
+
+### Delete Rules
+- `delete_object` always pending, never silent. Always include `display_name` in fields.
+- Double-gated: commandRouter checks `allow_delete` + `executeDeleteObject` re-verifies at execution
+- If not allowed: "Delete on [object type] disabled by administrator."
+
+### Enrichment
+On `pending` (not `modify_pending`): `suggestTagsForCapture()` makes a second lightweight Anthropic
+call to suggest tags. Runs on `capture_task` AND `capture_tasks`. Skipped for `run_template` actions.
+On `modify_pending`: enrichment skipped — user has explicitly set values.
+
+### Context Filter Flow
+`context_filter` (UUID or null) sent from workspace with every command.
+Passed to `routeCommand()` → `buildKarlContext()` → task query filtered to match UI view.
+Passed to `resolveIdentifier()` → identifier positions match filtered list user sees.
+
+---
+
+## DATABASE — KEY SCHEMA NOTES
+
+### Tables added/modified through v0.7.1
+- `contact` — people directory, auto-creates People tag
+- `task.delegated_to` — uuid FK to People tag
+- `meeting.attendees` — text[] column, separate from tags[]
+- `ko_field_metadata` — unique constraint `(user_id, object_type, field)`, description + llm_notes columns
+- `karl_observation` — pattern/preference/flag observations, included in context bundle
+
+### Tables added/modified in v0.8.0
+```sql
+ALTER TABLE document_template ADD COLUMN sections JSONB DEFAULT '[]';
+ALTER TABLE external_reference ADD COLUMN output TEXT;
+ALTER TABLE external_reference ADD COLUMN output_encrypted BOOLEAN DEFAULT false;
+ALTER TABLE external_reference ADD COLUMN run_data TEXT;
+ALTER TABLE external_reference ADD COLUMN section_data JSONB;
+```
+
+### v0.9.0 — no new columns
+`default_scope` lives inside `sections[]` JSONB on `document_template`. No migration needed.
+Existing sections[] rows just don't have default_scope yet — that's fine, defaults to empty scope.
+
+### Tag groups seeded (Mike's workspace)
+```
+People, Organizations, Systems, Activities, Projects, Personal, Places, General, Roles
+```
+
+### Karl Observations Schema
+```sql
+CREATE TABLE karl_observation (
+  observation_id   uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id          uuid NOT NULL REFERENCES ko_user(id),
+  content          text NOT NULL,
+  observation_type text, -- 'pattern' | 'preference' | 'flag'
+  tags             text[],
+  is_active        boolean DEFAULT true,
+  created_at       timestamptz DEFAULT now()
+);
+```
+Included in base context bundle (latest ~50). Max 50 active — oldest deactivated on overflow.
+
+### Mike's user
+- User ID: `d9210288-50a9-4483-9086-a67f8278b8a4`
+- implementation_type: `personal`
+
+---
+
+## CURRENT STATUS — v0.9.1
+
+### Completed Apr 22–24
+
+**Prompt caching — fully working:**
+- [x] Split context architecture: static (cached) vs dynamic (user message)
+- [x] buildKarlStaticContext / buildKarlDynamicContext / buildKarlContextSplit in buildKarlContext.ts
+- [x] formatStaticContextForPrompt / formatDynamicContextForPrompt
+- [x] route.ts passes { staticContext, dynamicContext } to routeCommand
+- [x] commandRouter assembles two cached system blocks + dynamic prefix on last user message
+- [x] Confirmed: cache_write ~9,867 tokens msg 1, cache_read ~9,867 tokens msg 2+
+- [x] objectSummaries and fieldKnowledge in staticSystemPrompt (cached block)
+- [x] CRITICAL JSON instruction at top of staticSystemPrompt
+- [x] Parse fallback hardened — only accepts candidates with valid intent field
+
+**Chat/pending bug fixes:**
+- [x] Phantom task creation from run_template fixed — pendingForKarl now passes actions[] array
+- [x] modify_pending reads data.actions (not data.payload which was null)
+- [x] templateDraft state added to page.tsx — isolated from pending machinery
+- [x] preview from chat executes immediately via executeTemplateDraftRun — no confirm step
+- [x] Document bubble rendering in chat — __DOCUMENT__: prefix, teal border, copy + download
+
+**TemplatesModal complete rewrite:**
+- [x] Split layout — instructions left, output right, iterate in place
+- [x] all/system/mine filter buttons removed — search only
+- [x] DataSourcesEditor removed entirely
+- [x] Karl Assist shows conversation history — confirmed working
+- [x] ▶ preview — stub data, renders in right panel, no back button needed
+- [x] ⚡ generate — real data, saves to extracts
+- [x] Preview confirmed working Apr 22
+
+**Route rewrites:**
+- [x] /api/ko/template/run — unified endpoint, section-aware, run_mode: preview|generate, Haiku
+- [x] /api/ko/template/assist — system prompt rewritten, Karl produces clean formatting instructions only
+
+### Known Issues / Next Session (Priority Order)
+
+**1. save_as_template from chat — BROKEN**
+Karl returns valid JSON with save_as_template intent but something in the confirm flow
+is hitting captureTask. Likely Karl still occasionally drifting to prose on complex
+save_as_template proposals despite CRITICAL instruction. Needs end-to-end test with
+Vercel logs showing the raw Karl response at confirm time.
+
+**2. ExtractsModal — output display for generated extracts**
+`output` column is encrypted. Modal currently shows empty Notes/Content for generated extracts.
+Needs: read `output` column, call `decryptOutput()`, display decrypted content.
+Notes/Content field should be hidden or replaced for `ref_type = 'generated'`.
+
+**3. Data picker for default_scope**
+At generate time, user should see per-section scope controls pre-filled from default_scope.
+Tweaks save to extract.section_data only — never back to template.
+Also need UI in TemplatesModal to edit default_scope per section (the "base parameters").
+Build as a SectionScopeEditor component — lightweight, per-section, shows source-appropriate controls.
+
+**4. "New version" button on extract**
+Not yet wired. Should re-run template with same `section_data` stored on the extract.
+
+**5. offer_open_templates**
+`route.ts` returns flag after `save_as_template` but chat component not wired to show
+"Open Templates →" button.
+
+**6. Token counter UI showing 0**
+The UI token counter reads from API response but isn't finding the right field.
+Quick frontend fix — low priority vs functional issues.
+
+**7. Excessive Supabase calls per command**
+~20 DB calls per command due to redundant fetches across buildKarlStaticContext,
+buildKarlDynamicContext, and routeCommand. Should be consolidated into a single
+Promise.all at the route level, passing data down. Defer until refactor.
+
+**8. templateParameters.ts**
+Dead code in `lib/ko/`. Safe to delete.
+
+### Open / Parked (carried from v0.7.1)
+- Magic link auth needs domain — Resend click tracking breaks without custom domain
+- Google OAuth double-login (two clicks required) — workaround in place
+- `initializeUserWorkspace.ts` — needs People/Roles/Organizations tag groups + Roles tags seeded for new users
+- `initializeUserWorkspace.ts` — needs contact, meeting, completion field metadata seeded for new users
+- `implementation_config` table for feature flags (future)
+- ReferencesModal.tsx — old file still in repo, safe to delete
+- PDF/DOCX output formats — exist in DB, not yet branched in generation
+- Preformatted document flow — upload .docx template → Karl fills variables (not designed yet)
+- data_sources column on document_template — orphaned, safe to ignore/deprecate
+
+### Future Roadmap
+- [ ] Refactor commandRouter.ts and buildKarlContext.ts into smaller scoped modules
+- [ ] Consolidate DB calls — single Promise.all at route level, pass data down
+- [ ] Airtable export — push extract output to Airtable (internal dashboard first, selling point later)
+- [ ] File drop to chat — drag PDF/text into chat input (file handling code already in route.ts)
+- [ ] Meeting completion from transcript — process_document → complete_meeting
+- [ ] Karl greetings — wire karl_greeting table into session route
+- [ ] PIP Buster simplified UI skin
+- [ ] Triage view — work through uncurated capture tasks
+- [ ] Batch task operations
+- [ ] Shared data between users
+- [ ] Voice capture
+- [ ] Onboarding flow
+- [ ] SMTP/email via Resend (needs domain)
+- [ ] Templates in Karl's context bundle (buildKarlContext deep bundle)
+- [ ] Output format rendering — HTML, PDF, DOCX (currently all md regardless of setting)
+
+---
+
+## DEV RULES
+
+- Architecture changes require explicit discussion before coding
+- **Always generate complete files — never patch. Patching causes drift, duplicate declarations, and brace mismatches.**
+- Field metadata is source of truth — never hardcode field behavior in UI
+- Field metadata column is `field` not `field_name`
+- Field metadata unique constraint: `(user_id, object_type, field)`
+- Bucket colors hardcoded in UI — labels/icons from concept_registry
+- Bucket identifiers hardcoded in UI and buildKarlContext — never from DB
+- Concept registry is a system table — never query by user_id, always by implementation_type
+- Backend is authority — DB is source of truth
+- ko_user PK is `id` not `user_id`
+- Tags stored as raw names NOT UUIDs
+- context_id is a lightweight FK, not a scope parent
+- `createSupabaseAdmin()` for backend, `supabase` client for frontend
+- Always read current file before modifying — never patch from memory
+- FC modals: white background, colored header, draggable, resizable, position initialized centered
+- All modals use absolute positioning (no centered/transform pattern — causes jump on close)
+- FC modal pattern: list left, edit right — clicking list item loads directly into edit form
+- Anthropic API called via raw fetch, NOT @anthropic-ai/sdk (not installed)
+- Routing model: `claude-sonnet-4-20250514`
+- Generation model: `claude-haiku-4-5-20251001` (document output only)
+- **EVERY new Anthropic call must include prompt caching + token logging — no exceptions**
+- Chat: Karl suggests from existing tags only — never creates tags via chat
+- task.delegated_to is a uuid FK to People tag — resolved server-side via fuzzy name matching
+- meeting.attendees is a REAL COLUMN (text[]) — separate from meeting.tags
+- notes/description NEVER in generation prompts or API payloads — display-only
+- section_data keys must exactly match sections[].key values — case sensitive
+- default_scope lives inside sections[] JSONB — no separate DB column
+- One-way flow: template.default_scope → extract.section_data (no bleedback ever)
+- run_template preview path: executes immediately, never goes through pending state
+- run_template generate path: goes through pending with full actions[] array intact
+- Dynamic context (task snapshot, pending, date) goes in last user message — NEVER in system block
+- Static context (field knowledge, tags, concept registry, Karl instructions) goes in system block with cache_control
+
+---
+
+## SESSION NOTES
+
+- Development moved to Cursor as of Apr 24, 2026
+- Vercel auto-deploys on push to main
+- Google OAuth working (double-click workaround in place)
+- KarlopsL is the working name
+- Mike's user ID: `d9210288-50a9-4483-9086-a67f8278b8a4`
+- Existing users need manual SQL for any new tables/columns added after initial seed
+- `initializeUserWorkspace` only runs for new users
+- `export const dynamic = 'force-dynamic'` on auth/callback/route.ts
+- First live demo Apr 12 — PIP Buster UI needs radical simplification for stressed users
+- Product family confirmed: PIP Buster, Grade Booster, Love Life Lifter (same engine, different skins)
+- `jspdf` and `docx` npm packages installed for Extracts download functionality
+- Apr 14 — heavy dev day, burned ~$20 in API costs before caching added
+- Apr 15 — TagPicker hardened. meeting.attendees restored. ExtractsModal edit mode. Missing field metadata fixed.
+- Apr 16 — Command engine complete rewrite. Context filter stack. JSON resilience. Full chat regression test.
+- Apr 21 — Document system session. Section-aware templates. Encrypted output. Haiku generation.
+  Two-step run flow enforced. TemplatesModal cleaned. template_output renders in chat.
+- Apr 22 — Major session. TemplatesModal rewritten (split layout, iterate in place, preview working).
+  Routes rewritten (template/run unified, template/assist no more data_sources poison).
+  page.tsx pending bug fixed (phantom task creation). document bubble in chat.
+  default_scope architecture designed and documented. Billing complaint sent to Anthropic.
+- Apr 24 — Caching session. Split context architecture confirmed working (cache_read ~9,867 tokens).
+  commandRouter v1.5.1: static system prompt cached, dynamic context on user message.
+  Parse fallback hardened (intent check). JSON enforcement via CRITICAL instruction.
+  Moved dev to Cursor.
+- Prompt caching confirmed working — check Vercel logs for cache_read values
+- Contacts auto-create People tags — relationship layer, not a separate system
+- KO_OUTPUT_KEY: stored in Vercel env vars + user's personal vault. Never in code or DB.
+
+---
+
+## KARL GREETING
+"Stay fit, keep sharp, and make good decisions."
