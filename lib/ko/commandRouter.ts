@@ -540,8 +540,8 @@ export async function routeCommand(
 
 try {
     const { staticContext, dynamicContext } = contexts;
-
 const { data: allMeta } = await db
+
   .from('ko_field_metadata')
   .select('object_type, field, label, field_type, insert_behavior, update_behavior, description, llm_notes')
   .eq('user_id', user_id)
@@ -557,9 +557,28 @@ const fieldKnowledge  = buildFieldKnowledge(meta);
 
     const pendingBlock = formatPendingForPrompt(pending);
 
+const { staticContext, dynamicContext } = contexts;
+
+    const db = createSupabaseAdmin();
+
+    const { data: allMeta } = await db
+      .from('ko_field_metadata')
+      .select('object_type, field, label, field_type, insert_behavior, update_behavior, description, llm_notes')
+      .eq('user_id', user_id)
+      .in('object_type', ['task', 'meeting', 'completion', 'external_reference', 'document_template', 'contact', 'task_status']);
+
+    const meta = allMeta ?? [];
+    const objectSummaries = buildObjectSummaries(meta);
+    const fieldKnowledge  = buildFieldKnowledge(meta);
+
+    const isDeep     = isAnalysisRequest(input);
+    const hasPending = !!pending;
+    const isLong     = isLongInput(input);
+
+    const pendingBlock = formatPendingForPrompt(pending);
+
     // Chat history already in dynamicContext via buildKarlDynamicContext.
     // We still need recentMessages for rejectedTags extraction and anthropicMessages assembly.
-    const db = createSupabaseAdmin();
     const { data: sessionData } = await db.from('ko_session').select('messages').eq('user_id', user_id).maybeSingle();
     const sessionMessages: any[] = sessionData?.messages ?? [];
     const { data: situationData } = await db.from('user_situation').select('chat_history_depth').eq('user_id', user_id).eq('is_active', true).maybeSingle();
@@ -590,7 +609,6 @@ const fieldKnowledge  = buildFieldKnowledge(meta);
     const rejectedTagsNote = rejectedTags.length > 0
       ? `\n## Rejected Tags — NEVER suggest these\n${rejectedTags.join(', ')}`
       : '';
-
     // ── Static system prompt — NEVER changes between calls, cache hits every time ──
     // Contains: Karl persona, instructions, action list, JSON format rules.
     // staticContext (tags, field knowledge, concept registry) prepended via system block.
