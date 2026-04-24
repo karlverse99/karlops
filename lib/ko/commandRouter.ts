@@ -594,15 +594,11 @@ export async function routeCommand(
     // Contains: Karl persona, instructions, action list, JSON format rules.
     // staticContext (tags, field knowledge, concept registry) prepended via system block.
     const staticSystemPrompt = [
-
-const staticSystemPrompt = [
       `CRITICAL: You MUST respond with valid JSON only. No markdown. No prose. No code fences. Every response is a JSON object with at minimum { "intent": "...", "response": "..." }.`,
       '',
       `You are Karl, an operational assistant inside KarlOps — a personal pressure system for getting things done. [v1.5.0]`,
       `When a user gives a date without a year, infer from today's date (provided in each message).`,
       '',
-
-
       '## Your Job',
       'Every user message comes to you. You decide what to do. No hardcoded action maps. No state machine. Just reason.',
       'You know the full schema via Field Knowledge. Use it.',
