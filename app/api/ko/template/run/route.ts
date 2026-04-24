@@ -45,6 +45,7 @@ export async function POST(req: NextRequest) {
       run_mode          = 'preview',
       karl_prompt:      bodyKarlPrompt,
       user_additions:   bodyUserAdditions,
+      output_format:    bodyOutputFormat,
       selected_elements: bodyElements,
       element_filters:   bodyFilters,
       filename:         clientFilename,
@@ -59,7 +60,7 @@ export async function POST(req: NextRequest) {
     // ── Load template ────────────────────────────────────────────────────────
     const { data: template, error: tErr } = await supabase
       .from('document_template')
-      .select('name, description, prompt_template, user_prompt_additions, template_mode, selected_elements, element_filters, output_format, filename_suffix_format, sections')
+      .select('document_template_id, is_system, name, description, prompt_template, user_prompt_additions, template_mode, selected_elements, element_filters, output_format, filename_suffix_format, sections')
       .eq('document_template_id', template_id)
       .or(`user_id.eq.${user.id},is_system.eq.true`)
       .single();
@@ -69,6 +70,7 @@ export async function POST(req: NextRequest) {
     // Body overrides take precedence over stored values (for live editing without save)
     const karlPrompt    = (bodyKarlPrompt    ?? template.prompt_template         ?? '').trim();
     const userAdditions = (bodyUserAdditions ?? template.user_prompt_additions   ?? '').trim();
+    const outputFormat  = (bodyOutputFormat  ?? template.output_format            ?? 'md').trim() || 'md';
     const elements: string[] = bodyElements ?? (Array.isArray(template.selected_elements) ? template.selected_elements : []);
     const filters: Record<string, any> = bodyFilters ?? (template.element_filters && typeof template.element_filters === 'object' ? template.element_filters : {});
 
@@ -158,7 +160,7 @@ export async function POST(req: NextRequest) {
 Your job: follow the formatting prompt exactly, populate it with the provided data.
 Use only the data provided — never invent facts.
 ${isPreview ? 'This is a STUB PREVIEW — demonstrate layout with sample data only.' : ''}
-Output format: ${template.output_format ?? 'md'}.
+Output format: ${outputFormat}.
 Today: ${today}.
 Return ONLY the document — no preamble, no explanation, no code fences.`;
 
@@ -210,12 +212,33 @@ Return ONLY the document — no preamble, no explanation, no code fences.`;
 
     // Preview modes — return immediately, never save
     if (!isSave) {
-      return NextResponse.json({ output, format: template.output_format ?? 'md', saved: false });
+      return NextResponse.json({ output, format: outputFormat, saved: false });
+    }
+
+    // Generate path should persist the latest "recipe" so reruns match this extract.
+    // Only update user-owned templates; system templates are read-only.
+    if (!template.is_system) {
+      const { error: templateUpdateError } = await supabase
+        .from('document_template')
+        .update({
+          prompt_template: karlPrompt,
+          user_prompt_additions: userAdditions || null,
+          output_format: outputFormat,
+          selected_elements: elements,
+          element_filters: filters,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('document_template_id', template.document_template_id)
+        .eq('user_id', user.id);
+
+      if (templateUpdateError) {
+        console.error('[template/run] template update failed:', templateUpdateError);
+      }
     }
 
     // Generate — encrypt and save
     const encryptedOutput = await encryptOutput(output);
-    const ext             = formatExtension(template.output_format ?? 'md');
+    const ext             = formatExtension(outputFormat);
     const fallbackDate    = today.replace(/-/g, '');
     const resolvedFilename = clientFilename?.trim()
       || `${template.name.toLowerCase().replace(/\s+/g, '-')}-${fallbackDate}.${ext}`;
@@ -243,7 +266,7 @@ Return ONLY the document — no preamble, no explanation, no code fences.`;
     }
 
     return NextResponse.json({
-      output, format: template.output_format ?? 'md',
+      output, format: outputFormat,
       saved: true, filename: resolvedFilename, title: extractTitle,
     });
 

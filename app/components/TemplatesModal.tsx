@@ -390,6 +390,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
           run_mode:              mode,
           karl_prompt:           editKarlPrompt.trim() || undefined,
           user_additions:        editUserAdditions.trim() || undefined,
+          output_format:         editFormat,
           selected_elements:     editElements,
           element_filters:       editFilters,
           filename,
