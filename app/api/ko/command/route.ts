@@ -755,17 +755,45 @@
     user_id: string,
     action: KarlAction
   ): Promise<{ response: string; refresh: boolean; offer_open_templates: boolean }> {
-    const db     = createSupabaseAdmin();
-    const fields = action.fields ?? {};
-    const name   = fields.name;
+    const db = createSupabaseAdmin();
+    const actionAny = action as any;
+    const rawFields = actionAny.fields ?? actionAny.payload ?? {};
+    const parsedSections = (() => {
+      const value = rawFields.sections ?? actionAny.sections ?? [];
+      if (Array.isArray(value)) return value;
+      if (typeof value === 'string') {
+        try {
+          const parsed = JSON.parse(value);
+          return Array.isArray(parsed) ? parsed : [];
+        } catch {
+          return [];
+        }
+      }
+      return [];
+    })();
+    const fields = {
+      name: rawFields.name ?? actionAny.name ?? null,
+      description: rawFields.description ?? actionAny.description ?? null,
+      doc_type: rawFields.doc_type ?? actionAny.doc_type ?? '',
+      prompt_template:
+        rawFields.prompt_template
+        ?? rawFields.instructions
+        ?? actionAny.prompt_template
+        ?? actionAny.instructions
+        ?? '',
+      sections: parsedSections,
+      output_format: rawFields.output_format ?? actionAny.output_format ?? 'md',
+      tags: Array.isArray(rawFields.tags ?? actionAny.tags) ? (rawFields.tags ?? actionAny.tags) : [],
+    };
+    const name = fields.name;
     if (!name) throw new Error('save_as_template missing name');
 
     const { error } = await db.from('document_template').insert({
       user_id,
-      name:            fields.name.trim(),
-      description:     fields.description?.trim() ?? null,
-      doc_type:        fields.doc_type?.trim() ?? '',
-      prompt_template: fields.prompt_template?.trim() ?? '',
+      name:            String(fields.name).trim(),
+      description:     typeof fields.description === 'string' ? fields.description.trim() : null,
+      doc_type:        typeof fields.doc_type === 'string' ? fields.doc_type.trim() : '',
+      prompt_template: typeof fields.prompt_template === 'string' ? fields.prompt_template.trim() : '',
       sections:        fields.sections ?? [],
       output_format:   fields.output_format ?? 'md',
       tags:            fields.tags ?? [],
@@ -1051,6 +1079,8 @@
           logError(user_id, 'command', `${action.action} ${action.object_type ?? ''}`, 'system', message, action as any).catch(() => {});
           if (message.toLowerCase().includes('rate limit')) {
             errors.push(`Rate limit hit — the data selected for this template is too large to process in one request. Try reducing the date window or filtering by context.`);
+          } else if (action.action === 'save_as_template') {
+            errors.push(`save_as_template: ${message}`);
           } else {
             errors.push(`${action.action} ${action.object_type ?? ''}: something went wrong`);
           }
