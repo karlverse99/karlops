@@ -170,7 +170,6 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const [editDesc, setEditDesc]                       = useState('');
   const [editFormat, setEditFormat]                   = useState('md');
   const [editKarlPrompt, setEditKarlPrompt]           = useState('');   // prompt_template — Karl-generated
-  const [editUserAdditions, setEditUserAdditions]     = useState('');   // user_prompt_additions
   const [editTemplateMode, setEditTemplateMode]       = useState('karl');
   const [editSuffixFormat, setEditSuffixFormat]       = useState<string>('datetime');
   const [editCustomSuffix, setEditCustomSuffix]       = useState('');
@@ -315,7 +314,6 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     setEditDesc(t.description ?? '');
     setEditFormat(t.output_format === 'markdown' ? 'md' : (t.output_format ?? 'md'));
     setEditKarlPrompt(t.prompt_template ?? '');
-    setEditUserAdditions(t.user_prompt_additions ?? '');
     setEditTemplateMode(t.template_mode ?? 'karl');
     setEditSuffixFormat(t.filename_suffix_format ?? 'datetime');
     setEditCustomSuffix('');
@@ -331,7 +329,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const startNew = () => {
     setSelected(null); setIsNew(true); setDeleteConfirm(false);
     setEditName(''); setEditDesc(''); setEditFormat('md');
-    setEditKarlPrompt(''); setEditUserAdditions(''); setEditTemplateMode('karl');
+    setEditKarlPrompt(''); setEditTemplateMode('karl');
     setEditSuffixFormat('datetime'); setEditCustomSuffix('');
     setEditElements([]); setFilterJsonText('{}'); setFilterJsonError('');
     setRunOutput(null); setRunErr(''); setSaveErr('');
@@ -350,7 +348,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
         description:           editDesc.trim() || null,
         output_format:         editFormat,
         prompt_template:       editKarlPrompt.trim() || '',
-        user_prompt_additions: editUserAdditions.trim() || null,
+        user_prompt_additions: null,
         template_mode:         editTemplateMode,
         filename_suffix_format: editSuffixFormat,
         selected_elements:     editElements,
@@ -414,8 +412,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
           template_id:           templateId,
           run_mode:              mode,
           karl_prompt:           editKarlPrompt.trim() || undefined,
-          // Always send so clearing the box clears additions for this run (server uses key presence).
-          user_additions:        editUserAdditions,
+          user_additions:        '',
           output_format:         editFormat,
           selected_elements:     editElements,
           element_filters:       parsedFilters.value,
@@ -691,54 +688,52 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                     )}
                   </div>
 
-                  {/* ── DATA ELEMENTS STRIP ─────────────────────────────── */}
+                  {/* ── DATA CONFIG: elements + scope side-by-side ───────────────── */}
                   {!isNew && !isSystem && (
-                    <div style={{ flexShrink: 0, padding: '0.4rem 0.75rem', borderBottom: '1px solid #e5e7eb', background: '#fafafa', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-                      <span style={{ fontSize: '0.6rem', color: '#aaa', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em', flexShrink: 0 }}>Data Elements</span>
-                      {editElements.length === 0
-                        ? <span style={{ fontSize: '0.65rem', color: '#ccc', fontStyle: 'italic' }}>none</span>
-                        : editElements.map(el => (
-                            <span key={el} style={{ background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, color: '#0f766e', fontSize: '0.62rem', padding: '0.1rem 0.45rem', borderRadius: 3, fontFamily: 'monospace' }}>{el}</span>
-                          ))
-                      }
-                      <span style={{ flex: 1 }} />
-                      <button onClick={() => setPickerOpen(true)}
-                        style={{ background: 'transparent', border: `1px solid ${editElements.length > 0 ? ACCENT : '#ddd'}`, color: editElements.length > 0 ? ACCENT : '#aaa', padding: '0.2rem 0.55rem', borderRadius: 3, fontSize: '0.62rem', fontFamily: 'monospace', cursor: 'pointer' }}>
-                        {editElements.length > 0 ? '⚙ Edit Elements' : '+ Add Elements'}
-                      </button>
-                    </div>
-                  )}
-
-                  {/* ── DATA SCOPE (JSON) — WHERE-style params per object type ───── */}
-                  {!isNew && !isSystem && editElements.length > 0 && (
-                    <div style={{ flexShrink: 0, borderBottom: '1px solid #e5e7eb', background: '#fafafa' }}>
-                      <div style={{ padding: '0.35rem 0.75rem', display: 'flex', alignItems: 'center', gap: '0.5rem', borderBottom: '1px solid #f0f0f0', flexWrap: 'wrap' }}>
-                        <span style={{ fontSize: '0.6rem', color: '#aaa', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Data scope</span>
-                        <span style={{ fontSize: '0.58rem', color: '#999', flex: 1, minWidth: 200 }}>
-                          JSON for <span style={{ fontFamily: 'monospace' }}>element_filters</span>. Put query-style params under{' '}
-                          <span style={{ fontFamily: 'monospace' }}>__scope</span> by object type (merged when pulling data). Example:{' '}
-                          <span style={{ fontFamily: 'monospace', color: '#0f766e' }}>{'{"__scope":{"completion":{"window_days":7}}}'}</span>
-                        </span>
+                    <div style={{ flexShrink: 0, borderBottom: '1px solid #e5e7eb', background: '#fafafa', display: 'flex', gap: '0.75rem', padding: '0.45rem 0.75rem', minHeight: 104 }}>
+                      <div style={{ flex: '1 1 45%', minWidth: 220, display: 'flex', flexDirection: 'column', border: '1px solid #e5e7eb', borderRadius: 4, overflow: 'hidden', background: '#fff' }}>
+                        <div style={{ padding: '0.3rem 0.5rem', borderBottom: '1px solid #f0f0f0', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <span style={{ fontSize: '0.6rem', color: '#aaa', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Data Elements</span>
+                          <span style={{ flex: 1 }} />
+                          <button onClick={() => setPickerOpen(true)}
+                            style={{ background: 'transparent', border: `1px solid ${editElements.length > 0 ? ACCENT : '#ddd'}`, color: editElements.length > 0 ? ACCENT : '#aaa', padding: '0.12rem 0.45rem', borderRadius: 3, fontSize: '0.6rem', fontFamily: 'monospace', cursor: 'pointer' }}>
+                            {editElements.length > 0 ? 'edit' : '+ add'}
+                          </button>
+                        </div>
+                        <div style={{ padding: '0.35rem 0.45rem', display: 'flex', flexWrap: 'wrap', gap: '0.25rem', maxHeight: 74, overflowY: 'auto' }}>
+                          {editElements.length === 0
+                            ? <span style={{ fontSize: '0.65rem', color: '#ccc', fontStyle: 'italic' }}>none</span>
+                            : editElements.map(el => (
+                                <span key={el} style={{ background: ACCENT_BG, border: `1px solid ${ACCENT_BORDER}`, color: '#0f766e', fontSize: '0.62rem', padding: '0.08rem 0.35rem', borderRadius: 3, fontFamily: 'monospace' }}>{el}</span>
+                              ))
+                          }
+                        </div>
                       </div>
-                      <textarea
-                        value={filterJsonText}
-                        onChange={e => {
-                          const v = e.target.value;
-                          setFilterJsonText(v);
-                          const p = parseElementFiltersJson(v);
-                          setFilterJsonError(p.ok ? '' : p.error);
-                        }}
-                        spellCheck={false}
-                        rows={5}
-                        style={{
-                          width: '100%', boxSizing: 'border-box', border: 'none', borderBottom: filterJsonError ? '2px solid #ef4444' : undefined,
-                          background: '#fff', color: '#222', padding: '0.5rem 0.75rem', fontFamily: 'monospace', fontSize: '0.72rem',
-                          outline: 'none', resize: 'vertical', minHeight: 88, lineHeight: 1.45,
-                        }}
-                      />
-                      {filterJsonError && (
-                        <div style={{ padding: '0.25rem 0.75rem 0.45rem', fontSize: '0.62rem', color: '#ef4444' }}>{filterJsonError}</div>
-                      )}
+                      <div style={{ flex: '1 1 55%', minWidth: 320, display: 'flex', flexDirection: 'column', border: '1px solid #e5e7eb', borderRadius: 4, overflow: 'hidden', background: '#fff' }}>
+                        <div style={{ padding: '0.3rem 0.5rem', borderBottom: '1px solid #f0f0f0', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          <span style={{ fontSize: '0.6rem', color: '#aaa', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Data Scope (JSON)</span>
+                          <span style={{ fontSize: '0.58rem', color: '#999' }}>use <span style={{ fontFamily: 'monospace' }}>__scope</span> by object type</span>
+                        </div>
+                        <textarea
+                          value={filterJsonText}
+                          onChange={e => {
+                            const v = e.target.value;
+                            setFilterJsonText(v);
+                            const p = parseElementFiltersJson(v);
+                            setFilterJsonError(p.ok ? '' : p.error);
+                          }}
+                          spellCheck={false}
+                          rows={4}
+                          style={{
+                            width: '100%', boxSizing: 'border-box', border: 'none', borderBottom: filterJsonError ? '2px solid #ef4444' : undefined,
+                            background: '#fff', color: '#222', padding: '0.45rem 0.55rem', fontFamily: 'monospace', fontSize: '0.7rem',
+                            outline: 'none', resize: 'none', minHeight: 74, lineHeight: 1.4,
+                          }}
+                        />
+                        {filterJsonError && (
+                          <div style={{ padding: '0.2rem 0.55rem 0.3rem', fontSize: '0.62rem', color: '#ef4444' }}>{filterJsonError}</div>
+                        )}
+                      </div>
                     </div>
                   )}
 
@@ -809,25 +804,6 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                           style={{ flex: 1, width: '100%', background: isSystem ? '#f5f5f5' : '#fff', border: 'none', borderTop: '1px solid #f0f0f0', color: isSystem ? '#aaa' : '#222', padding: '0.75rem', fontFamily: 'monospace', fontSize: '0.78rem', outline: 'none', resize: 'none', lineHeight: 1.6, boxSizing: 'border-box' } as any}
                         />
                       </div>
-
-                      {/* User Additions */}
-                      {!isSystem && (
-                        <div style={{ flexShrink: 0, borderTop: '1px solid #e5e7eb' }}>
-                          <div style={{ padding: '0.3rem 0.75rem', background: '#fafafa', borderBottom: '1px solid #f0f0f0', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                            <span style={{ ...labelSt, marginBottom: 0, color: '#bbb' }}>User Additions</span>
-                            <span style={{ fontSize: '0.58rem', color: '#ccc' }}>
-                              Sent on Preview with Data and Run + Create Extract (stub Preview uses sample data only). Shown to the model as binding constraints together with the Karl prompt.
-                            </span>
-                          </div>
-                          <textarea
-                            value={editUserAdditions}
-                            onChange={e => setEditUserAdditions(e.target.value)}
-                            placeholder={'e.g. "Merry Christmas everyone." or "Focus on overdue items only."'}
-                            rows={3}
-                            style={{ width: '100%', background: '#fff', border: 'none', color: '#555', padding: '0.6rem 0.75rem', fontFamily: 'monospace', fontSize: '0.75rem', outline: 'none', resize: 'none', lineHeight: 1.5, boxSizing: 'border-box' } as any}
-                          />
-                        </div>
-                      )}
 
                       {/* Left footer */}
                       {!isSystem && (

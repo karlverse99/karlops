@@ -146,7 +146,8 @@ export async function POST(req: NextRequest) {
             }
           }
           const normalizedScope = normalizeQueryScope(objType, scope);
-          const block = await pullObjectData(supabase, user.id, objType, normalizedScope, bucketLabels, fields);
+          const resolvedScope = await resolveObjectScope(supabase, user.id, normalizedScope);
+          const block = await pullObjectData(supabase, user.id, objType, resolvedScope, bucketLabels, fields);
           if (block) dataBlocks.push(`${objType}:\n${block}`);
         }
       }
@@ -345,6 +346,48 @@ function normalizeQueryScope(objType: string, scope: Record<string, any>): Recor
   return s;
 }
 
+async function resolveObjectScope(
+  supabase: any,
+  userId: string,
+  scope: Record<string, any>
+): Promise<Record<string, any>> {
+  const out = { ...scope };
+  const rawContext = out.context_id ?? out.context ?? null;
+  delete out.context;
+  if (!rawContext) return out;
+
+  const asArr = Array.isArray(rawContext) ? rawContext : [rawContext];
+  const uuids: string[] = [];
+  const names: string[] = [];
+
+  for (const v of asArr) {
+    if (typeof v !== 'string') continue;
+    const t = v.trim();
+    if (!t) continue;
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(t);
+    if (isUuid) uuids.push(t);
+    else names.push(t);
+  }
+
+  if (names.length > 0) {
+    const { data } = await supabase
+      .from('context')
+      .select('context_id, name')
+      .eq('user_id', userId)
+      .in('name', names);
+    for (const row of data ?? []) {
+      if (row?.context_id) uuids.push(row.context_id);
+    }
+  }
+
+  if (uuids.length === 0) {
+    delete out.context_id;
+    return out;
+  }
+  out.context_id = uuids.length === 1 ? uuids[0] : uuids;
+  return out;
+}
+
 async function normalizeSectionScope(
   supabase: any,
   userId: string,
@@ -401,7 +444,7 @@ async function pullObjectData(
       .eq('is_archived', false)
       .in('bucket_key', buckets)
       .order('sort_order', { ascending: true, nullsFirst: false });
-    if (scope.context_id)  q = q.eq('context_id', scope.context_id);
+    if (scope.context_id)  q = Array.isArray(scope.context_id) ? q.in('context_id', scope.context_id) : q.eq('context_id', scope.context_id);
     if (scope.tags?.length) q = q.contains('tags', scope.tags);
 
     const { data: tasks } = await q;
@@ -445,7 +488,7 @@ async function pullObjectData(
       since.setDate(since.getDate() - Number(scope.window_days));
       q = q.gte('completed_at', since.toISOString());
     }
-    if (scope.context_id)  q = q.eq('context_id', scope.context_id);
+    if (scope.context_id)  q = Array.isArray(scope.context_id) ? q.in('context_id', scope.context_id) : q.eq('context_id', scope.context_id);
     if (scope.tags?.length) q = q.contains('tags', scope.tags);
 
     const { data } = await q;
@@ -501,7 +544,7 @@ async function pullObjectData(
       q = q.gte('meeting_date', since.toISOString().slice(0, 10));
     }
     if (scope.completed_only) q = q.eq('is_completed', true);
-    if (scope.context_id)     q = q.eq('context_id', scope.context_id);
+    if (scope.context_id)     q = Array.isArray(scope.context_id) ? q.in('context_id', scope.context_id) : q.eq('context_id', scope.context_id);
     if (scope.attendee)       q = q.contains('attendees', [scope.attendee]);
     if (scope.tags?.length)   q = q.contains('tags', scope.tags);
 
