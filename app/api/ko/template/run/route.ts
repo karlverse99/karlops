@@ -352,8 +352,15 @@ async function resolveObjectScope(
   scope: Record<string, any>
 ): Promise<Record<string, any>> {
   const out = { ...scope };
-  const rawContext = out.context_id ?? out.context ?? null;
+  const rawContext =
+    out.context_id
+    ?? out.context
+    ?? out.context_name
+    ?? out.context_names
+    ?? null;
   delete out.context;
+  delete out.context_name;
+  delete out.context_names;
   if (!rawContext) return out;
 
   const asArr = Array.isArray(rawContext) ? rawContext : [rawContext];
@@ -370,17 +377,23 @@ async function resolveObjectScope(
   }
 
   if (names.length > 0) {
-    const { data } = await supabase
-      .from('context')
-      .select('context_id, name')
-      .eq('user_id', userId)
-      .in('name', names);
-    for (const row of data ?? []) {
-      if (row?.context_id) uuids.push(row.context_id);
+    // Resolve each human label with case-insensitive matching.
+    for (const nm of names) {
+      const { data } = await supabase
+        .from('context')
+        .select('context_id')
+        .eq('user_id', userId)
+        .ilike('name', nm)
+        .limit(1)
+        .maybeSingle();
+      if (data?.context_id) uuids.push(data.context_id);
     }
   }
 
   if (uuids.length === 0) {
+    // Caller asked for specific contexts, but none resolved.
+    // Mark as no-match so query builders can return empty deterministic output.
+    out.__no_context_match = true;
     delete out.context_id;
     return out;
   }
@@ -434,6 +447,7 @@ async function pullObjectData(
   const today = new Date().toISOString().slice(0, 10);
 
   if (objType === 'task') {
+    if (scope.__no_context_match) return '(no tasks)';
     const buckets: string[] = Array.isArray(scope.bucket_key) ? scope.bucket_key
       : scope.bucket_key ? [scope.bucket_key] : Object.keys(bucketLabels);
     let q = supabase
@@ -466,6 +480,7 @@ async function pullObjectData(
   }
 
   if (objType === 'completion') {
+    if (scope.__no_context_match) return '(no completions)';
     const displayFields = fields.length > 0 ? fields : ['title', 'completed_at', 'outcome'];
     const wantContext = displayFields.includes('context_id');
     const selectCols = [
@@ -532,6 +547,7 @@ async function pullObjectData(
   }
 
   if (objType === 'meeting') {
+    if (scope.__no_context_match) return '(no meetings)';
     let q = supabase
       .from('meeting')
       .select('title, meeting_date, attendees, outcome')

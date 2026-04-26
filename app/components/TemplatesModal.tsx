@@ -150,6 +150,30 @@ function parseElementFiltersJson(text: string): { ok: true; value: Record<string
   }
 }
 
+function summarizeScopeHuman(filters: Record<string, any>): string {
+  const scope =
+    filters && typeof filters.__scope === 'object' && filters.__scope && !Array.isArray(filters.__scope)
+      ? (filters.__scope as Record<string, any>)
+      : null;
+  if (!scope || Object.keys(scope).length === 0) return 'No data scope set (all matching rows).';
+  const parts: string[] = [];
+  for (const [objType, confRaw] of Object.entries(scope)) {
+    if (!confRaw || typeof confRaw !== 'object' || Array.isArray(confRaw)) continue;
+    const conf = confRaw as Record<string, any>;
+    const bits: string[] = [];
+    if (conf.window_days != null) bits.push(`last ${conf.window_days} days`);
+    if (conf.context_id != null) {
+      const v = Array.isArray(conf.context_id) ? conf.context_id.join(', ') : String(conf.context_id);
+      bits.push(`contexts: ${v}`);
+    }
+    if (conf.tags && Array.isArray(conf.tags) && conf.tags.length > 0) bits.push(`tags: ${conf.tags.join(', ')}`);
+    const extra = Object.keys(conf).filter(k => !['window_days', 'context_id', 'tags'].includes(k));
+    if (extra.length > 0) bits.push(`custom: ${extra.join(', ')}`);
+    parts.push(`${objType} → ${bits.join(' | ') || 'default scope'}`);
+  }
+  return parts.length > 0 ? parts.join(' ; ') : 'No data scope set (all matching rows).';
+}
+
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
 
 export default function TemplatesModal({ userId, accessToken, onClose, onCountChange, onOpenExtracts }: TemplatesModalProps) {
@@ -527,6 +551,8 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const filtered = templates.filter(t =>
     !search || t.name.toLowerCase().includes(search.toLowerCase()) || (t.description ?? '').toLowerCase().includes(search.toLowerCase())
   );
+  const parsedFiltersForView = parseElementFiltersJson(filterJsonText);
+  const scopeSummary = parsedFiltersForView.ok ? summarizeScopeHuman(parsedFiltersForView.value) : 'Invalid JSON.';
   const isEditing     = isNew || !!selected;
   const isSystem      = selected?.is_system ?? false;
   const templateIcon  = getObjectIcon(concepts, 'document_template') || '📄';
@@ -713,6 +739,9 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                         <div style={{ padding: '0.3rem 0.5rem', borderBottom: '1px solid #f0f0f0', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                           <span style={{ fontSize: '0.6rem', color: '#aaa', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Data Scope (JSON)</span>
                           <span style={{ fontSize: '0.58rem', color: '#999' }}>use <span style={{ fontFamily: 'monospace' }}>__scope</span> by object type</span>
+                        </div>
+                        <div style={{ padding: '0.2rem 0.55rem', borderBottom: '1px solid #f6f6f6', background: '#fcfcfc', color: '#6b7280', fontSize: '0.6rem', lineHeight: 1.35 }}>
+                          {scopeSummary}
                         </div>
                         <textarea
                           value={filterJsonText}
