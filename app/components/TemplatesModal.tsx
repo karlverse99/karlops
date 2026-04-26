@@ -27,6 +27,7 @@ interface Template {
 }
 
 interface AssistMessage { role: 'user' | 'assistant'; content: string; }
+type AssistChange = 'none' | 'prompt' | 'scope' | 'both';
 
 interface ConceptEntry {
   concept_key: string;
@@ -221,6 +222,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const [assistInput, setAssistInput]       = useState('');
   const [assistHistory, setAssistHistory]   = useState<AssistMessage[]>([]);
   const [assistLoading, setAssistLoading]   = useState(false);
+  const [assistLastChange, setAssistLastChange] = useState<AssistChange>('none');
 
   // Modal drag/resize
   const initX = Math.max(0, Math.round(window.innerWidth  / 2 - 580));
@@ -347,6 +349,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     setFilterJsonError('');
     setRunOutput(null); setRunErr(''); setSaveErr('');
     setAssistHistory([]); setAssistOpen(false); setAssistInput('');
+    setAssistLastChange('none');
     setSavedToExtracts(false); setSavedFlash(false);
   };
 
@@ -358,6 +361,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     setEditElements([]); setFilterJsonText('{}'); setFilterJsonError('');
     setRunOutput(null); setRunErr(''); setSaveErr('');
     setAssistHistory([]); setAssistOpen(false); setAssistInput('');
+    setAssistLastChange('none');
     setSavedToExtracts(false); setSavedFlash(false);
   };
 
@@ -513,6 +517,9 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
       const data = await res.json();
       const assistResponse = data.response ?? '';
       setAssistHistory(h => [...h, { role: 'assistant', content: assistResponse }]);
+      const changedPrompt = !!data.suggested_instructions;
+      const changedScope  = !!data.suggested_data_scope;
+      setAssistLastChange(changedPrompt && changedScope ? 'both' : changedPrompt ? 'prompt' : changedScope ? 'scope' : 'none');
       if (data.suggested_instructions) setEditKarlPrompt(stripEmoji(data.suggested_instructions));
       if (data.suggested_data_scope) mergeSuggestedDataScope(data.suggested_data_scope);
     } catch {
@@ -539,6 +546,9 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
       const data = await res.json();
       const assistResponse = data.response ?? '';
       setAssistHistory(h => [...h, { role: 'assistant', content: assistResponse || 'Prompt updated.' }]);
+      const changedPrompt = !!data.suggested_instructions;
+      const changedScope  = !!data.suggested_data_scope;
+      setAssistLastChange(changedPrompt && changedScope ? 'both' : changedPrompt ? 'prompt' : changedScope ? 'scope' : 'none');
       if (data.suggested_instructions) setEditKarlPrompt(stripEmoji(data.suggested_instructions));
       if (data.suggested_data_scope) mergeSuggestedDataScope(data.suggested_data_scope);
     } catch {
@@ -553,6 +563,11 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   );
   const parsedFiltersForView = parseElementFiltersJson(filterJsonText);
   const scopeSummary = parsedFiltersForView.ok ? summarizeScopeHuman(parsedFiltersForView.value) : 'Invalid JSON.';
+  const useIconsEnabled = (() => {
+    if (!parsedFiltersForView.ok) return false;
+    const options = parsedFiltersForView.value?.__options;
+    return !!(options && typeof options === 'object' && !Array.isArray(options) && (options as any).use_context_icons === true);
+  })();
   const isEditing     = isNew || !!selected;
   const isSystem      = selected?.is_system ?? false;
   const templateIcon  = getObjectIcon(concepts, 'document_template') || '📄';
@@ -739,6 +754,28 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                         <div style={{ padding: '0.3rem 0.5rem', borderBottom: '1px solid #f0f0f0', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                           <span style={{ fontSize: '0.6rem', color: '#aaa', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Data Scope (JSON)</span>
                           <span style={{ fontSize: '0.58rem', color: '#999' }}>use <span style={{ fontFamily: 'monospace' }}>__scope</span> by object type</span>
+                          <span style={{ flex: 1 }} />
+                          <label style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.58rem', color: '#666', cursor: 'pointer' }}>
+                            <input
+                              type="checkbox"
+                              checked={useIconsEnabled}
+                              onChange={e => {
+                                const parsed = parseElementFiltersJson(filterJsonText);
+                                const cur = parsed.ok ? parsed.value : {};
+                                const next = {
+                                  ...cur,
+                                  __options: {
+                                    ...(cur.__options && typeof cur.__options === 'object' && !Array.isArray(cur.__options) ? cur.__options : {}),
+                                    use_context_icons: e.target.checked,
+                                  },
+                                };
+                                setFilterJsonText(JSON.stringify(next, null, 2));
+                                setFilterJsonError('');
+                              }}
+                              style={{ accentColor: ACCENT }}
+                            />
+                            Use icons
+                          </label>
                         </div>
                         <div style={{ padding: '0.2rem 0.55rem', borderBottom: '1px solid #f6f6f6', background: '#fcfcfc', color: '#6b7280', fontSize: '0.6rem', lineHeight: 1.35 }}>
                           {scopeSummary}
@@ -773,6 +810,11 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                     <div style={{ flex: '1 1 40%', display: 'flex', flexDirection: 'column', overflow: 'hidden', borderRight: '1px solid #e5e7eb', minWidth: 0 }}>
                       <div style={{ padding: '0.5rem 0.75rem', borderBottom: '1px solid #f0f0f0', display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0, background: '#fafafa' }}>
                         <span style={{ ...labelSt, marginBottom: 0 }}>Karl Prompt</span>
+                        {assistLastChange !== 'none' && (
+                          <span style={{ fontSize: '0.58rem', color: '#0f766e', background: '#ecfeff', border: '1px solid #a5f3fc', borderRadius: 3, padding: '0.04rem 0.35rem' }}>
+                            Assist changed: {assistLastChange === 'both' ? 'prompt + scope' : assistLastChange}
+                          </span>
+                        )}
                         {!isSystem && (
                           <button onClick={() => setAssistOpen(v => !v)}
                             style={{ marginLeft: 'auto', background: assistOpen ? ACCENT_BG : 'transparent', border: `1px solid ${assistOpen ? ACCENT : '#ddd'}`, color: assistOpen ? ACCENT : '#888', padding: '0.15rem 0.5rem', borderRadius: 3, fontSize: '0.62rem', fontFamily: 'monospace', cursor: 'pointer' }}>
