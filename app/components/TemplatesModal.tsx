@@ -617,14 +617,19 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     executeRun(mode);
   };
 
-  const executeRun = async (mode: 'preview' | 'preview_live' | 'generate') => {
+  const executeRun = async (
+    mode: 'preview' | 'preview_live' | 'generate',
+    overrides?: { karlPrompt?: string; filters?: Record<string, any> }
+  ) => {
     const templateId = selected?.document_template_id;
     if (!templateId) return;
     if (scopeEditorMode === 'human' && humanScopeError) {
       setRunErr(`Data scope: ${humanScopeError}`);
       return;
     }
-    const parsedFilters = parseElementFiltersJson(filterJsonText);
+    const parsedFilters = overrides?.filters
+      ? { ok: true as const, value: overrides.filters }
+      : parseElementFiltersJson(filterJsonText);
     if (!parsedFilters.ok) {
       setRunErr(`Data scope JSON: ${parsedFilters.error}`);
       return;
@@ -644,7 +649,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
         body: JSON.stringify({
           template_id:           templateId,
           run_mode:              mode,
-          karl_prompt:           editKarlPrompt.trim() || undefined,
+          karl_prompt:           (overrides?.karlPrompt ?? editKarlPrompt).trim() || undefined,
           user_additions:        '',
           output_format:         editFormat,
           selected_elements:     editElements,
@@ -687,8 +692,8 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     return p.ok ? p.value : {};
   };
 
-  const mergeSuggestedDataScope = (suggested: unknown) => {
-    if (!suggested || typeof suggested !== 'object' || Array.isArray(suggested)) return;
+  const mergeSuggestedDataScope = (suggested: unknown): Record<string, any> | null => {
+    if (!suggested || typeof suggested !== 'object' || Array.isArray(suggested)) return null;
     const parsed = parseElementFiltersJson(filterJsonText);
     const cur = parsed.ok ? parsed.value : {};
     const next = {
@@ -703,6 +708,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     setHumanScopeText(formatHumanScopeText(next));
     setHumanScopeError('');
     setAssistLastChange(prev => (prev === 'prompt' ? 'both' : 'scope'));
+    return next;
   };
 
   const handleAssist = async () => {
@@ -728,8 +734,14 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
       const changedPrompt = !!data.suggested_instructions;
       const changedScope  = !!data.suggested_data_scope;
       setAssistLastChange(changedPrompt && changedScope ? 'both' : changedPrompt ? 'prompt' : changedScope ? 'scope' : 'none');
-      if (data.suggested_instructions) setEditKarlPrompt(stripEmoji(data.suggested_instructions));
-      if (data.suggested_data_scope) mergeSuggestedDataScope(data.suggested_data_scope);
+      const nextPrompt = data.suggested_instructions ? stripEmoji(data.suggested_instructions) : editKarlPrompt;
+      let nextFilters: Record<string, any> | undefined;
+      if (data.suggested_instructions) setEditKarlPrompt(nextPrompt);
+      if (data.suggested_data_scope) nextFilters = mergeSuggestedDataScope(data.suggested_data_scope) ?? undefined;
+      if (changedPrompt || changedScope) {
+        const autoMode: 'preview' | 'preview_live' = editElements.length > 0 ? 'preview_live' : 'preview';
+        await executeRun(autoMode, { karlPrompt: nextPrompt, filters: nextFilters });
+      }
     } catch {
       setAssistHistory(h => [...h, { role: 'assistant', content: 'Something went wrong. Try again.' }]);
     } finally { setAssistLoading(false); }
@@ -757,8 +769,14 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
       const changedPrompt = !!data.suggested_instructions;
       const changedScope  = !!data.suggested_data_scope;
       setAssistLastChange(changedPrompt && changedScope ? 'both' : changedPrompt ? 'prompt' : changedScope ? 'scope' : 'none');
-      if (data.suggested_instructions) setEditKarlPrompt(stripEmoji(data.suggested_instructions));
-      if (data.suggested_data_scope) mergeSuggestedDataScope(data.suggested_data_scope);
+      const nextPrompt = data.suggested_instructions ? stripEmoji(data.suggested_instructions) : editKarlPrompt;
+      let nextFilters: Record<string, any> | undefined;
+      if (data.suggested_instructions) setEditKarlPrompt(nextPrompt);
+      if (data.suggested_data_scope) nextFilters = mergeSuggestedDataScope(data.suggested_data_scope) ?? undefined;
+      if (changedPrompt || changedScope) {
+        const autoMode: 'preview' | 'preview_live' = editElements.length > 0 ? 'preview_live' : 'preview';
+        await executeRun(autoMode, { karlPrompt: nextPrompt, filters: nextFilters });
+      }
     } catch {
       setAssistHistory(h => [...h, { role: 'assistant', content: 'Something went wrong. Try again.' }]);
     } finally { setAssistLoading(false); }

@@ -183,6 +183,7 @@ Use only the data provided — never invent facts.
 ${isPreview ? 'This is a STUB PREVIEW — demonstrate layout with sample data only.' : 'The Data section may use ## headings to group rows (e.g. by context). Preserve that structure in your output when it matches the formatting instructions.'}
 ${userAdditions ? 'User additions (when present) are binding constraints on tone, emphasis, inclusions, or exclusions — apply them together with the formatting instructions.' : ''}
 STRICT FIELD GUARD: only render fields that are represented in Selected element keys or explicitly present in Data rows below. If a requested field is absent, omit it (never infer or fabricate).
+BULLET MARKER GUARD: when Data rows include explicit list markers (including icon bullets like emoji/symbols), preserve those markers in output rows unless the formatting instructions explicitly require a different marker.
 Output format: ${outputFormat}.
 Today: ${today}.
 Return ONLY the document — no preamble, no explanation, no code fences.`;
