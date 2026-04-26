@@ -176,43 +176,19 @@ function summarizeScopeHuman(filters: Record<string, any>): string {
   return parts.length > 0 ? parts.join(' ; ') : 'No data scope set (all matching rows).';
 }
 
-function formatHumanScopeText(filters: Record<string, any>): string {
-  const lines: string[] = [
-    '# Format: object_type: key=value; key=value',
-    '# Example: completion: window_days=7; contexts=The Unobsolete, Home; tags=ops',
-  ];
-  const scope =
-    filters && typeof filters.__scope === 'object' && filters.__scope && !Array.isArray(filters.__scope)
-      ? (filters.__scope as Record<string, any>)
-      : {};
-  for (const [objType, confRaw] of Object.entries(scope)) {
-    if (!confRaw || typeof confRaw !== 'object' || Array.isArray(confRaw)) continue;
-    const conf = confRaw as Record<string, any>;
-    const parts: string[] = [];
-    for (const [k, v] of Object.entries(conf)) {
-      if (k === 'context_id') {
-        const list = Array.isArray(v) ? v : [v];
-        parts.push(`contexts=${list.map(x => String(x)).join(', ')}`);
-      } else if (k === 'tags') {
-        const list = Array.isArray(v) ? v : [v];
-        parts.push(`tags=${list.map(x => String(x)).join(', ')}`);
-      } else {
-        parts.push(`${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`);
-      }
-    }
-    lines.push(`${objType}: ${parts.join('; ')}`);
-  }
-  const options =
-    filters && typeof filters.__options === 'object' && filters.__options && !Array.isArray(filters.__options)
-      ? (filters.__options as Record<string, any>)
-      : {};
-  if (options.use_context_icons === true) lines.push('options: use_context_icons=true');
-  return lines.join('\n');
+function quoteHumanValue(v: unknown): string {
+  if (typeof v === 'string') return `"${v.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  if (v === null) return 'null';
+  return JSON.stringify(v);
 }
 
-function parseLooseValue(raw: string): any {
+function parseHumanValueToken(raw: string): any {
   const t = raw.trim();
   if (!t) return '';
+  if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) {
+    return t.slice(1, -1);
+  }
   if (t === 'true') return true;
   if (t === 'false') return false;
   if (t === 'null') return null;
@@ -223,43 +199,171 @@ function parseLooseValue(raw: string): any {
   return t;
 }
 
+function splitCommaAware(text: string): string[] {
+  const out: string[] = [];
+  let cur = '';
+  let inQuote: '"' | "'" | null = null;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if ((ch === '"' || ch === "'") && text[i - 1] !== '\\') {
+      if (!inQuote) inQuote = ch;
+      else if (inQuote === ch) inQuote = null;
+      cur += ch;
+      continue;
+    }
+    if (ch === ',' && !inQuote) {
+      if (cur.trim()) out.push(cur.trim());
+      cur = '';
+      continue;
+    }
+    cur += ch;
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+}
+
+function formatHumanScopeText(filters: Record<string, any>): string {
+  const lines: string[] = [
+    '# One filter per line: object.field <op> value',
+    '# Ops: = | in | includes | >=',
+    '# Example: completion.context_name = "The Unobsolete"',
+    '# Example: completion.completed_at >= -7d',
+  ];
+  const scope =
+    filters && typeof filters.__scope === 'object' && filters.__scope && !Array.isArray(filters.__scope)
+      ? (filters.__scope as Record<string, any>)
+      : {};
+  for (const [objType, confRaw] of Object.entries(scope)) {
+    if (!confRaw || typeof confRaw !== 'object' || Array.isArray(confRaw)) continue;
+    const conf = confRaw as Record<string, any>;
+    const parts: string[] = [];
+    for (const [k, v] of Object.entries(conf)) {
+      if (k === 'window_days') {
+        if (objType === 'meeting') lines.push(`${objType}.meeting_date >= -${String(v)}d`);
+        else lines.push(`${objType}.completed_at >= -${String(v)}d`);
+        continue;
+      }
+      if (k === 'context_id' || k === 'context_name' || k === 'context_names') {
+        const list = Array.isArray(v) ? v : [v];
+        if (list.length > 1) {
+          lines.push(`${objType}.context_name in (${list.map(x => quoteHumanValue(String(x))).join(', ')})`);
+        } else if (list[0] != null && String(list[0]).trim()) {
+          lines.push(`${objType}.context_name = ${quoteHumanValue(String(list[0]))}`);
+        }
+        continue;
+      } else if (k === 'tags') {
+        const list = Array.isArray(v) ? v : [v];
+        for (const tag of list) {
+          if (String(tag).trim()) lines.push(`${objType}.tags includes ${quoteHumanValue(String(tag))}`);
+        }
+        continue;
+      } else if (k.startsWith('__')) {
+        continue;
+      } else {
+        lines.push(`${objType}.${k} = ${quoteHumanValue(v)}`);
+      }
+    }
+  }
+  const options =
+    filters && typeof filters.__options === 'object' && filters.__options && !Array.isArray(filters.__options)
+      ? (filters.__options as Record<string, any>)
+      : {};
+  for (const [k, v] of Object.entries(options)) {
+    lines.push(`options.${k} = ${quoteHumanValue(v)}`);
+  }
+  return lines.join('\n');
+}
+
 function parseHumanScopeText(text: string): { ok: true; value: Record<string, any> } | { ok: false; error: string } {
-  const out: Record<string, any> = {};
   const scope: Record<string, any> = {};
   const options: Record<string, any> = {};
   const lines = text.split(/\r?\n/);
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line || line.startsWith('#')) continue;
-    const idx = line.indexOf(':');
-    if (idx <= 0) return { ok: false, error: `Line ${i + 1}: expected "object_type: key=value; key=value"` };
-    const head = line.slice(0, idx).trim();
-    const tail = line.slice(idx + 1).trim();
-    if (!head) return { ok: false, error: `Line ${i + 1}: missing object type` };
-    const conf: Record<string, any> = head === 'options'
-      ? options
-      : (scope[head] && typeof scope[head] === 'object' && !Array.isArray(scope[head]) ? scope[head] : {});
-    const chunks = tail ? tail.split(';').map(s => s.trim()).filter(Boolean) : [];
-    for (const chunk of chunks) {
-      const eq = chunk.indexOf('=');
-      if (eq <= 0) return { ok: false, error: `Line ${i + 1}: expected key=value pairs` };
-      const key = chunk.slice(0, eq).trim();
-      const rawVal = chunk.slice(eq + 1).trim();
-      if (!key) return { ok: false, error: `Line ${i + 1}: empty key` };
-      if (head !== 'options' && (key === 'contexts' || key === 'context_id')) {
-        const vals = rawVal.split(',').map(v => v.trim()).filter(Boolean);
-        conf.context_id = vals.length <= 1 ? (vals[0] ?? '') : vals;
-      } else if (head !== 'options' && key === 'tags') {
-        conf.tags = rawVal.split(',').map(v => v.trim()).filter(Boolean);
-      } else {
-        conf[key] = parseLooseValue(rawVal);
-      }
+    const m = line.match(/^([a-zA-Z_][\w]*)\.([a-zA-Z_][\w]*)\s*(=|>=|in|includes)\s*(.+)$/i);
+    if (!m) {
+      return { ok: false, error: `Line ${i + 1}: expected object.field <op> value` };
     }
-    if (head !== 'options') scope[head] = conf;
+    const objType = m[1];
+    const field = m[2];
+    const op = m[3].toLowerCase();
+    const rawVal = m[4].trim();
+
+    if (objType === 'options') {
+      if (op !== '=') return { ok: false, error: `Line ${i + 1}: options only supports "="` };
+      options[field] = parseHumanValueToken(rawVal);
+      continue;
+    }
+
+    const conf: Record<string, any> =
+      scope[objType] && typeof scope[objType] === 'object' && !Array.isArray(scope[objType])
+        ? scope[objType]
+        : {};
+
+    if (field === 'completed_at' || field === 'meeting_date') {
+      if (op !== '>=') return { ok: false, error: `Line ${i + 1}: ${field} supports only ">=" with -Nd format` };
+      const rel = rawVal.match(/^-?(\d+)d$/i);
+      if (rel) conf.window_days = Number(rel[1]);
+      else if (/^\d+$/.test(rawVal)) conf.window_days = Number(rawVal);
+      else return { ok: false, error: `Line ${i + 1}: expected -Nd (example: -7d)` };
+    } else if (field === 'context_name' || field === 'context' || field === 'context_id') {
+      if (op === '=') {
+        conf.context_name = parseHumanValueToken(rawVal);
+      } else if (op === 'in') {
+        const trimmed = rawVal.replace(/^\(/, '').replace(/\)$/, '');
+        const vals = splitCommaAware(trimmed).map(parseHumanValueToken).map(v => String(v)).filter(Boolean);
+        conf.context_names = vals;
+      } else {
+        return { ok: false, error: `Line ${i + 1}: context filters support "=" or "in"` };
+      }
+    } else if (field === 'tags') {
+      if (op === 'includes') {
+        const next = parseHumanValueToken(rawVal);
+        const cur = Array.isArray(conf.tags) ? conf.tags : [];
+        conf.tags = Array.from(new Set([...cur, String(next)]));
+      } else if (op === 'in') {
+        const trimmed = rawVal.replace(/^\(/, '').replace(/\)$/, '');
+        conf.tags = splitCommaAware(trimmed).map(parseHumanValueToken).map(v => String(v)).filter(Boolean);
+      } else if (op === '=') {
+        conf.tags = [String(parseHumanValueToken(rawVal))];
+      } else {
+        return { ok: false, error: `Line ${i + 1}: tags supports "includes", "in", or "="` };
+      }
+    } else {
+      if (op !== '=') return { ok: false, error: `Line ${i + 1}: only "=" supported for ${objType}.${field}` };
+      conf[field] = parseHumanValueToken(rawVal);
+    }
+
+    scope[objType] = conf;
   }
+  const out: Record<string, any> = {};
   if (Object.keys(scope).length > 0) out.__scope = scope;
   if (Object.keys(options).length > 0) out.__options = options;
   return { ok: true, value: out };
+}
+
+function buildDataContractPreview(
+  elements: string[],
+  filters: Record<string, any>,
+  parseError: string
+): string {
+  const lines: string[] = [];
+  lines.push('Run-time data contract (auto-applied)');
+  lines.push(`Selected elements: ${elements.length ? elements.join(', ') : '(none)'}`);
+  if (parseError) {
+    lines.push(`Scope: invalid (${parseError})`);
+    return lines.join('\n');
+  }
+  const scopeSummary = summarizeScopeHuman(filters);
+  lines.push(`Scope summary: ${scopeSummary}`);
+  const options =
+    filters.__options && typeof filters.__options === 'object' && !Array.isArray(filters.__options)
+      ? (filters.__options as Record<string, any>)
+      : {};
+  const iconMode = options.use_context_icons === true ? 'on' : 'off';
+  lines.push(`Use context icons: ${iconMode}`);
+  return lines.join('\n');
 }
 
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
@@ -667,6 +771,11 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   );
   const parsedFiltersForView = parseElementFiltersJson(filterJsonText);
   const scopeSummary = parsedFiltersForView.ok ? summarizeScopeHuman(parsedFiltersForView.value) : 'Invalid JSON.';
+  const contractParseError = scopeEditorMode === 'human'
+    ? humanScopeError
+    : (parsedFiltersForView.ok ? '' : parsedFiltersForView.error);
+  const contractFilters = parsedFiltersForView.ok ? parsedFiltersForView.value : {};
+  const dataContractPreview = buildDataContractPreview(editElements, contractFilters, contractParseError);
   const useIconsEnabled = (() => {
     if (!parsedFiltersForView.ok) return false;
     const options = parsedFiltersForView.value?.__options;
@@ -988,6 +1097,11 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                             ✦ Karl Assist
                           </button>
                         )}
+                      </div>
+                      <div style={{ padding: '0.35rem 0.75rem', borderBottom: '1px solid #edf2f7', background: '#f8fafc', flexShrink: 0 }}>
+                        <pre style={{ margin: 0, whiteSpace: 'pre-wrap', color: contractParseError ? '#b91c1c' : '#475569', fontSize: '0.62rem', lineHeight: 1.35, fontFamily: 'monospace' }}>
+                          {dataContractPreview}
+                        </pre>
                       </div>
 
                       {/* Karl Assist panel */}
