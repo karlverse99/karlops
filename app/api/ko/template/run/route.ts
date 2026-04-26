@@ -128,7 +128,6 @@ export async function POST(req: NextRequest) {
         }
       } else {
         // Real data — pull per object type, applying relevant element filters
-        const wantsIconsFromPrompt = /\b(icon|icons)\b/i.test(fullPrompt);
         for (const [objType, fields] of Object.entries(byType)) {
           // Build a scope object: optional bulk __scope per object type, then per-element keys overlay.
           const scope: Record<string, any> = {};
@@ -146,13 +145,6 @@ export async function POST(req: NextRequest) {
               scope[field] = val;
             }
           }
-          const options = filters.__options && typeof filters.__options === 'object' && !Array.isArray(filters.__options)
-            ? filters.__options as Record<string, any>
-            : {};
-          if (options.use_context_icons === true || wantsIconsFromPrompt) {
-            scope.use_context_icons = true;
-          }
-          scope.__implementation_type = implType;
           const normalizedScope = normalizeQueryScope(objType, scope);
           const resolvedScope = await resolveObjectScope(supabase, user.id, normalizedScope);
           const block = await pullObjectData(supabase, user.id, objType, resolvedScope, bucketLabels, fields);
@@ -182,8 +174,6 @@ Your job: follow the formatting instructions exactly and populate them with the 
 Use only the data provided — never invent facts.
 ${isPreview ? 'This is a STUB PREVIEW — demonstrate layout with sample data only.' : 'The Data section may use ## headings to group rows (e.g. by context). Preserve that structure in your output when it matches the formatting instructions.'}
 ${userAdditions ? 'User additions (when present) are binding constraints on tone, emphasis, inclusions, or exclusions — apply them together with the formatting instructions.' : ''}
-STRICT FIELD GUARD: only render fields that are represented in Selected element keys or explicitly present in Data rows below. If a requested field is absent, omit it (never infer or fabricate).
-BULLET MARKER GUARD: when Data rows include explicit list markers (including icon bullets like emoji/symbols), preserve those markers in output rows unless the formatting instructions explicitly require a different marker.
 Output format: ${outputFormat}.
 Today: ${today}.
 Return ONLY the document — no preamble, no explanation, no code fences.`;
@@ -493,7 +483,6 @@ async function pullObjectData(
     if (scope.__no_context_match) return '(no completions)';
     const displayFields = fields.length > 0 ? fields : ['title', 'completed_at', 'outcome'];
     const wantContext = displayFields.includes('context_id');
-    const includeIcon = scope.use_context_icons === true;
     const selectCols = [
       'title',
       'completed_at',
@@ -519,21 +508,6 @@ async function pullObjectData(
 
     const { data } = await q;
     if (!data?.length) return '(no completions)';
-    let contextIcon = '•';
-    if (includeIcon) {
-      const implementationType = typeof scope.__implementation_type === 'string' && scope.__implementation_type.trim()
-        ? scope.__implementation_type
-        : 'personal';
-      const { data: iconRow } = await supabase
-        .from('concept_registry')
-        .select('icon')
-        .eq('implementation_type', implementationType)
-        .eq('concept_type', 'object')
-        .eq('concept_key', 'context')
-        .eq('is_active', true)
-        .maybeSingle();
-      contextIcon = iconRow?.icon?.trim() || '•';
-    }
 
     const formatRow = (c: any, groupedByContext: boolean): string => {
       const bits: string[] = [];
@@ -547,8 +521,7 @@ async function pullObjectData(
         bits.push(`Context: ${nm}`);
       }
       const core = bits.filter(Boolean).join(' · ');
-      const bullet = includeIcon ? contextIcon : '-';
-      return `${bullet} ${core || '(row)'}`;
+      return `- ${core || '(row)'}`;
     };
 
     if (wantContext) {
