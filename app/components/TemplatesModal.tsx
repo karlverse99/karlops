@@ -28,6 +28,7 @@ interface Template {
 
 interface AssistMessage { role: 'user' | 'assistant'; content: string; }
 type AssistChange = 'none' | 'prompt' | 'scope' | 'both';
+type ScopeEditorMode = 'human' | 'json';
 
 interface ConceptEntry {
   concept_key: string;
@@ -175,6 +176,92 @@ function summarizeScopeHuman(filters: Record<string, any>): string {
   return parts.length > 0 ? parts.join(' ; ') : 'No data scope set (all matching rows).';
 }
 
+function formatHumanScopeText(filters: Record<string, any>): string {
+  const lines: string[] = [
+    '# Format: object_type: key=value; key=value',
+    '# Example: completion: window_days=7; contexts=The Unobsolete, Home; tags=ops',
+  ];
+  const scope =
+    filters && typeof filters.__scope === 'object' && filters.__scope && !Array.isArray(filters.__scope)
+      ? (filters.__scope as Record<string, any>)
+      : {};
+  for (const [objType, confRaw] of Object.entries(scope)) {
+    if (!confRaw || typeof confRaw !== 'object' || Array.isArray(confRaw)) continue;
+    const conf = confRaw as Record<string, any>;
+    const parts: string[] = [];
+    for (const [k, v] of Object.entries(conf)) {
+      if (k === 'context_id') {
+        const list = Array.isArray(v) ? v : [v];
+        parts.push(`contexts=${list.map(x => String(x)).join(', ')}`);
+      } else if (k === 'tags') {
+        const list = Array.isArray(v) ? v : [v];
+        parts.push(`tags=${list.map(x => String(x)).join(', ')}`);
+      } else {
+        parts.push(`${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`);
+      }
+    }
+    lines.push(`${objType}: ${parts.join('; ')}`);
+  }
+  const options =
+    filters && typeof filters.__options === 'object' && filters.__options && !Array.isArray(filters.__options)
+      ? (filters.__options as Record<string, any>)
+      : {};
+  if (options.use_context_icons === true) lines.push('options: use_context_icons=true');
+  return lines.join('\n');
+}
+
+function parseLooseValue(raw: string): any {
+  const t = raw.trim();
+  if (!t) return '';
+  if (t === 'true') return true;
+  if (t === 'false') return false;
+  if (t === 'null') return null;
+  if (/^-?\d+(\.\d+)?$/.test(t)) return Number(t);
+  if ((t.startsWith('{') && t.endsWith('}')) || (t.startsWith('[') && t.endsWith(']'))) {
+    try { return JSON.parse(t); } catch { return t; }
+  }
+  return t;
+}
+
+function parseHumanScopeText(text: string): { ok: true; value: Record<string, any> } | { ok: false; error: string } {
+  const out: Record<string, any> = {};
+  const scope: Record<string, any> = {};
+  const options: Record<string, any> = {};
+  const lines = text.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line || line.startsWith('#')) continue;
+    const idx = line.indexOf(':');
+    if (idx <= 0) return { ok: false, error: `Line ${i + 1}: expected "object_type: key=value; key=value"` };
+    const head = line.slice(0, idx).trim();
+    const tail = line.slice(idx + 1).trim();
+    if (!head) return { ok: false, error: `Line ${i + 1}: missing object type` };
+    const conf: Record<string, any> = head === 'options'
+      ? options
+      : (scope[head] && typeof scope[head] === 'object' && !Array.isArray(scope[head]) ? scope[head] : {});
+    const chunks = tail ? tail.split(';').map(s => s.trim()).filter(Boolean) : [];
+    for (const chunk of chunks) {
+      const eq = chunk.indexOf('=');
+      if (eq <= 0) return { ok: false, error: `Line ${i + 1}: expected key=value pairs` };
+      const key = chunk.slice(0, eq).trim();
+      const rawVal = chunk.slice(eq + 1).trim();
+      if (!key) return { ok: false, error: `Line ${i + 1}: empty key` };
+      if (head !== 'options' && (key === 'contexts' || key === 'context_id')) {
+        const vals = rawVal.split(',').map(v => v.trim()).filter(Boolean);
+        conf.context_id = vals.length <= 1 ? (vals[0] ?? '') : vals;
+      } else if (head !== 'options' && key === 'tags') {
+        conf.tags = rawVal.split(',').map(v => v.trim()).filter(Boolean);
+      } else {
+        conf[key] = parseLooseValue(rawVal);
+      }
+    }
+    if (head !== 'options') scope[head] = conf;
+  }
+  if (Object.keys(scope).length > 0) out.__scope = scope;
+  if (Object.keys(options).length > 0) out.__options = options;
+  return { ok: true, value: out };
+}
+
 // ─── MAIN COMPONENT ───────────────────────────────────────────────────────────
 
 export default function TemplatesModal({ userId, accessToken, onClose, onCountChange, onOpenExtracts }: TemplatesModalProps) {
@@ -202,6 +289,9 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   /** Pretty-printed JSON for entire `element_filters` row (includes `__scope` for WHERE-style params). */
   const [filterJsonText, setFilterJsonText]           = useState('{}');
   const [filterJsonError, setFilterJsonError]         = useState('');
+  const [scopeEditorMode, setScopeEditorMode]         = useState<ScopeEditorMode>('human');
+  const [humanScopeText, setHumanScopeText]           = useState(formatHumanScopeText({}));
+  const [humanScopeError, setHumanScopeError]         = useState('');
   const [saving, setSaving]                           = useState(false);
   const [saveErr, setSaveErr]                         = useState('');
   const [savedFlash, setSavedFlash]                   = useState(false);
@@ -347,6 +437,9 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     const rawF = t.element_filters && typeof t.element_filters === 'object' ? t.element_filters : {};
     setFilterJsonText(JSON.stringify(rawF, null, 2));
     setFilterJsonError('');
+    setHumanScopeText(formatHumanScopeText(rawF));
+    setHumanScopeError('');
+    setScopeEditorMode('human');
     setRunOutput(null); setRunErr(''); setSaveErr('');
     setAssistHistory([]); setAssistOpen(false); setAssistInput('');
     setAssistLastChange('none');
@@ -358,7 +451,10 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     setEditName(''); setEditDesc(''); setEditFormat('md');
     setEditKarlPrompt(''); setEditTemplateMode('karl');
     setEditSuffixFormat('datetime'); setEditCustomSuffix('');
+    const emptyFilters = {};
     setEditElements([]); setFilterJsonText('{}'); setFilterJsonError('');
+    setHumanScopeText(formatHumanScopeText(emptyFilters)); setHumanScopeError('');
+    setScopeEditorMode('human');
     setRunOutput(null); setRunErr(''); setSaveErr('');
     setAssistHistory([]); setAssistOpen(false); setAssistInput('');
     setAssistLastChange('none');
@@ -367,6 +463,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
 
   const handleSave = async () => {
     if (!editName.trim()) { setSaveErr('Name is required'); return; }
+    if (scopeEditorMode === 'human' && humanScopeError) { setSaveErr(`Data scope: ${humanScopeError}`); return; }
     const parsedFilters = parseElementFiltersJson(filterJsonText);
     if (!parsedFilters.ok) { setSaveErr(parsedFilters.error); return; }
     setSaving(true); setSaveErr('');
@@ -419,6 +516,10 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const executeRun = async (mode: 'preview' | 'preview_live' | 'generate') => {
     const templateId = selected?.document_template_id;
     if (!templateId) return;
+    if (scopeEditorMode === 'human' && humanScopeError) {
+      setRunErr(`Data scope: ${humanScopeError}`);
+      return;
+    }
     const parsedFilters = parseElementFiltersJson(filterJsonText);
     if (!parsedFilters.ok) {
       setRunErr(`Data scope JSON: ${parsedFilters.error}`);
@@ -495,6 +596,9 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     };
     setFilterJsonText(JSON.stringify(next, null, 2));
     setFilterJsonError('');
+    setHumanScopeText(formatHumanScopeText(next));
+    setHumanScopeError('');
+    setAssistLastChange(prev => (prev === 'prompt' ? 'both' : 'scope'));
   };
 
   const handleAssist = async () => {
@@ -752,8 +856,26 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                       </div>
                       <div style={{ flex: '1 1 55%', minWidth: 320, display: 'flex', flexDirection: 'column', border: '1px solid #e5e7eb', borderRadius: 4, overflow: 'hidden', background: '#fff' }}>
                         <div style={{ padding: '0.3rem 0.5rem', borderBottom: '1px solid #f0f0f0', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                          <span style={{ fontSize: '0.6rem', color: '#aaa', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Data Scope (JSON)</span>
-                          <span style={{ fontSize: '0.58rem', color: '#999' }}>use <span style={{ fontFamily: 'monospace' }}>__scope</span> by object type</span>
+                          <span style={{ fontSize: '0.6rem', color: '#aaa', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                            Data Scope ({scopeEditorMode === 'human' ? 'Human' : 'JSON'})
+                          </span>
+                          <span style={{ fontSize: '0.58rem', color: '#999' }}>human default, JSON optional</span>
+                          <div style={{ display: 'inline-flex', border: '1px solid #e5e7eb', borderRadius: 4, overflow: 'hidden' }}>
+                            <button
+                              type="button"
+                              onClick={() => setScopeEditorMode('human')}
+                              style={{ background: scopeEditorMode === 'human' ? ACCENT_BG : '#fff', border: 'none', borderRight: '1px solid #e5e7eb', color: scopeEditorMode === 'human' ? ACCENT : '#888', fontSize: '0.58rem', fontFamily: 'monospace', padding: '0.12rem 0.4rem', cursor: 'pointer' }}
+                            >
+                              human
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setScopeEditorMode('json')}
+                              style={{ background: scopeEditorMode === 'json' ? ACCENT_BG : '#fff', border: 'none', color: scopeEditorMode === 'json' ? ACCENT : '#888', fontSize: '0.58rem', fontFamily: 'monospace', padding: '0.12rem 0.4rem', cursor: 'pointer' }}
+                            >
+                              json
+                            </button>
+                          </div>
                           <span style={{ flex: 1 }} />
                           <label style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.58rem', color: '#666', cursor: 'pointer' }}>
                             <input
@@ -771,6 +893,9 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                                 };
                                 setFilterJsonText(JSON.stringify(next, null, 2));
                                 setFilterJsonError('');
+                                setHumanScopeText(formatHumanScopeText(next));
+                                setHumanScopeError('');
+                                setAssistLastChange(prev => (prev === 'prompt' ? 'both' : 'scope'));
                               }}
                               style={{ accentColor: ACCENT }}
                             />
@@ -780,24 +905,66 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                         <div style={{ padding: '0.2rem 0.55rem', borderBottom: '1px solid #f6f6f6', background: '#fcfcfc', color: '#6b7280', fontSize: '0.6rem', lineHeight: 1.35 }}>
                           {scopeSummary}
                         </div>
-                        <textarea
-                          value={filterJsonText}
-                          onChange={e => {
-                            const v = e.target.value;
-                            setFilterJsonText(v);
-                            const p = parseElementFiltersJson(v);
-                            setFilterJsonError(p.ok ? '' : p.error);
-                          }}
-                          spellCheck={false}
-                          rows={4}
-                          style={{
-                            width: '100%', boxSizing: 'border-box', border: 'none', borderBottom: filterJsonError ? '2px solid #ef4444' : undefined,
-                            background: '#fff', color: '#222', padding: '0.45rem 0.55rem', fontFamily: 'monospace', fontSize: '0.7rem',
-                            outline: 'none', resize: 'none', minHeight: 74, lineHeight: 1.4,
-                          }}
-                        />
-                        {filterJsonError && (
-                          <div style={{ padding: '0.2rem 0.55rem 0.3rem', fontSize: '0.62rem', color: '#ef4444' }}>{filterJsonError}</div>
+                        {scopeEditorMode === 'human' ? (
+                          <>
+                            <textarea
+                              value={humanScopeText}
+                              onChange={e => {
+                                const v = e.target.value;
+                                setHumanScopeText(v);
+                                const p = parseHumanScopeText(v);
+                                setHumanScopeError(p.ok ? '' : p.error);
+                                if (p.ok) {
+                                  const curParsed = parseElementFiltersJson(filterJsonText);
+                                  const cur = curParsed.ok ? curParsed.value : {};
+                                  const passthrough = Object.fromEntries(
+                                    Object.entries(cur).filter(([k]) => k !== '__scope' && k !== '__options')
+                                  );
+                                  const next = { ...passthrough, ...p.value };
+                                  setFilterJsonText(JSON.stringify(next, null, 2));
+                                  setFilterJsonError('');
+                                  setAssistLastChange(prev => (prev === 'prompt' ? 'both' : 'scope'));
+                                }
+                              }}
+                              spellCheck={false}
+                              rows={4}
+                              style={{
+                                width: '100%', boxSizing: 'border-box', border: 'none', borderBottom: humanScopeError ? '2px solid #ef4444' : undefined,
+                                background: '#fff', color: '#222', padding: '0.45rem 0.55rem', fontFamily: 'monospace', fontSize: '0.7rem',
+                                outline: 'none', resize: 'none', minHeight: 74, lineHeight: 1.4,
+                              }}
+                            />
+                            {humanScopeError && (
+                              <div style={{ padding: '0.2rem 0.55rem 0.3rem', fontSize: '0.62rem', color: '#ef4444' }}>{humanScopeError}</div>
+                            )}
+                          </>
+                        ) : (
+                          <>
+                            <textarea
+                              value={filterJsonText}
+                              onChange={e => {
+                                const v = e.target.value;
+                                setFilterJsonText(v);
+                                const p = parseElementFiltersJson(v);
+                                setFilterJsonError(p.ok ? '' : p.error);
+                                if (p.ok) {
+                                  setHumanScopeText(formatHumanScopeText(p.value));
+                                  setHumanScopeError('');
+                                  setAssistLastChange(prev => (prev === 'prompt' ? 'both' : 'scope'));
+                                }
+                              }}
+                              spellCheck={false}
+                              rows={4}
+                              style={{
+                                width: '100%', boxSizing: 'border-box', border: 'none', borderBottom: filterJsonError ? '2px solid #ef4444' : undefined,
+                                background: '#fff', color: '#222', padding: '0.45rem 0.55rem', fontFamily: 'monospace', fontSize: '0.7rem',
+                                outline: 'none', resize: 'none', minHeight: 74, lineHeight: 1.4,
+                              }}
+                            />
+                            {filterJsonError && (
+                              <div style={{ padding: '0.2rem 0.55rem 0.3rem', fontSize: '0.62rem', color: '#ef4444' }}>{filterJsonError}</div>
+                            )}
+                          </>
                         )}
                       </div>
                     </div>
