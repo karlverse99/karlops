@@ -28,6 +28,7 @@ export type IntentType =
   | 'question'
   | 'command'
   | 'unclear';
+type ExtractsLane = 'run' | 'build' | 'guide' | 'tweak';
 
 export type ActionType =
   | 'insert'
@@ -618,6 +619,7 @@ export async function routeCommand(
       '- capture_tasks    — bulk task insert',
       '- create_tag       — propose new tag (ALWAYS pending, never silent)',
       '- summarize        — no DB write, Karl summarizes in chat',
+      '- command          — UI-only helper commands (open modals without DB write)',
       '',
       '## Delete Rules — CRITICAL',
       'Before proposing delete_object for any object type, you MUST reason about allow_delete.',
@@ -687,6 +689,7 @@ export async function routeCommand(
       '## Decision Flow',
       '1. Question/conversation → intent: question. No pending.',
       '2. Operation → what objects, what actions? Build actions array.',
+      '2a. If user asks to open extract workflow (run/build/guide/tweak), use intent:"command" with command_type:"open_extracts_v2".',
       '3. Quick capture → intent: execute. Have enough → intent: pending. Missing critical → intent: question.',
       '4. Pending exists? confirm/cancel/modify/preview/open_modal/replace.',
       '',
@@ -744,6 +747,9 @@ export async function routeCommand(
       '',
       '// open_form:',
       '{ "intent": "open_form", "modal": "TaskDetailModal", "identifier": "N1", "response": "Opening N1." }',
+      '',
+      '// command — open extracts v2 lane:',
+      '{ "intent": "command", "command_type": "open_extracts_v2", "payload": { "lane": "run" }, "response": "Opening Extracts in Run mode." }',
       '',
       '// question:',
       '{ "intent": "question", "response": "Karl answer in plain English" }',
@@ -905,6 +911,20 @@ export async function routeCommand(
 
     if (intent === 'command' && parsed.command_type === 'open_tag_manager') {
       return { intent: 'command', payload: { command_type: 'open_tag_manager' }, response: parsed.response ?? 'Opening tag manager.', usage };
+    }
+
+    if (intent === 'command' && parsed.command_type === 'open_extracts_v2') {
+      const laneInput = String(parsed?.payload?.lane ?? parsed?.lane ?? 'run').toLowerCase();
+      const lane: ExtractsLane =
+        laneInput === 'build' || laneInput === 'guide' || laneInput === 'tweak'
+          ? laneInput
+          : 'run';
+      return {
+        intent: 'command',
+        payload: { command_type: 'open_extracts_v2', lane },
+        response: parsed.response ?? `Opening Extracts in ${lane} mode.`,
+        usage,
+      };
     }
 
     if (intent === 'question') {

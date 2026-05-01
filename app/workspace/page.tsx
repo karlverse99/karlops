@@ -7,6 +7,7 @@ import TaskAddModal from '@/app/components/TaskAddModal';
 import CompletionsModal from '@/app/components/CompletionsModal';
 import MeetingsModal from '@/app/components/MeetingsModal';
 import ExtractsModal from '@/app/components/ExtractsModal';
+import ExtractsV2Modal from '@/app/components/ExtractsV2Modal';
 import TaskListModal from '@/app/components/TaskListModal';
 import TemplatesModal from '@/app/components/TemplatesModal';
 import ContactsModal from '@/app/components/ContactsModal';
@@ -34,6 +35,7 @@ interface ChatMessage { role: 'user' | 'assistant'; content: string; timestamp: 
 interface BucketDef { key: string; label: string; icon: string; color: string; accent: string; }
 interface Context { context_id: string; name: string; }
 interface TaskStatus { task_status_id: string; name: string; label: string; }
+type ExtractsLane = 'run' | 'build' | 'guide' | 'tweak';
 
 interface PendingAction {
   intent: string;
@@ -340,6 +342,8 @@ export default function WorkspacePage() {
   const [showCompletions, setShowCompletions] = useState(false);
   const [showMeetings, setShowMeetings]       = useState(false);
   const [showExtracts, setShowExtracts]       = useState(false);
+  const [showExtractsV2, setShowExtractsV2]   = useState(false);
+  const [extractsV2Lane, setExtractsV2Lane]   = useState<ExtractsLane>('run');
   const [showTaskList, setShowTaskList]       = useState(false);
   const [showTemplates, setShowTemplates]     = useState(false);
   const [showContacts, setShowContacts]       = useState(false);
@@ -655,6 +659,18 @@ export default function WorkspacePage() {
       return;
     }
 
+    if (data.intent === 'command' && data.payload?.command_type === 'open_extracts_v2') {
+      const lane = data.payload?.lane as ExtractsLane | undefined;
+      if (lane && ['run', 'build', 'guide', 'tweak'].includes(lane)) {
+        setExtractsV2Lane(lane);
+      } else {
+        setExtractsV2Lane('run');
+      }
+      setShowExtractsV2(true);
+      addMessage('assistant', data.response ?? 'Opening Extracts.');
+      return;
+    }
+
     // Delegation pending — pop DelegateModal
     if (data.intent === 'question' && data.payload?.delegation_pending) {
       const taskId = resolveIdentifierToTaskId(data.payload.identifier);
@@ -966,6 +982,15 @@ export default function WorkspacePage() {
       {showExtracts && koUser && (
         <ExtractsModal userId={koUser.id} accessToken={accessToken} onClose={() => setShowExtracts(false)} onCountChange={setExtractCount} />
       )}
+      {showExtractsV2 && koUser && (
+        <ExtractsV2Modal
+          userId={koUser.id}
+          accessToken={accessToken}
+          initialLane={extractsV2Lane}
+          onClose={() => setShowExtractsV2(false)}
+          onCountChange={setExtractCount}
+        />
+      )}
       {showTaskList && koUser && (
         <TaskListModal userId={koUser.id} accessToken={accessToken} onClose={() => setShowTaskList(false)} onSaved={() => loadTasks(koUser.id)} />
       )}
@@ -1022,6 +1047,7 @@ export default function WorkspacePage() {
             <button onClick={() => setShowCompletions(true)} style={{ background: '#1a0e00', border: '1px solid #4a2a00', color: '#f97316', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }} onMouseEnter={e => (e.currentTarget.style.background = '#2a1800')} onMouseLeave={e => (e.currentTarget.style.background = '#1a0e00')}><span style={{ color: '#f97316' }}>+complete</span><span style={{ color: '#ffffff' }}>({completionCount})</span></button>
             <button onClick={() => setShowMeetings(true)} style={{ background: '#0a0f1a', border: '1px solid #1a3060', color: '#3b82f6', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }} onMouseEnter={e => (e.currentTarget.style.background = '#0f1a2a')} onMouseLeave={e => (e.currentTarget.style.background = '#0a0f1a')}><span style={{ color: '#3b82f6' }}>+meeting</span><span style={{ color: '#ffffff' }}>({meetingCount})</span></button>
             <button onClick={() => setShowExtracts(true)} style={{ background: '#120a1a', border: '1px solid #3a1a5a', color: '#8b5cf6', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }} onMouseEnter={e => (e.currentTarget.style.background = '#1e1030')} onMouseLeave={e => (e.currentTarget.style.background = '#120a1a')}><span style={{ color: '#8b5cf6' }}>+extracts</span><span style={{ color: '#ffffff' }}>({extractCount})</span></button>
+            <button onClick={() => { setExtractsV2Lane('run'); setShowExtractsV2(true); }} style={{ background: '#1a1023', border: '1px solid #5b21b6', color: '#c4b5fd', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }} onMouseEnter={e => (e.currentTarget.style.background = '#261436')} onMouseLeave={e => (e.currentTarget.style.background = '#1a1023')}><span style={{ color: '#c4b5fd' }}>+extracts v2</span></button>
             <button onClick={() => setShowTemplates(true)} style={{ background: '#0a1f1d', border: '1px solid #0f3330', color: '#14b8a6', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }} onMouseEnter={e => (e.currentTarget.style.background = '#0f2a27')} onMouseLeave={e => (e.currentTarget.style.background = '#0a1f1d')}><span style={{ color: '#14b8a6' }}>+template</span><span style={{ color: '#ffffff' }}>({templateCount})</span></button>
             <button onClick={() => setShowContacts(true)} style={{ background: '#1a0a0a', border: '1px solid #4a1010', color: '#991b1b', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }} onMouseEnter={e => (e.currentTarget.style.background = '#2a1010')} onMouseLeave={e => (e.currentTarget.style.background = '#1a0a0a')}><span style={{ color: '#991b1b' }}>+contacts</span><span style={{ color: '#ffffff' }}>({contactCount})</span></button>
           </div>
