@@ -176,6 +176,36 @@ function isLongInput(input: string): boolean {
   return input.length > 500 || input.split('\n').length > 15;
 }
 
+function extractTaskTitleFromInput(input: string): string | null {
+  const patterns = [
+    /(?:add|capture|create)\s+(?:this|it)\s+as\s+(?:a\s+)?task(?:\s+please)?[:\-]?\s*(.+)$/i,
+    /^add\s+(?:a\s+)?task(?:\s+please)?[:\-]?\s*(.+)$/i,
+    /^task[:\-]?\s*(.+)$/i,
+  ];
+  for (const p of patterns) {
+    const m = input.match(p);
+    if (m?.[1]) {
+      const title = m[1].trim();
+      if (title.length > 2) return title;
+    }
+  }
+  return null;
+}
+
+function isTaskCaptureNudge(input: string): boolean {
+  const normalized = input.toLowerCase().trim();
+  return [
+    'add this as a task',
+    'add this as task',
+    'add it as a task',
+    'add it as task',
+    'capture this as a task',
+    'capture it as a task',
+    'make this a task',
+    'make it a task',
+  ].includes(normalized);
+}
+
 function enforceTop4HelpResponse(raw: string): string {
   const lines = raw.split('\n').map((l) => l.trim()).filter(Boolean);
   const numbered = lines.filter((l) => /^\d+[\).\-:]\s+/.test(l));
@@ -645,6 +675,43 @@ export async function routeCommand(
     const { data: situationData } = await db.from('user_situation').select('chat_history_depth').eq('user_id', user_id).eq('is_active', true).maybeSingle();
     const historyDepth = situationData?.chat_history_depth ?? 15;
     const recentMessages = sessionMessages.slice(-historyDepth);
+
+    // Deterministic fallback for explicit "add this/it as a task" phrasing.
+    // This prevents dead-end "not sure" responses for a very common capture intent.
+    if (!pending) {
+      let title = extractTaskTitleFromInput(input);
+      if (!title && isTaskCaptureNudge(input)) {
+        const priorUser = [...recentMessages]
+          .reverse()
+          .find((m: any) => m.role === 'user' && m.content && m.content !== input);
+        const candidate = String(priorUser?.content ?? '').trim();
+        if (candidate.length > 2) title = candidate.slice(0, 200);
+      }
+
+      if (title) {
+        const response = `I can add this as a task: "${title}". Confirm?`;
+        await appendSessionMessage(user_id, 'user', input);
+        await appendSessionMessage(user_id, 'karl', response);
+        return {
+          intent: 'pending',
+          actions: [{
+            action: 'insert',
+            object_type: 'task',
+            modal: 'TaskAddModal',
+            fields: {
+              title,
+              bucket_key: 'capture',
+              context_id: null,
+              tags: [],
+              notes: null,
+              target_date: null,
+              delegated_to: null,
+            },
+          }],
+          response,
+        };
+      }
+    }
 
     const anthropicMessages: { role: 'user' | 'assistant'; content: string }[] = [
       ...recentMessages.map(m => ({
