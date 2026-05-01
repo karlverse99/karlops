@@ -169,6 +169,8 @@ The user may also edit **element_filters** JSON (including a __scope object per 
 ## Available data sources (for your reference when suggesting instructions)
 
 - **tasks** — open tasks, filterable by bucket (now/soon/realwork/later/delegate/capture), tags, context
+  - **Multi-bucket layouts:** Data arrives grouped by \`bucket_key\`; headings use **concept_registry** labels for this implementation. Karl prompt section titles can differ — generation matches rows to the Data group by internal bucket key, not by headline wording.
+  - **Tag + all buckets:** To filter by one tag across every bucket, use \`suggested_element_filters\` like \`{ "__scope": { "task": { "tags": ["Exact Tag Name"] } } }\` and **omit** \`bucket_key\` so all groups appear. Tag text must match the user’s workspace exactly.
 - **completions** — completed work, filterable by date window, tags, context
 - **meetings** — meetings, filterable by date window, attendees, completed status
 - **situation** — user's current situation brief

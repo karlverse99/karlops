@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createSupabaseAdmin } from '@/lib/supabase-server';
 import { encryptOutput } from '@/lib/ko/outputEncryption';
-import { loadConceptRegistryForTemplate } from '@/lib/ko/conceptRegistryHints';
+import { formatTaskBucketDataGuide, loadConceptRegistryForTemplate } from '@/lib/ko/conceptRegistryHints';
 
 export const dynamic = 'force-dynamic';
 
@@ -128,7 +128,7 @@ export async function POST(req: NextRequest) {
     }
 
     // ── concept_registry: bucket labels for queries + heading hints for generation ──
-    const { bucketLabels, hintsBlock } = await loadConceptRegistryForTemplate(supabase, user.id);
+    const { bucketLabels, bucketKeyOrder, hintsBlock } = await loadConceptRegistryForTemplate(supabase, user.id);
 
     // ── Build data block from selected_elements + element_filters ────────────
     const today = new Date().toISOString().slice(0, 10);
@@ -152,7 +152,7 @@ export async function POST(req: NextRequest) {
       if (isPreview) {
         // Stub data — one block per unique object type
         for (const objType of Object.keys(byType)) {
-          dataBlocks.push(generateStub(objType, bucketLabels));
+          dataBlocks.push(generateStub(objType, bucketLabels, bucketKeyOrder));
         }
       } else {
         // Real data — pull per object type, applying relevant element filters
@@ -188,13 +188,16 @@ export async function POST(req: NextRequest) {
         const scope = await normalizeSectionScope(supabase, user.id, source, baseScope);
         const objType = mapSectionSourceToObjectType(source);
         const sectionBlock = isPreview
-          ? generateStub(objType, bucketLabels)
+          ? generateStub(objType, bucketLabels, bucketKeyOrder)
           : await pullObjectData(supabase, user.id, objType, scope, bucketLabels, []);
         dataBlocks.push(`${label}:\n${sectionBlock || '(no data)'}`);
       }
     }
 
     const dataSection = dataBlocks.length > 0 ? dataBlocks.join('\n\n') : '(no data)';
+
+    const taskBucketGuide =
+      Object.keys(byType).includes('task') ? formatTaskBucketDataGuide(bucketLabels, bucketKeyOrder) : '';
 
     // ── Build Haiku prompt ───────────────────────────────────────────────────
     const mdRules =
@@ -214,6 +217,7 @@ ${userAdditions ? 'User additions (when present) are binding constraints on tone
 Output format: ${outputFormat}.
 Today: ${today}.
 ${mdRules}
+${taskBucketGuide ? `When the Data block includes tasks: section titles in the Karl prompt may differ from KO bucket labels — follow the mapping in the user message under "Task bucket mapping".` : ''}
 Return ONLY the document — no preamble, no explanation, no code fences.`;
 
     const userMessage = [
@@ -226,6 +230,9 @@ Return ONLY the document — no preamble, no explanation, no code fences.`;
       '',
       ...(hintsBlock
         ? ['── KO concept registry (section headings) ──', hintsBlock, '']
+        : []),
+      ...(taskBucketGuide
+        ? ['── Task bucket mapping (read before formatting tasks) ──', taskBucketGuide, '']
         : []),
       '── Data contract ──',
       'The Data block is workspace-sourced. Each bullet belongs to the group heading above it when headings are present.',
@@ -643,7 +650,11 @@ async function pullObjectData(
 
 // ─── Stub data for preview ────────────────────────────────────────────────────
 
-function generateStub(objType: string, bucketLabels: Record<string, string>): string {
+function generateStub(
+  objType: string,
+  bucketLabels: Record<string, string>,
+  bucketKeyOrder: string[] = [],
+): string {
   const today     = new Date().toISOString().slice(0, 10);
   const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
   const lastWeek  = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
@@ -652,15 +663,32 @@ function generateStub(objType: string, bucketLabels: Record<string, string>): st
   const labels    = Object.values(bucketLabels);
 
   switch (objType) {
-    case 'task':
-      return [
-        `${labels[0] ?? 'Now'}:`,
-        `- Sample Task A · Active · Due: ${today}`,
-        `- Sample Task B · Waiting · Due: ${overdue} [OVERDUE]`,
-        '',
-        `${labels[1] ?? 'Soon'}:`,
-        `- Sample Task C · Active · Due: ${nextWeek}`,
-      ].join('\n');
+    case 'task': {
+      const order =
+        bucketKeyOrder.filter(k => bucketLabels[k]).length > 0
+          ? bucketKeyOrder.filter(k => bucketLabels[k])
+          : Object.keys(bucketLabels);
+      const chunks: string[] = [];
+      for (const key of order) {
+        const hdr = bucketLabels[key];
+        if (!hdr) continue;
+        chunks.push(
+          `${hdr}:`,
+          `- Sample (${key}) · Active · Due: ${key === 'delegate' ? nextWeek : key === 'later' ? nextWeek : today}`,
+          '',
+        );
+      }
+      if (chunks.length === 0) {
+        return [
+          `${labels[0] ?? 'Now'}:`,
+          `- Sample Task A · Active · Due: ${today}`,
+          '',
+          `${labels[1] ?? 'Soon'}:`,
+          `- Sample Task B · Due: ${nextWeek}`,
+        ].join('\n');
+      }
+      return chunks.join('\n').trim();
+    }
     case 'completion':
       return [
         `- Completed Item A · Completed: ${today} · Delivered on schedule`,
