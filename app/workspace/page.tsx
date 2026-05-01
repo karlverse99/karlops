@@ -551,6 +551,7 @@ export default function WorkspacePage() {
 
   const refreshAfterUpdate = async () => {
     if (!koUser) return;
+    await loadContexts(koUser.id);
     await loadTasks(koUser.id);
     await loadCompletionCount(koUser.id);
     await loadMeetingCount(koUser.id);

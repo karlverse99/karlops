@@ -584,17 +584,25 @@
 
     if (object_type === 'context') {
       const contextName = String(fields.name ?? '').trim();
+      const contextDescription = typeof fields.description === 'string'
+        ? fields.description.trim() || null
+        : null;
       if (!contextName) throw new Error('Context name is required');
 
       const { error: contextError } = await db.from('context').insert({
         user_id,
         name: contextName,
+        description: contextDescription,
         is_archived: false,
         is_visible: true,
       });
       if (contextError) throw new Error(contextError.message);
 
-      writeKarlObservation(user_id, `Created context: "${contextName}"`, 'pattern').catch(() => {});
+      writeKarlObservation(
+        user_id,
+        `Created context: "${contextName}"${contextDescription ? ` (${contextDescription})` : ''}`,
+        'pattern',
+      ).catch(() => {});
       return { response: `Context **${contextName}** created.`, refresh: true };
     }
 

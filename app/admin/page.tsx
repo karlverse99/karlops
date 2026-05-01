@@ -339,14 +339,14 @@ function ContextsTab({ token }: { token: string }) {
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
           <thead>
             <tr>
-              {['Name', 'Description', 'Visible', 'Archived', ''].map(h => (
+              {['Name', 'Description', 'Context ID', 'Created', 'Visible', 'Archived', ''].map(h => (
                 <th key={h} style={{ textAlign: 'left', color: '#555', fontWeight: 600, padding: '0.3rem 0.5rem', borderBottom: '1px solid #1a1a1a', fontSize: '0.7rem', whiteSpace: 'nowrap' }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 && (
-              <tr><td colSpan={5} style={{ color: '#333', padding: '1rem 0.5rem' }}>No contexts</td></tr>
+              <tr><td colSpan={7} style={{ color: '#333', padding: '1rem 0.5rem' }}>No contexts</td></tr>
             )}
             {rows.map(row => {
               const isHidden   = !row.is_visible && !row.is_archived;
@@ -375,6 +375,19 @@ function ContextsTab({ token }: { token: string }) {
                       fieldType="text"
                       onSave={v => adminPatch(token, 'context', 'context_id', row.context_id, { description: v }).then(load)}
                     />
+                  </td>
+
+                  {/* is_visible badge + toggle */}
+                  <td style={{ padding: '0.2rem 0.5rem', verticalAlign: 'top' }}>
+                    <span style={{ color: '#666', fontSize: '0.68rem', fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                      {row.context_id ?? '—'}
+                    </span>
+                  </td>
+
+                  <td style={{ padding: '0.2rem 0.5rem', verticalAlign: 'top' }}>
+                    <span style={{ color: '#666', fontSize: '0.68rem', whiteSpace: 'nowrap' }}>
+                      {row.created_at ? new Date(row.created_at).toLocaleString() : '—'}
+                    </span>
                   </td>
 
                   {/* is_visible badge + toggle */}
