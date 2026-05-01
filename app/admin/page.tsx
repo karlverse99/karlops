@@ -268,13 +268,30 @@ function ContextsTab({ token }: { token: string }) {
       const contextListConfig = (listConfigs ?? []).find((c: any) => c.object_type === 'context');
       const listFromConfig = Array.isArray(contextListConfig?.list_fields)
         ? [...contextListConfig.list_fields]
-            .filter((f: any) => f?.field && typeof f.field === 'string')
+            .map((f: any, idx: number) => {
+              // Support both shapes:
+              // 1) { field, label, field_order }
+              // 2) "field_name"
+              if (typeof f === 'string') {
+                const meta = (allMeta as unknown as FieldMeta[])
+                  .find(m => m.object_type === 'context' && m.field === f);
+                return {
+                  field: f,
+                  label: meta?.label ?? f,
+                  field_order: idx + 1,
+                };
+              }
+              if (f && typeof f.field === 'string') {
+                return {
+                  field: f.field,
+                  label: f.label ?? f.field,
+                  field_order: f.field_order ?? idx + 1,
+                };
+              }
+              return null;
+            })
+            .filter(Boolean)
             .sort((a: any, b: any) => (a.field_order ?? 999) - (b.field_order ?? 999))
-            .map((f: any) => ({
-              field: f.field,
-              label: f.label ?? f.field,
-              field_order: f.field_order ?? 999,
-            }))
         : [];
       setListFields(listFromConfig);
     } catch (e: any) { setErr(e.message); }
