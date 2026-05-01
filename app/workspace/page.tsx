@@ -203,7 +203,7 @@ function BucketSection({ bucket, tasks, statusMap, onTaskClick, onDragStart, onD
   onDrop: (bucketKey: string) => void;
   onReorder: (taskId: string, newIndex: number, bucketTasks: Task[]) => void;
 }) {
-  const defaultCollapsed = !['now', 'soon', 'realwork'].includes(bucket.key);
+  const defaultCollapsed = bucket.key !== 'now';
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
   const [isDragOver, setIsDragOver] = useState(false);
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);

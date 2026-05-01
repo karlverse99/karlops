@@ -710,6 +710,8 @@ export async function routeCommand(
       '   - insert context (required)',
       '   - create_tag (optional)',
       '   - insert task bucket=capture with context_name/context_id (optional)',
+      'CRITICAL: If the user says "no", "no thanks", or declines extras, DO NOT cancel the context setup.',
+      'In that case, continue with context creation only (no starter tag/task).',
       'Use plain words suitable for mobile/on-the-go users.',
       '',
       '## Lightweight "I am stuck" Assistant',
@@ -860,6 +862,9 @@ export async function routeCommand(
       '',
       '// pending — context with optional starter setup:',
       '{ "intent": "pending", "actions": [{ "action": "insert", "object_type": "context", "fields": { "name": "KO-HR-Buster" } }, { "action": "create_tag", "fields": { "name": "KarlOps", "tag_group": "General" } }, { "action": "insert", "object_type": "task", "fields": { "title": "Define first outcomes for KO-HR-Buster", "bucket_key": "capture", "context_name": "KO-HR-Buster", "tags": ["KarlOps"] } }], "response": "I can create the context and starter setup now. Confirm?" }',
+      '',
+      '// pending — context only (user declined extras):',
+      '{ "intent": "pending", "actions": [{ "action": "insert", "object_type": "context", "fields": { "name": "KO-Test-Context", "description": "..." } }], "response": "Got it — I will create the context only. Confirm?" }',
     ].filter(Boolean).join('\n');
 
     // ── Dynamic context — prepended to last user message, never in system ──

@@ -140,12 +140,12 @@ function EditCell({ value, fieldType, onSave }: { value: any; fieldType: string;
   if (!editing) {
     return (
       <div onClick={() => setEditing(true)}
-        style={{ cursor: 'text', color: '#ccc', fontSize: '0.75rem', padding: '0.15rem 0.4rem', borderRadius: '3px', minHeight: '1.3rem', wordBreak: 'break-word' }}
+        style={{ cursor: 'text', color: '#111827', fontSize: '0.75rem', padding: '0.15rem 0.4rem', borderRadius: '3px', minHeight: '1.3rem', wordBreak: 'break-word' }}
         onMouseEnter={e => (e.currentTarget.style.background = '#1a1a1a')}
         onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
       >
         {value === null || value === undefined || value === ''
-          ? <span style={{ color: '#333' }}>—</span>
+          ? <span style={{ color: '#9ca3af' }}>—</span>
           : typeof value === 'boolean'
           ? <span style={{ color: value ? '#4ade80' : '#555' }}>{value ? 'yes' : 'no'}</span>
           : String(value)
@@ -227,7 +227,7 @@ function ReadCell({ value, fieldType }: { value: any; fieldType: string }) {
   if (fieldType === 'jsonb') {
     return <span style={{ color: '#666', fontSize: '0.7rem', fontFamily: 'monospace' }}>{JSON.stringify(value).substring(0, 60)}…</span>;
   }
-  return <span style={{ color: '#555', fontSize: '0.75rem', wordBreak: 'break-word' }}>{String(value)}</span>;
+  return <span style={{ color: '#111827', fontSize: '0.75rem', wordBreak: 'break-word' }}>{String(value)}</span>;
 }
 
 // ─── Contexts Tab — custom, supports hide/show + delete ───────────────────────
@@ -432,7 +432,7 @@ function ContextsTab({ token }: { token: string }) {
       </div>
 
       {/* Legend */}
-      <div style={{ display: 'flex', gap: '1rem', marginBottom: '0.75rem', fontSize: '0.65rem', color: '#4b5563' }}>
+      <div style={{ display: 'flex', gap: '1rem', marginBottom: '0.75rem', fontSize: '0.65rem', color: '#111827' }}>
         <span><span style={{ color: '#4ade80' }}>●</span> visible ({visibleCount})</span>
         <span><span style={{ color: '#6b7280' }}>●</span> hidden ({hiddenCount})</span>
         {archivedCount > 0 && <span><span style={{ color: '#9ca3af' }}>●</span> archived ({archivedCount})</span>}
@@ -441,10 +441,10 @@ function ContextsTab({ token }: { token: string }) {
 
       {/* Effective policy preview */}
       <div style={{ marginBottom: '0.75rem', padding: '0.45rem 0.65rem', background: '#ffffff', border: '1px solid #d1d5db', borderRadius: '5px' }}>
-        <div style={{ color: '#4b5563', fontSize: '0.66rem', marginBottom: '0.25rem' }}>
+        <div style={{ color: '#111827', fontSize: '0.66rem', marginBottom: '0.25rem' }}>
           Effective list policy: {hasListConfig ? 'LVC baseline + FM override' : 'FM only (no LVC row found)'}
         </div>
-        <div style={{ color: '#6b7280', fontSize: '0.66rem', lineHeight: 1.45 }}>
+        <div style={{ color: '#111827', fontSize: '0.66rem', lineHeight: 1.45 }}>
           {visibleFields.map((f) => `${f.field} (${f.update_behavior})`).join(' | ')}
         </div>
       </div>
@@ -464,7 +464,7 @@ function ContextsTab({ token }: { token: string }) {
                     borderBottom: '1px solid #d1d5db',
                     fontSize: '0.7rem',
                     whiteSpace: 'nowrap',
-                    width: f.field === 'description' ? '320px' : f.field === 'name' ? '180px' : f.field === 'context_id' ? '220px' : f.field === 'created_at' ? '160px' : '120px',
+                    width: f.field === 'description' ? '220px' : f.field === 'name' ? '180px' : f.field === 'context_id' ? '220px' : f.field === 'created_at' ? '160px' : '120px',
                   }}
                 >
                   {f.label}
@@ -489,7 +489,16 @@ function ContextsTab({ token }: { token: string }) {
                   onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
                 >
                   {visibleFields.map((f) => (
-                    <td key={f.field} style={{ padding: '0.2rem 0.5rem', verticalAlign: 'top', overflow: 'hidden' }}>
+                    <td
+                      key={f.field}
+                      style={{
+                        padding: '0.2rem 0.5rem',
+                        verticalAlign: 'top',
+                        overflow: 'hidden',
+                        width: f.field === 'description' ? '220px' : undefined,
+                        maxWidth: f.field === 'description' ? '220px' : undefined,
+                      }}
+                    >
                       {f.field === 'is_visible' ? (
                         <button
                           onClick={() => !isArchived && handleToggleVisible(row)}
@@ -510,7 +519,7 @@ function ContextsTab({ token }: { token: string }) {
                           {row.is_visible ? '👁 shown' : '👁 hidden'}
                         </button>
                       ) : f.update_behavior === 'editable' ? (
-                        <div style={{ maxWidth: f.field === 'description' ? '300px' : 'none' }}>
+                        <div style={{ maxWidth: f.field === 'description' ? '200px' : 'none' }}>
                           <EditCell
                             value={row[f.field]}
                             fieldType={f.field_type}
@@ -525,7 +534,7 @@ function ContextsTab({ token }: { token: string }) {
                           {row.created_at ? new Date(row.created_at).toLocaleString() : '—'}
                         </span>
                       ) : f.field === 'context_id' ? (
-                        <span style={{ color: '#4b5563', fontSize: '0.68rem', fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                        <span style={{ color: '#111827', fontSize: '0.68rem', fontFamily: 'monospace', wordBreak: 'break-all' }}>
                           {row.context_id ?? '—'}
                         </span>
                       ) : (
