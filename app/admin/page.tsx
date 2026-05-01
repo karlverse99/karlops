@@ -236,6 +236,7 @@ function ContextsTab({ token }: { token: string }) {
   const [rows, setRows] = useState<Row[]>([]);
   const [fields, setFields] = useState<FieldMeta[]>([]);
   const [listFields, setListFields] = useState<Array<{ field: string; label: string; field_order: number }>>([]);
+  const [hasListConfig, setHasListConfig] = useState(false);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
   const [newName, setNewName] = useState('');
@@ -243,6 +244,21 @@ function ContextsTab({ token }: { token: string }) {
   const [adding, setAdding] = useState(false);
   const [addErr, setAddErr] = useState('');
   const [context, setContext] = useState('');
+
+  const inferContextFieldMeta = (field: string): { field_type: string; update_behavior: 'editable' | 'readonly' } => {
+    // Context-specific compatibility layer for existing users where
+    // ko_list_view_config and ko_field_metadata may drift.
+    if (['name', 'description', 'notes'].includes(field)) {
+      return { field_type: field === 'name' ? 'text' : 'textarea', update_behavior: 'editable' };
+    }
+    if (['is_default', 'is_visible', 'is_archived'].includes(field)) {
+      return { field_type: 'boolean', update_behavior: 'editable' };
+    }
+    if (['created_at', 'context_id', 'user_id'].includes(field)) {
+      return { field_type: 'text', update_behavior: 'readonly' };
+    }
+    return { field_type: 'text', update_behavior: 'readonly' };
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -262,10 +278,11 @@ function ContextsTab({ token }: { token: string }) {
       setRows(sorted);
       setFields(
         (allMeta as unknown as FieldMeta[])
-          .filter(f => f.object_type === 'context' && f.display_order < 999)
+          .filter(f => f.object_type === 'context')
           .sort((a, b) => a.display_order - b.display_order),
       );
       const contextListConfig = (listConfigs ?? []).find((c: any) => c.object_type === 'context');
+      setHasListConfig(!!contextListConfig);
       const listFromConfig: Array<{ field: string; label: string; field_order: number }> =
         Array.isArray(contextListConfig?.list_fields)
         ? [...contextListConfig.list_fields]
@@ -335,26 +352,52 @@ function ContextsTab({ token }: { token: string }) {
   const visibleCount  = rows.filter(r => !r.is_archived && r.is_visible).length;
   const hiddenCount   = rows.filter(r => !r.is_archived && !r.is_visible).length;
   const archivedCount = rows.filter(r => r.is_archived).length;
-  const visibleFields = listFields.length > 0
-    ? listFields.map((lf) => {
-        const meta = fields.find((f) => f.field === lf.field);
-        return {
-          field: lf.field,
-          label: lf.label,
-          field_type: meta?.field_type ?? 'text',
-          update_behavior: meta?.update_behavior ?? 'readonly',
-        };
-      })
-    : fields.length > 0
-    ? fields
+  // Policy resolution strategy for this screen:
+  // 1) ko_list_view_config provides baseline list fields/order.
+  // 2) ko_field_metadata can override visibility/order/editability.
+  //    - display_order >= 999 => hide field, even if in LVC
+  //    - display_order < 999 => include field; use display_order for final ordering
+  //    - update_behavior controls editability
+  const baselineFields = listFields.length > 0
+    ? listFields
+    : fields
+        .filter((f) => f.display_order < 999)
+        .map((f) => ({
+          field: f.field,
+          label: f.label,
+          field_order: f.display_order,
+        }));
+
+  const effectiveVisibleFields = baselineFields
+    .map((bf) => {
+      const meta = fields.find((f) => f.field === bf.field);
+      const inferred = inferContextFieldMeta(bf.field);
+      const hiddenByMeta = !!meta && meta.display_order >= 999;
+      if (hiddenByMeta) return null;
+      return {
+        field: bf.field,
+        label: meta?.label ?? bf.label,
+        field_type: meta?.field_type ?? inferred.field_type,
+        update_behavior: (meta?.update_behavior ?? inferred.update_behavior) as 'editable' | 'readonly',
+        // FM display_order wins when present; otherwise keep LVC order
+        effective_order: meta?.display_order ?? bf.field_order ?? 999,
+      };
+    })
+    .filter((entry): entry is {
+      field: string;
+      label: string;
+      field_type: string;
+      update_behavior: 'editable' | 'readonly';
+      effective_order: number;
+    } => entry !== null)
+    .sort((a, b) => a.effective_order - b.effective_order);
+
+  const visibleFields = effectiveVisibleFields.length > 0
+    ? effectiveVisibleFields
     : [
-        { field: 'name', label: 'Name', field_type: 'text', update_behavior: 'editable' },
-        { field: 'description', label: 'Description', field_type: 'text', update_behavior: 'editable' },
-        { field: 'context_id', label: 'Context ID', field_type: 'text', update_behavior: 'readonly' },
-        { field: 'created_at', label: 'Created', field_type: 'text', update_behavior: 'readonly' },
-        { field: 'is_visible', label: 'Visible', field_type: 'boolean', update_behavior: 'editable' },
-        { field: 'is_archived', label: 'Archived', field_type: 'boolean', update_behavior: 'readonly' },
-      ] as any[];
+        { field: 'name', label: 'Name', field_type: 'text', update_behavior: 'editable', effective_order: 1 },
+        { field: 'description', label: 'Description', field_type: 'text', update_behavior: 'editable', effective_order: 2 },
+      ];
 
   return (
     <div>
@@ -394,6 +437,16 @@ function ContextsTab({ token }: { token: string }) {
         <span><span style={{ color: '#555' }}>●</span> hidden ({hiddenCount})</span>
         {archivedCount > 0 && <span><span style={{ color: '#333' }}>●</span> archived ({archivedCount})</span>}
         <span style={{ marginLeft: 'auto', color: '#333' }}>👁 = toggle navbar visibility · ✕ = permanent delete</span>
+      </div>
+
+      {/* Effective policy preview */}
+      <div style={{ marginBottom: '0.75rem', padding: '0.45rem 0.65rem', background: '#0d0d0d', border: '1px solid #1a1a1a', borderRadius: '5px' }}>
+        <div style={{ color: '#666', fontSize: '0.66rem', marginBottom: '0.25rem' }}>
+          Effective list policy: {hasListConfig ? 'LVC baseline + FM override' : 'FM only (no LVC row found)'}
+        </div>
+        <div style={{ color: '#555', fontSize: '0.66rem', lineHeight: 1.45 }}>
+          {visibleFields.map((f) => `${f.field} (${f.update_behavior})`).join(' | ')}
+        </div>
       </div>
 
       {loading ? <div style={{ color: '#444', fontSize: '0.75rem' }}>Loading...</div> : (
