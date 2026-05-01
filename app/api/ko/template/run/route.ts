@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createSupabaseAdmin } from '@/lib/supabase-server';
 import { encryptOutput } from '@/lib/ko/outputEncryption';
+import { loadConceptRegistryForTemplate } from '@/lib/ko/conceptRegistryHints';
 
 export const dynamic = 'force-dynamic';
 
@@ -126,22 +127,8 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Template has no prompt. Use Karl Assist to generate one first.' }, { status: 400 });
     }
 
-    // ── Load bucket labels ───────────────────────────────────────────────────
-    const { data: koUser } = await supabase
-      .from('ko_user').select('implementation_type').eq('id', user.id).single();
-    const implType = koUser?.implementation_type ?? 'personal';
-
-    const { data: bucketConcepts } = await supabase
-      .from('concept_registry')
-      .select('concept_key, label')
-      .eq('implementation_type', implType)
-      .eq('concept_type', 'bucket')
-      .eq('is_active', true);
-
-    const bucketLabels: Record<string, string> = {};
-    for (const c of bucketConcepts ?? []) {
-      bucketLabels[c.concept_key.replace(/^bucket_/, '')] = c.label;
-    }
+    // ── concept_registry: bucket labels for queries + heading hints for generation ──
+    const { bucketLabels, hintsBlock } = await loadConceptRegistryForTemplate(supabase, user.id);
 
     // ── Build data block from selected_elements + element_filters ────────────
     const today = new Date().toISOString().slice(0, 10);
@@ -210,6 +197,15 @@ export async function POST(req: NextRequest) {
     const dataSection = dataBlocks.length > 0 ? dataBlocks.join('\n\n') : '(no data)';
 
     // ── Build Haiku prompt ───────────────────────────────────────────────────
+    const mdRules =
+      outputFormat === 'md' || outputFormat === 'markdown'
+        ? `
+Markdown output rules:
+- Use Markdown only for structure: headings (# / ##), **bold**, lists, and pipe tables (| Col | Col |).
+- Do not use HTML tags (<table>, <br>, <b>, etc.).
+- For executive tables, use a header row with clear column names; keep rows simple and scannable.`
+        : '';
+
     const systemPrompt = `You are Karl, a precision document generator for a KarlOps user.
 Your job: follow the formatting instructions exactly and populate them with the provided data.
 Use only the data provided — never invent facts.
@@ -217,6 +213,7 @@ ${isPreview ? 'This is a STUB PREVIEW — demonstrate layout with sample data on
 ${userAdditions ? 'User additions (when present) are binding constraints on tone, emphasis, inclusions, or exclusions — apply them together with the formatting instructions.' : ''}
 Output format: ${outputFormat}.
 Today: ${today}.
+${mdRules}
 Return ONLY the document — no preamble, no explanation, no code fences.`;
 
     const userMessage = [
@@ -227,6 +224,9 @@ Return ONLY the document — no preamble, no explanation, no code fences.`;
       karlPrompt || '(no formatting instructions — format the Data section clearly)',
       userAdditions ? `\n── User additions (apply strictly; together with instructions above) ──\n${userAdditions}` : '',
       '',
+      ...(hintsBlock
+        ? ['── KO concept registry (section headings) ──', hintsBlock, '']
+        : []),
       '── Data contract ──',
       'The Data block is workspace-sourced. Each bullet belongs to the group heading above it when headings are present.',
       `Selected element keys: ${elements.length ? elements.join(', ') : '(none — passthrough or sections mode)'}`,

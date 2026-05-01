@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createSupabaseAdmin } from '@/lib/supabase-server';
+import { loadConceptRegistryForTemplate } from '@/lib/ko/conceptRegistryHints';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,6 +31,8 @@ export async function POST(req: NextRequest) {
     } = body;
     const message = String(rawMessage ?? '').trim() || (regenerate_prompt ? 'Regenerate' : '');
     if (!message) return NextResponse.json({ error: 'message required' }, { status: 400 });
+
+    const { hintsBlock: registryHints } = await loadConceptRegistryForTemplate(supabase, user.id);
 
     // ── Bootstrap: user goal → elements + filters + Karl prompt (Templates modal step 1) ──
     if (bootstrap_from_goal) {
@@ -64,7 +67,13 @@ Return ONLY valid JSON (no markdown fences):
   "suggested_element_filters": { }
 }
 
-If the goal is too vague, still make reasonable defaults and mention assumptions briefly in "response".`;
+If the goal is too vague, still make reasonable defaults and mention assumptions briefly in "response".
+
+## Executive / HR-style task summaries
+When the user wants status-style output, prefer **Markdown only** in suggested_instructions: ## headings, **bold**, pipe tables. Never HTML.
+A common pattern is **two tables**: (1) delegated bucket tasks — use registry bucket heading for ## + **table**; (2) tagged tasks — ## with task icon + "Tagged tasks" + **table**. No nested grouping — flat rows, executive-readable.
+
+${registryHints ? `---\nKO concept_registry — heading hints (use in suggested_instructions):\n${registryHints}\n---` : ''}`;
 
       const resBoot = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
@@ -175,24 +184,26 @@ The user may also edit **element_filters** JSON (including a __scope object per 
 
 ## What good formatting instructions look like
 
-Good instructions describe output structure, not data queries. Example:
+Good instructions describe output structure, not data queries. Use **Markdown only** (no HTML tags). Prefer ## section titles (optionally with icons — generation injects KO registry icons at run time). For executive summaries, **pipe tables** with a **bold** header row are ideal.
+
+Example (structure only):
 
 ---
-# Status Update for [Person Name]
-Generated: {date}
+# Weekly executive snapshot
+Date: {date}
 
-## Delegated Tasks
-Bullet per task. Show: title · status · due date. Flag overdue tasks.
+## [Delegated heading from registry] 
+| **Task** | **Due** | **Owner / note** |
+|----------|---------|------------------|
+| ... | ... | ... |
 
-## Recent Meetings
-Bullet per meeting. Show: title · date · attendees · outcome if available.
-
-## Open Tasks Tagged: [Person Name]
-Bullet per task. Show: title · bucket · due date.
-
-## Recent Completions
-Bullet per completion. Show: title · completed date · outcome.
+## [Task icon from registry] Tagged tasks
+| **Task** | **Tags** | **Due** |
+|----------|----------|---------|
+| ... | ... | ... |
 ---
+
+${registryHints ? `---\nKO concept_registry — buckets + objects; use for ## sections in suggested_instructions:\n${registryHints}\n---\n` : ''}
 
 ## Response format
 
