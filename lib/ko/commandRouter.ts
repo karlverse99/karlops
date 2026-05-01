@@ -192,8 +192,16 @@ function extractTaskTitleFromInput(input: string): string | null {
   return null;
 }
 
+function normalizeIntentText(input: string): string {
+  return input
+    .toLowerCase()
+    .replace(/[^\w\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function isTaskCaptureNudge(input: string): boolean {
-  const normalized = input.toLowerCase().trim();
+  const normalized = normalizeIntentText(input);
   return [
     'add this as a task',
     'add this as task',
@@ -204,6 +212,20 @@ function isTaskCaptureNudge(input: string): boolean {
     'make this a task',
     'make it a task',
   ].includes(normalized);
+}
+
+function isExtractTemplateRequest(input: string): boolean {
+  const normalized = normalizeIntentText(input);
+  const triggers = [
+    'create an extract template',
+    'create a extract template',
+    'create extract template',
+    'i would like to create an extract template',
+    'build an extract template',
+    'help me create a template',
+    'create a template',
+  ];
+  return triggers.some((t) => normalized.includes(t));
 }
 
 function enforceTop4HelpResponse(raw: string): string {
@@ -650,6 +672,18 @@ export async function routeCommand(
       };
     }
 
+    if (!pending && isExtractTemplateRequest(input)) {
+      const response =
+        'Great — opening template build flow. You can start with your own prompt or ask Karl Assist to generate a first draft, then iterate until the sample output looks right.';
+      await appendSessionMessage(user_id, 'user', input);
+      await appendSessionMessage(user_id, 'karl', response);
+      return {
+        intent: 'command',
+        payload: { command_type: 'open_extracts_v2', lane: 'build' },
+        response,
+      };
+    }
+
     const wantsLightweightHelp = !pending && isLightweightHelpRequest(input);
 
     const { data: allMeta } = await db
@@ -708,6 +742,17 @@ export async function routeCommand(
               delegated_to: null,
             },
           }],
+          response,
+        };
+      }
+
+      if (isTaskCaptureNudge(input)) {
+        const response = 'Absolutely — what should the task title be?';
+        await appendSessionMessage(user_id, 'user', input);
+        await appendSessionMessage(user_id, 'karl', response);
+        return {
+          intent: 'question',
+          payload: { task_title_pending: true },
           response,
         };
       }
