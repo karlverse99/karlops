@@ -235,6 +235,7 @@ function ReadCell({ value, fieldType }: { value: any; fieldType: string }) {
 function ContextsTab({ token }: { token: string }) {
   const [rows, setRows] = useState<Row[]>([]);
   const [fields, setFields] = useState<FieldMeta[]>([]);
+  const [listFields, setListFields] = useState<Array<{ field: string; label: string; field_order: number }>>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
   const [newName, setNewName] = useState('');
@@ -247,9 +248,10 @@ function ContextsTab({ token }: { token: string }) {
     setLoading(true);
     try {
       // Load ALL contexts (including hidden) so admin can see and restore them
-      const [data, allMeta] = await Promise.all([
+      const [data, allMeta, listConfigs] = await Promise.all([
         adminFetch(token, 'context'),
         adminFetch(token, 'ko_field_metadata'),
+        adminFetch(token, 'ko_list_view_config'),
       ]);
       // Sort: visible first, then hidden, then archived; alpha within each group
       const sorted = [...data].sort((a, b) => {
@@ -263,6 +265,18 @@ function ContextsTab({ token }: { token: string }) {
           .filter(f => f.object_type === 'context' && f.display_order < 999)
           .sort((a, b) => a.display_order - b.display_order),
       );
+      const contextListConfig = (listConfigs ?? []).find((c: any) => c.object_type === 'context');
+      const listFromConfig = Array.isArray(contextListConfig?.list_fields)
+        ? [...contextListConfig.list_fields]
+            .filter((f: any) => f?.field && typeof f.field === 'string')
+            .sort((a: any, b: any) => (a.field_order ?? 999) - (b.field_order ?? 999))
+            .map((f: any) => ({
+              field: f.field,
+              label: f.label ?? f.field,
+              field_order: f.field_order ?? 999,
+            }))
+        : [];
+      setListFields(listFromConfig);
     } catch (e: any) { setErr(e.message); }
     finally { setLoading(false); }
   }, [token]);
@@ -303,7 +317,17 @@ function ContextsTab({ token }: { token: string }) {
   const visibleCount  = rows.filter(r => !r.is_archived && r.is_visible).length;
   const hiddenCount   = rows.filter(r => !r.is_archived && !r.is_visible).length;
   const archivedCount = rows.filter(r => r.is_archived).length;
-  const visibleFields = fields.length > 0
+  const visibleFields = listFields.length > 0
+    ? listFields.map((lf) => {
+        const meta = fields.find((f) => f.field === lf.field);
+        return {
+          field: lf.field,
+          label: lf.label,
+          field_type: meta?.field_type ?? 'text',
+          update_behavior: meta?.update_behavior ?? 'readonly',
+        };
+      })
+    : fields.length > 0
     ? fields
     : [
         { field: 'name', label: 'Name', field_type: 'text', update_behavior: 'editable' },
