@@ -404,59 +404,73 @@ function ContextsTab({ token }: { token: string }) {
       {err && <div style={{ color: '#ef4444', fontSize: '0.72rem', marginBottom: '0.5rem' }}>{err}</div>}
 
       {/* Add form */}
-      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end', flexWrap: 'wrap', padding: '0.75rem', background: '#0d0d0d', border: '1px solid #1a1a1a', borderRadius: '6px', marginBottom: '1rem' }}>
+      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end', flexWrap: 'wrap', padding: '0.75rem', background: '#ffffff', border: '1px solid #d1d5db', borderRadius: '6px', marginBottom: '1rem' }}>
         <div>
-          <div style={{ color: '#aaa', fontSize: '0.63rem', marginBottom: '0.2rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Name<span style={{ color: '#ef4444' }}>*</span></div>
+          <div style={{ color: '#374151', fontSize: '0.63rem', marginBottom: '0.2rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Name<span style={{ color: '#ef4444' }}>*</span></div>
           <input
             value={newName}
             onChange={e => setNewName(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') handleAdd(); }}
             placeholder="Work, Personal..."
-            style={{ background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.35rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', width: '160px' }}
+            style={{ background: '#ffffff', border: '1px solid #d1d5db', color: '#111827', padding: '0.35rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', width: '160px' }}
           />
         </div>
         <div>
-          <div style={{ color: '#555', fontSize: '0.63rem', marginBottom: '0.2rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Description</div>
+          <div style={{ color: '#6b7280', fontSize: '0.63rem', marginBottom: '0.2rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Description</div>
           <input
             value={newDesc}
             onChange={e => setNewDesc(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') handleAdd(); }}
             placeholder="Optional"
-            style={{ background: '#111', border: '1px solid #222', color: '#e5e5e5', padding: '0.35rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', width: '200px' }}
+            style={{ background: '#ffffff', border: '1px solid #d1d5db', color: '#111827', padding: '0.35rem 0.5rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', width: '240px' }}
           />
         </div>
         <button onClick={handleAdd} disabled={adding}
-          style={{ background: '#1a2a1a', border: '1px solid #2a4a2a', color: '#4ade80', padding: '0.35rem 0.75rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer', height: '30px' }}
+          style={{ background: '#eef2ff', border: '1px solid #6366f1', color: '#4338ca', padding: '0.35rem 0.75rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer', height: '30px' }}
         >{adding ? '...' : '+ Add'}</button>
         {addErr && <span style={{ color: '#ef4444', fontSize: '0.72rem' }}>{addErr}</span>}
       </div>
 
       {/* Legend */}
-      <div style={{ display: 'flex', gap: '1rem', marginBottom: '0.75rem', fontSize: '0.65rem', color: '#444' }}>
+      <div style={{ display: 'flex', gap: '1rem', marginBottom: '0.75rem', fontSize: '0.65rem', color: '#4b5563' }}>
         <span><span style={{ color: '#4ade80' }}>●</span> visible ({visibleCount})</span>
-        <span><span style={{ color: '#555' }}>●</span> hidden ({hiddenCount})</span>
-        {archivedCount > 0 && <span><span style={{ color: '#333' }}>●</span> archived ({archivedCount})</span>}
-        <span style={{ marginLeft: 'auto', color: '#333' }}>👁 = toggle navbar visibility · ✕ = permanent delete</span>
+        <span><span style={{ color: '#6b7280' }}>●</span> hidden ({hiddenCount})</span>
+        {archivedCount > 0 && <span><span style={{ color: '#9ca3af' }}>●</span> archived ({archivedCount})</span>}
+        <span style={{ marginLeft: 'auto', color: '#6b7280' }}>👁 = toggle navbar visibility · ✕ = permanent delete</span>
       </div>
 
       {/* Effective policy preview */}
-      <div style={{ marginBottom: '0.75rem', padding: '0.45rem 0.65rem', background: '#0d0d0d', border: '1px solid #1a1a1a', borderRadius: '5px' }}>
-        <div style={{ color: '#666', fontSize: '0.66rem', marginBottom: '0.25rem' }}>
+      <div style={{ marginBottom: '0.75rem', padding: '0.45rem 0.65rem', background: '#ffffff', border: '1px solid #d1d5db', borderRadius: '5px' }}>
+        <div style={{ color: '#4b5563', fontSize: '0.66rem', marginBottom: '0.25rem' }}>
           Effective list policy: {hasListConfig ? 'LVC baseline + FM override' : 'FM only (no LVC row found)'}
         </div>
-        <div style={{ color: '#555', fontSize: '0.66rem', lineHeight: 1.45 }}>
+        <div style={{ color: '#6b7280', fontSize: '0.66rem', lineHeight: 1.45 }}>
           {visibleFields.map((f) => `${f.field} (${f.update_behavior})`).join(' | ')}
         </div>
       </div>
 
       {loading ? <div style={{ color: '#444', fontSize: '0.75rem' }}>Loading...</div> : (
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem', tableLayout: 'fixed' }}>
           <thead>
             <tr>
               {visibleFields.map(f => (
-                <th key={f.field} style={{ textAlign: 'left', color: '#555', fontWeight: 600, padding: '0.3rem 0.5rem', borderBottom: '1px solid #1a1a1a', fontSize: '0.7rem', whiteSpace: 'nowrap' }}>{f.label}</th>
+                <th
+                  key={f.field}
+                  style={{
+                    textAlign: 'left',
+                    color: '#374151',
+                    fontWeight: 600,
+                    padding: '0.3rem 0.5rem',
+                    borderBottom: '1px solid #d1d5db',
+                    fontSize: '0.7rem',
+                    whiteSpace: 'nowrap',
+                    width: f.field === 'description' ? '320px' : f.field === 'name' ? '180px' : f.field === 'context_id' ? '220px' : f.field === 'created_at' ? '160px' : '120px',
+                  }}
+                >
+                  {f.label}
+                </th>
               ))}
-              <th style={{ textAlign: 'right', color: '#555', fontWeight: 600, padding: '0.3rem 0.5rem', borderBottom: '1px solid #1a1a1a', fontSize: '0.7rem', whiteSpace: 'nowrap' }} />
+              <th style={{ textAlign: 'right', color: '#374151', fontWeight: 600, padding: '0.3rem 0.5rem', borderBottom: '1px solid #d1d5db', fontSize: '0.7rem', whiteSpace: 'nowrap', width: '50px' }} />
             </tr>
           </thead>
           <tbody>
@@ -470,12 +484,12 @@ function ContextsTab({ token }: { token: string }) {
 
               return (
                 <tr key={row.context_id}
-                  style={{ borderBottom: '1px solid #0f0f0f', opacity: rowOpacity }}
-                  onMouseEnter={e => (e.currentTarget.style.background = '#0d0d0d')}
+                  style={{ borderBottom: '1px solid #e5e7eb', opacity: rowOpacity }}
+                  onMouseEnter={e => (e.currentTarget.style.background = '#f9fafb')}
                   onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
                 >
                   {visibleFields.map((f) => (
-                    <td key={f.field} style={{ padding: '0.2rem 0.5rem', verticalAlign: 'top' }}>
+                    <td key={f.field} style={{ padding: '0.2rem 0.5rem', verticalAlign: 'top', overflow: 'hidden' }}>
                       {f.field === 'is_visible' ? (
                         <button
                           onClick={() => !isArchived && handleToggleVisible(row)}
@@ -483,8 +497,8 @@ function ContextsTab({ token }: { token: string }) {
                           title={isArchived ? 'Archived — restore first' : row.is_visible ? 'Hide from navbar' : 'Show in navbar'}
                           style={{
                             background: 'none',
-                            border: `1px solid ${row.is_visible && !isArchived ? '#2a4a2a' : '#2a2a2a'}`,
-                            color: row.is_visible && !isArchived ? '#4ade80' : '#444',
+                            border: `1px solid ${row.is_visible && !isArchived ? '#16a34a' : '#9ca3af'}`,
+                            color: row.is_visible && !isArchived ? '#166534' : '#4b5563',
                             padding: '0.15rem 0.5rem',
                             borderRadius: '3px',
                             fontFamily: 'monospace',
@@ -496,20 +510,22 @@ function ContextsTab({ token }: { token: string }) {
                           {row.is_visible ? '👁 shown' : '👁 hidden'}
                         </button>
                       ) : f.update_behavior === 'editable' ? (
-                        <EditCell
-                          value={row[f.field]}
-                          fieldType={f.field_type}
-                          onSave={(v) => {
-                            const updates = { [f.field]: v };
-                            return adminPatch(token, 'context', 'context_id', row.context_id, updates).then(load);
-                          }}
-                        />
+                        <div style={{ maxWidth: f.field === 'description' ? '300px' : 'none' }}>
+                          <EditCell
+                            value={row[f.field]}
+                            fieldType={f.field_type}
+                            onSave={(v) => {
+                              const updates = { [f.field]: v };
+                              return adminPatch(token, 'context', 'context_id', row.context_id, updates).then(load);
+                            }}
+                          />
+                        </div>
                       ) : f.field === 'created_at' ? (
                         <span style={{ color: '#666', fontSize: '0.68rem', whiteSpace: 'nowrap' }}>
                           {row.created_at ? new Date(row.created_at).toLocaleString() : '—'}
                         </span>
                       ) : f.field === 'context_id' ? (
-                        <span style={{ color: '#666', fontSize: '0.68rem', fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                        <span style={{ color: '#4b5563', fontSize: '0.68rem', fontFamily: 'monospace', wordBreak: 'break-all' }}>
                           {row.context_id ?? '—'}
                         </span>
                       ) : (
@@ -523,9 +539,9 @@ function ContextsTab({ token }: { token: string }) {
                     <button
                       onClick={() => handleDelete(row)}
                       title="Permanently delete"
-                      style={{ background: 'none', border: 'none', color: '#2a2a2a', cursor: 'pointer', fontSize: '0.72rem' }}
+                      style={{ background: 'none', border: 'none', color: '#9ca3af', cursor: 'pointer', fontSize: '0.72rem' }}
                       onMouseEnter={e => (e.currentTarget.style.color = '#ef4444')}
-                      onMouseLeave={e => (e.currentTarget.style.color = '#2a2a2a')}
+                      onMouseLeave={e => (e.currentTarget.style.color = '#9ca3af')}
                     >✕</button>
                   </td>
                 </tr>
@@ -1457,19 +1473,19 @@ export default function AdminPage() {
   ];
 
   return (
-    <div style={{ minHeight: '100vh', background: '#0a0a0a', fontFamily: 'monospace', color: '#ccc' }}>
-      <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 1.25rem', height: '44px', borderBottom: '1px solid #1a1a1a', background: '#0d0d0d' }}>
+    <div style={{ minHeight: '100vh', background: '#f3f4f6', fontFamily: 'monospace', color: '#1f2937' }}>
+      <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 1.25rem', height: '44px', borderBottom: '1px solid #d1d5db', background: '#ffffff' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          <a href="/workspace" style={{ color: '#fff', fontSize: '0.9rem', fontWeight: 700, textDecoration: 'none' }}>KarlOps</a>
-          <span style={{ color: '#444', fontSize: '0.7rem' }}>|</span>
-          <span style={{ color: '#aaa', fontSize: '0.7rem' }}>Admin</span>
+          <a href="/workspace" style={{ color: '#111827', fontSize: '0.9rem', fontWeight: 700, textDecoration: 'none' }}>KarlOps</a>
+          <span style={{ color: '#9ca3af', fontSize: '0.7rem' }}>|</span>
+          <span style={{ color: '#4b5563', fontSize: '0.7rem' }}>Admin</span>
         </div>
       </header>
 
-      <div style={{ display: 'flex', borderBottom: '1px solid #1a1a1a', background: '#0d0d0d', paddingLeft: '1.25rem', overflowX: 'auto' }}>
+      <div style={{ display: 'flex', borderBottom: '1px solid #d1d5db', background: '#ffffff', paddingLeft: '1.25rem', overflowX: 'auto' }}>
         {TABS.map(t => (
           <button key={t.key} onClick={() => setTab(t.key)}
-            style={{ background: 'none', border: 'none', borderBottom: tab === t.key ? '2px solid #4ade80' : '2px solid transparent', color: tab === t.key ? '#4ade80' : '#555', padding: '0.6rem 1rem', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer', whiteSpace: 'nowrap' }}
+            style={{ background: 'none', border: 'none', borderBottom: tab === t.key ? '2px solid #4f46e5' : '2px solid transparent', color: tab === t.key ? '#3730a3' : '#6b7280', padding: '0.6rem 1rem', fontFamily: 'monospace', fontSize: '0.75rem', cursor: 'pointer', whiteSpace: 'nowrap' }}
           >{t.label}</button>
         ))}
       </div>
