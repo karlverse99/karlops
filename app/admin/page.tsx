@@ -266,9 +266,10 @@ function ContextsTab({ token }: { token: string }) {
           .sort((a, b) => a.display_order - b.display_order),
       );
       const contextListConfig = (listConfigs ?? []).find((c: any) => c.object_type === 'context');
-      const listFromConfig = Array.isArray(contextListConfig?.list_fields)
+      const listFromConfig: Array<{ field: string; label: string; field_order: number }> =
+        Array.isArray(contextListConfig?.list_fields)
         ? [...contextListConfig.list_fields]
-            .map((f: any, idx: number) => {
+            .map((f: any, idx: number): { field: string; label: string; field_order: number } | null => {
               // Support both shapes:
               // 1) { field, label, field_order }
               // 2) "field_name"
@@ -290,7 +291,7 @@ function ContextsTab({ token }: { token: string }) {
               }
               return null;
             })
-            .filter(Boolean)
+            .filter((entry): entry is { field: string; label: string; field_order: number } => entry !== null)
             .sort((a: any, b: any) => (a.field_order ?? 999) - (b.field_order ?? 999))
         : [];
       setListFields(listFromConfig);
