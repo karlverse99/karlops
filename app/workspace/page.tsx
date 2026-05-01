@@ -594,8 +594,10 @@ export default function WorkspacePage() {
       return;
     }
 
-    // Successful write — route returned refresh:true
-    if (data.success && data.refresh) {
+    // Any write that requests refresh should reload local data.
+    // Some multi-action calls can return refresh:true with success:false
+    // when at least one action applied, and we still need fresh UI state.
+    if (data.refresh) {
       setPending(null);
       addMessage('assistant', data.response ?? 'Done.');
       await refreshAfterUpdate();

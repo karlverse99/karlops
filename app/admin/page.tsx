@@ -234,6 +234,7 @@ function ReadCell({ value, fieldType }: { value: any; fieldType: string }) {
 
 function ContextsTab({ token }: { token: string }) {
   const [rows, setRows] = useState<Row[]>([]);
+  const [fields, setFields] = useState<FieldMeta[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState('');
   const [newName, setNewName] = useState('');
@@ -246,7 +247,10 @@ function ContextsTab({ token }: { token: string }) {
     setLoading(true);
     try {
       // Load ALL contexts (including hidden) so admin can see and restore them
-      const data = await adminFetch(token, 'context');
+      const [data, allMeta] = await Promise.all([
+        adminFetch(token, 'context'),
+        adminFetch(token, 'ko_field_metadata'),
+      ]);
       // Sort: visible first, then hidden, then archived; alpha within each group
       const sorted = [...data].sort((a, b) => {
         if (a.is_archived !== b.is_archived) return a.is_archived ? 1 : -1;
@@ -254,6 +258,11 @@ function ContextsTab({ token }: { token: string }) {
         return a.name.localeCompare(b.name);
       });
       setRows(sorted);
+      setFields(
+        (allMeta as unknown as FieldMeta[])
+          .filter(f => f.object_type === 'context' && f.display_order < 999)
+          .sort((a, b) => a.display_order - b.display_order),
+      );
     } catch (e: any) { setErr(e.message); }
     finally { setLoading(false); }
   }, [token]);
@@ -294,6 +303,16 @@ function ContextsTab({ token }: { token: string }) {
   const visibleCount  = rows.filter(r => !r.is_archived && r.is_visible).length;
   const hiddenCount   = rows.filter(r => !r.is_archived && !r.is_visible).length;
   const archivedCount = rows.filter(r => r.is_archived).length;
+  const visibleFields = fields.length > 0
+    ? fields
+    : [
+        { field: 'name', label: 'Name', field_type: 'text', update_behavior: 'editable' },
+        { field: 'description', label: 'Description', field_type: 'text', update_behavior: 'editable' },
+        { field: 'context_id', label: 'Context ID', field_type: 'text', update_behavior: 'readonly' },
+        { field: 'created_at', label: 'Created', field_type: 'text', update_behavior: 'readonly' },
+        { field: 'is_visible', label: 'Visible', field_type: 'boolean', update_behavior: 'editable' },
+        { field: 'is_archived', label: 'Archived', field_type: 'boolean', update_behavior: 'readonly' },
+      ] as any[];
 
   return (
     <div>
@@ -339,14 +358,15 @@ function ContextsTab({ token }: { token: string }) {
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }}>
           <thead>
             <tr>
-              {['Name', 'Description', 'Context ID', 'Created', 'Visible', 'Archived', ''].map(h => (
-                <th key={h} style={{ textAlign: 'left', color: '#555', fontWeight: 600, padding: '0.3rem 0.5rem', borderBottom: '1px solid #1a1a1a', fontSize: '0.7rem', whiteSpace: 'nowrap' }}>{h}</th>
+              {visibleFields.map(f => (
+                <th key={f.field} style={{ textAlign: 'left', color: '#555', fontWeight: 600, padding: '0.3rem 0.5rem', borderBottom: '1px solid #1a1a1a', fontSize: '0.7rem', whiteSpace: 'nowrap' }}>{f.label}</th>
               ))}
+              <th style={{ textAlign: 'right', color: '#555', fontWeight: 600, padding: '0.3rem 0.5rem', borderBottom: '1px solid #1a1a1a', fontSize: '0.7rem', whiteSpace: 'nowrap' }} />
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 && (
-              <tr><td colSpan={7} style={{ color: '#333', padding: '1rem 0.5rem' }}>No contexts</td></tr>
+              <tr><td colSpan={visibleFields.length + 1} style={{ color: '#333', padding: '1rem 0.5rem' }}>No contexts</td></tr>
             )}
             {rows.map(row => {
               const isHidden   = !row.is_visible && !row.is_archived;
@@ -359,65 +379,49 @@ function ContextsTab({ token }: { token: string }) {
                   onMouseEnter={e => (e.currentTarget.style.background = '#0d0d0d')}
                   onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
                 >
-                  {/* Name — editable */}
-                  <td style={{ padding: '0.2rem 0.5rem', verticalAlign: 'top' }}>
-                    <EditCell
-                      value={row.name}
-                      fieldType="text"
-                      onSave={v => handleNameSave(row.context_id, v)}
-                    />
-                  </td>
-
-                  {/* Description — editable */}
-                  <td style={{ padding: '0.2rem 0.5rem', verticalAlign: 'top' }}>
-                    <EditCell
-                      value={row.description}
-                      fieldType="text"
-                      onSave={v => adminPatch(token, 'context', 'context_id', row.context_id, { description: v }).then(load)}
-                    />
-                  </td>
-
-                  {/* is_visible badge + toggle */}
-                  <td style={{ padding: '0.2rem 0.5rem', verticalAlign: 'top' }}>
-                    <span style={{ color: '#666', fontSize: '0.68rem', fontFamily: 'monospace', wordBreak: 'break-all' }}>
-                      {row.context_id ?? '—'}
-                    </span>
-                  </td>
-
-                  <td style={{ padding: '0.2rem 0.5rem', verticalAlign: 'top' }}>
-                    <span style={{ color: '#666', fontSize: '0.68rem', whiteSpace: 'nowrap' }}>
-                      {row.created_at ? new Date(row.created_at).toLocaleString() : '—'}
-                    </span>
-                  </td>
-
-                  {/* is_visible badge + toggle */}
-                  <td style={{ padding: '0.2rem 0.5rem', verticalAlign: 'top' }}>
-                    <button
-                      onClick={() => !isArchived && handleToggleVisible(row)}
-                      disabled={isArchived}
-                      title={isArchived ? 'Archived — restore first' : row.is_visible ? 'Hide from navbar' : 'Show in navbar'}
-                      style={{
-                        background: 'none',
-                        border: `1px solid ${row.is_visible && !isArchived ? '#2a4a2a' : '#2a2a2a'}`,
-                        color: row.is_visible && !isArchived ? '#4ade80' : '#444',
-                        padding: '0.15rem 0.5rem',
-                        borderRadius: '3px',
-                        fontFamily: 'monospace',
-                        fontSize: '0.65rem',
-                        cursor: isArchived ? 'not-allowed' : 'pointer',
-                        transition: 'all 0.15s',
-                      }}
-                      onMouseEnter={e => { if (!isArchived) e.currentTarget.style.borderColor = '#555'; }}
-                      onMouseLeave={e => { if (!isArchived) e.currentTarget.style.borderColor = row.is_visible ? '#2a4a2a' : '#2a2a2a'; }}
-                    >
-                      {row.is_visible ? '👁 shown' : '👁 hidden'}
-                    </button>
-                  </td>
-
-                  {/* is_archived — read only display */}
-                  <td style={{ padding: '0.2rem 0.5rem', verticalAlign: 'top' }}>
-                    <ReadCell value={row.is_archived} fieldType="boolean" />
-                  </td>
+                  {visibleFields.map((f) => (
+                    <td key={f.field} style={{ padding: '0.2rem 0.5rem', verticalAlign: 'top' }}>
+                      {f.field === 'is_visible' ? (
+                        <button
+                          onClick={() => !isArchived && handleToggleVisible(row)}
+                          disabled={isArchived}
+                          title={isArchived ? 'Archived — restore first' : row.is_visible ? 'Hide from navbar' : 'Show in navbar'}
+                          style={{
+                            background: 'none',
+                            border: `1px solid ${row.is_visible && !isArchived ? '#2a4a2a' : '#2a2a2a'}`,
+                            color: row.is_visible && !isArchived ? '#4ade80' : '#444',
+                            padding: '0.15rem 0.5rem',
+                            borderRadius: '3px',
+                            fontFamily: 'monospace',
+                            fontSize: '0.65rem',
+                            cursor: isArchived ? 'not-allowed' : 'pointer',
+                            transition: 'all 0.15s',
+                          }}
+                        >
+                          {row.is_visible ? '👁 shown' : '👁 hidden'}
+                        </button>
+                      ) : f.update_behavior === 'editable' ? (
+                        <EditCell
+                          value={row[f.field]}
+                          fieldType={f.field_type}
+                          onSave={(v) => {
+                            const updates = { [f.field]: v };
+                            return adminPatch(token, 'context', 'context_id', row.context_id, updates).then(load);
+                          }}
+                        />
+                      ) : f.field === 'created_at' ? (
+                        <span style={{ color: '#666', fontSize: '0.68rem', whiteSpace: 'nowrap' }}>
+                          {row.created_at ? new Date(row.created_at).toLocaleString() : '—'}
+                        </span>
+                      ) : f.field === 'context_id' ? (
+                        <span style={{ color: '#666', fontSize: '0.68rem', fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                          {row.context_id ?? '—'}
+                        </span>
+                      ) : (
+                        <ReadCell value={row[f.field]} fieldType={f.field_type} />
+                      )}
+                    </td>
+                  ))}
 
                   {/* Actions: delete */}
                   <td style={{ padding: '0.2rem 0.5rem', textAlign: 'right', verticalAlign: 'top' }}>
