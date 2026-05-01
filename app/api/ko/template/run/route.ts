@@ -42,6 +42,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const {
       template_id,
+      inline_template,
       run_mode          = 'preview',
       karl_prompt:      bodyKarlPrompt,
       output_format:    bodyOutputFormat,
@@ -54,20 +55,60 @@ export async function POST(req: NextRequest) {
       ? String(body.user_additions ?? '').trim()
       : null;
 
-    if (!template_id) return NextResponse.json({ error: 'template_id required' }, { status: 400 });
-
     const isPreview = run_mode === 'preview';
     const isSave    = run_mode === 'generate';
 
-    // ── Load template ────────────────────────────────────────────────────────
-    const { data: template, error: tErr } = await supabase
-      .from('document_template')
-      .select('document_template_id, is_system, name, description, prompt_template, user_prompt_additions, template_mode, selected_elements, element_filters, output_format, filename_suffix_format, sections')
-      .eq('document_template_id', template_id)
-      .or(`user_id.eq.${user.id},is_system.eq.true`)
-      .single();
+    let template: {
+      document_template_id: string | null;
+      is_system: boolean;
+      name: string;
+      description: string | null;
+      prompt_template: string | null;
+      user_prompt_additions: string | null;
+      template_mode: string | null;
+      selected_elements: unknown;
+      element_filters: unknown;
+      output_format: string | null;
+      filename_suffix_format: string | null;
+      sections: unknown;
+    };
 
-    if (tErr || !template) return NextResponse.json({ error: 'Template not found' }, { status: 404 });
+    if (template_id) {
+      const { data: dbTemplate, error: tErr } = await supabase
+        .from('document_template')
+        .select('document_template_id, is_system, name, description, prompt_template, user_prompt_additions, template_mode, selected_elements, element_filters, output_format, filename_suffix_format, sections')
+        .eq('document_template_id', template_id)
+        .or(`user_id.eq.${user.id},is_system.eq.true`)
+        .single();
+
+      if (tErr || !dbTemplate) return NextResponse.json({ error: 'Template not found' }, { status: 404 });
+      template = dbTemplate;
+    } else if (
+      inline_template &&
+      typeof inline_template === 'object' &&
+      !Array.isArray(inline_template) &&
+      !isSave
+    ) {
+      const inl = inline_template as Record<string, unknown>;
+      template = {
+        document_template_id: null,
+        is_system: false,
+        name:                   typeof inl.name === 'string' ? inl.name : 'Draft',
+        description:            typeof inl.description === 'string' ? inl.description : null,
+        prompt_template:        typeof inl.prompt_template === 'string' ? inl.prompt_template : '',
+        user_prompt_additions:  null,
+        template_mode:          typeof inl.template_mode === 'string' ? inl.template_mode : 'karl',
+        selected_elements:      inl.selected_elements,
+        element_filters:        inl.element_filters,
+        output_format:          typeof inl.output_format === 'string' ? inl.output_format : 'md',
+        filename_suffix_format: typeof inl.filename_suffix_format === 'string' ? inl.filename_suffix_format : 'datetime',
+        sections:               inl.sections ?? [],
+      };
+    } else if (!template_id && isSave) {
+      return NextResponse.json({ error: 'Save the template before creating an extract.' }, { status: 400 });
+    } else {
+      return NextResponse.json({ error: 'template_id required (or pass inline_template for preview only)' }, { status: 400 });
+    }
 
     // Body overrides take precedence over stored values (for live editing without save)
     const karlPrompt    = (bodyKarlPrompt    ?? template.prompt_template         ?? '').trim();
@@ -236,7 +277,7 @@ Return ONLY the document — no preamble, no explanation, no code fences.`;
 
     // Generate path should persist the latest "recipe" so reruns match this extract.
     // Only update user-owned templates; system templates are read-only.
-    if (!template.is_system) {
+    if (!template.is_system && template.document_template_id) {
       const { error: templateUpdateError } = await supabase
         .from('document_template')
         .update({
@@ -274,7 +315,7 @@ Return ONLY the document — no preamble, no explanation, no code fences.`;
       output:               encryptedOutput,
       output_encrypted:     true,
       section_data:         Object.keys(filters).length > 0 ? filters : null,
-      document_template_id: template_id,
+      document_template_id: template.document_template_id ?? template_id,
       ref_type:             'generated',
       tags:                 [],
     });

@@ -19,7 +19,8 @@ export interface ElementFilters {
 
 interface ElementPickerModalProps {
   userId: string;
-  templateId: string;
+  /** When omitted (draft template), selection is returned to parent only — no DB write. */
+  templateId?: string | null;
   currentElements: string[];   // "object_type.field" already saved on template
   onSave: (elements: string[]) => void;
   onClose: () => void;
@@ -142,6 +143,10 @@ export default function ElementPickerModal({
   const handleSave = async () => {
     setSaving(true); setSaveErr('');
     try {
+      if (!templateId?.trim()) {
+        onSave(confirmed);
+        return;
+      }
       const { error } = await supabase
         .from('document_template')
         .update({

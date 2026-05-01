@@ -228,6 +228,23 @@ function isExtractTemplateRequest(input: string): boolean {
   return triggers.some((t) => normalized.includes(t));
 }
 
+function isCaptureTaskRequest(input: string): boolean {
+  const normalized = normalizeIntentText(input);
+  const triggers = [
+    'can you capture a task',
+    'capture a task',
+    'help me capture a task',
+    'create a task',
+    'can you create a task',
+  ];
+  return triggers.some((t) => normalized === t || normalized.includes(t));
+}
+
+function isFailureClarifier(input: string): boolean {
+  const normalized = normalizeIntentText(input);
+  return normalized === 'what' || normalized === 'what is wrong' || normalized === 'why' || normalized === 'why not';
+}
+
 function enforceTop4HelpResponse(raw: string): string {
   const lines = raw.split('\n').map((l) => l.trim()).filter(Boolean);
   const numbered = lines.filter((l) => /^\d+[\).\-:]\s+/.test(l));
@@ -710,9 +727,20 @@ export async function routeCommand(
     const historyDepth = situationData?.chat_history_depth ?? 15;
     const recentMessages = sessionMessages.slice(-historyDepth);
 
-    // Deterministic fallback for explicit "add this/it as a task" phrasing.
+    // Deterministic fallback for explicit capture prompts.
     // This prevents dead-end "not sure" responses for a very common capture intent.
     if (!pending) {
+      if (isCaptureTaskRequest(input)) {
+        const response = 'Absolutely. What is the task title?';
+        await appendSessionMessage(user_id, 'user', input);
+        await appendSessionMessage(user_id, 'karl', response);
+        return {
+          intent: 'question',
+          payload: { task_title_pending: true },
+          response,
+        };
+      }
+
       let title = extractTaskTitleFromInput(input);
       if (!title && isTaskCaptureNudge(input)) {
         const priorUser = [...recentMessages]
@@ -755,6 +783,21 @@ export async function routeCommand(
           payload: { task_title_pending: true },
           response,
         };
+      }
+
+      if (isFailureClarifier(input)) {
+        const lastKarl = [...recentMessages].reverse().find((m: any) => m.role === 'karl' && m.content);
+        const lastKarlText = String(lastKarl?.content ?? '');
+        if (lastKarlText.includes('Something went wrong parsing that')) {
+          const response =
+            'I had trouble interpreting the last message format. Try a direct command like: "Capture task: <title>" and I will create it.';
+          await appendSessionMessage(user_id, 'user', input);
+          await appendSessionMessage(user_id, 'karl', response);
+          return {
+            intent: 'question',
+            response,
+          };
+        }
       }
     }
 

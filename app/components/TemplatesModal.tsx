@@ -222,6 +222,12 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const [assistHistory, setAssistHistory]   = useState<AssistMessage[]>([]);
   const [assistLoading, setAssistLoading]   = useState(false);
 
+  // New-template intent step → bootstrap recipe (elements, filters, Karl prompt)
+  const [goalInput, setGoalInput]           = useState('');
+  const [recipeReady, setRecipeReady]       = useState(false);
+  const [bootstrapLoading, setBootstrapLoading] = useState(false);
+  const [bootstrapErr, setBootstrapErr]       = useState('');
+
   // Modal drag/resize
   const initX = Math.max(0, Math.round(window.innerWidth  / 2 - 580));
   const initY = Math.max(0, Math.round(window.innerHeight / 2 - 400));
@@ -333,7 +339,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   // ── Handlers ───────────────────────────────────────────────────────────────
 
   const selectTemplate = (t: Template) => {
-    setSelected(t); setIsNew(false); setDeleteConfirm(false);
+    setSelected(t); setIsNew(false); setDeleteConfirm(false); setRecipeReady(false);
     setEditName(t.name);
     setEditDesc(t.description ?? '');
     setEditFormat(t.output_format === 'markdown' ? 'md' : (t.output_format ?? 'md'));
@@ -348,6 +354,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     setRunOutput(null); setRunErr(''); setSaveErr('');
     setAssistHistory([]); setAssistOpen(false); setAssistInput('');
     setSavedToExtracts(false); setSavedFlash(false);
+    setGoalInput(''); setRecipeReady(false); setBootstrapErr('');
   };
 
   const startNew = () => {
@@ -359,6 +366,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     setRunOutput(null); setRunErr(''); setSaveErr('');
     setAssistHistory([]); setAssistOpen(false); setAssistInput('');
     setSavedToExtracts(false); setSavedFlash(false);
+    setGoalInput(''); setRecipeReady(false); setBootstrapErr('');
   };
 
   const handleSave = async () => {
@@ -379,10 +387,11 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
         element_filters:       parsedFilters.value,
       };
       if (isNew) {
-        const { error } = await supabase.from('document_template').insert({
+        const { data: inserted, error } = await supabase.from('document_template').insert({
           user_id: userId, ...payload, is_system: false, is_active: true,
-        });
+        }).select('*').single();
         if (error) throw error;
+        if (inserted) selectTemplate(inserted as Template);
       } else if (selected && !selected.is_system) {
         const { error } = await supabase.from('document_template').update({
           ...payload, updated_at: new Date().toISOString(),
@@ -413,36 +422,53 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   };
 
   const executeRun = async (mode: 'preview' | 'preview_live' | 'generate') => {
-    const templateId = selected?.document_template_id;
-    if (!templateId) return;
+    const templateId = selected?.document_template_id ?? null;
     const parsedFilters = parseElementFiltersJson(filterJsonText);
     if (!parsedFilters.ok) {
       setRunErr(`Data scope JSON: ${parsedFilters.error}`);
       return;
     }
+    const inlineDraft =
+      !templateId && isNew && recipeReady
+        ? {
+            name:                   editName.trim() || 'Draft template',
+            description:            editDesc.trim() || null,
+            prompt_template:        editKarlPrompt.trim(),
+            template_mode:          editTemplateMode,
+            output_format:          editFormat,
+            filename_suffix_format: editSuffixFormat,
+            selected_elements:      editElements,
+            element_filters:        parsedFilters.value,
+          }
+        : null;
+    if (!templateId && !inlineDraft) return;
+
     setRunMode(mode);
     setRunning(true); setRunErr(''); setSavedToExtracts(false);
 
-    const existingCount = extractCounts[templateId] ?? 0;
+    const existingCount = templateId ? (extractCounts[templateId] ?? 0) : 0;
     const suffix   = buildSuffix(editSuffixFormat, existingCount, editCustomSuffix);
     const ext      = formatExtension(editFormat);
-    const filename = `${editName} · ${suffix}.${ext}`;
+    const filename = `${editName.trim() || 'document'} · ${suffix}.${ext}`;
 
     try {
+      const body: Record<string, unknown> = {
+        run_mode:          mode,
+        karl_prompt:       editKarlPrompt.trim() || undefined,
+        user_additions:    '',
+        output_format:     editFormat,
+        selected_elements: editElements,
+        element_filters:   parsedFilters.value,
+        filename,
+        suffix,
+      };
+      if (templateId) body.template_id = templateId;
+      else if (inlineDraft) body.inline_template = inlineDraft;
+
       const res = await fetch('/api/ko/template/run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
-        body: JSON.stringify({
-          template_id:           templateId,
-          run_mode:              mode,
-          karl_prompt:           editKarlPrompt.trim() || undefined,
-          user_additions:        '',
-          output_format:         editFormat,
-          selected_elements:     editElements,
-          element_filters:       parsedFilters.value,
-          filename,
-          suffix,
-        }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? 'Run failed');
@@ -520,6 +546,49 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     } finally { setAssistLoading(false); }
   };
 
+  const handleBootstrapFromGoal = async () => {
+    const g = goalInput.trim();
+    if (!g || bootstrapLoading) return;
+    setBootstrapLoading(true); setBootstrapErr('');
+    try {
+      const res = await fetch('/api/ko/template/assist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${accessToken}` },
+        body: JSON.stringify({ message: g, bootstrap_from_goal: true }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Bootstrap failed');
+      const hasPrompt =
+        typeof data.suggested_instructions === 'string' && data.suggested_instructions.trim().length > 0;
+      const hasElements = Array.isArray(data.suggested_elements) && data.suggested_elements.length > 0;
+      if (!hasPrompt && !hasElements) {
+        setBootstrapErr(typeof data.response === 'string' && data.response.trim()
+          ? data.response.trim()
+          : 'Could not infer a template — add a bit more detail and try again.');
+        return;
+      }
+      if (typeof data.suggested_instructions === 'string' && data.suggested_instructions.trim())
+        setEditKarlPrompt(stripEmoji(data.suggested_instructions.trim()));
+      if (typeof data.suggested_name === 'string' && data.suggested_name.trim())
+        setEditName(data.suggested_name.trim());
+      if (data.suggested_description != null && String(data.suggested_description).trim())
+        setEditDesc(String(data.suggested_description).trim());
+      if (Array.isArray(data.suggested_elements) && data.suggested_elements.length > 0)
+        setEditElements(data.suggested_elements.filter((x: unknown) => typeof x === 'string'));
+      const scope = data.suggested_element_filters;
+      if (scope && typeof scope === 'object' && !Array.isArray(scope))
+        setFilterJsonText(JSON.stringify(scope, null, 2));
+      setFilterJsonError('');
+      setRecipeReady(true);
+      setAssistOpen(false);
+      setRunOutput(null); setRunErr('');
+    } catch (err: any) {
+      setBootstrapErr(err?.message ?? 'Something went wrong. Try again.');
+    } finally {
+      setBootstrapLoading(false);
+    }
+  };
+
   const handleRegeneratePrompt = async () => {
     if (assistLoading || assistHistory.length === 0) return;
     setAssistLoading(true);
@@ -556,9 +625,10 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const isEditing     = isNew || !!selected;
   const isSystem      = selected?.is_system ?? false;
   const templateIcon  = getObjectIcon(concepts, 'document_template') || '📄';
-  const previewFilename = selected
-    ? `${editName} · ${buildSuffix(editSuffixFormat, extractCounts[selected.document_template_id] ?? 0, editCustomSuffix)}.${formatExtension(editFormat)}`
-    : '';
+  const previewFilename =
+    selected || (isNew && recipeReady)
+      ? `${editName.trim() || 'document'} · ${buildSuffix(editSuffixFormat, selected ? (extractCounts[selected.document_template_id] ?? 0) : 0, editCustomSuffix)}.${formatExtension(editFormat)}`
+      : '';
 
   // ─── RENDER ────────────────────────────────────────────────────────────────
 
@@ -667,6 +737,47 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
               {isEditing && (
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
+                  {isNew && !recipeReady ? (
+                  <div style={{ flex: 1, display: 'flex', flexDirection: 'column', padding: '1.25rem 1.5rem', gap: '1rem', minHeight: 0, overflow: 'hidden' }}>
+                    <div style={{ color: '#111827', fontWeight: 700, fontSize: '0.9rem' }}>What do you want me to do?</div>
+                    <p style={{ margin: 0, color: '#6b7280', fontSize: '0.72rem', lineHeight: 1.55, maxWidth: 640 }}>
+                      Describe the output you need (or paste your own formatting instructions). Karl picks data fields and scope, then drafts the Karl Prompt. Preview format-only or with live data, edit anything, then save.
+                    </p>
+                    <textarea
+                      value={goalInput}
+                      onChange={e => setGoalInput(e.target.value)}
+                      placeholder="Example: Weekly status — open tasks by bucket, meetings last 14 days, completions tagged “client”."
+                      disabled={bootstrapLoading}
+                      style={{
+                        flex: 1, minHeight: 260, width: '100%', boxSizing: 'border-box',
+                        padding: '0.85rem', borderRadius: 6, border: '1px solid #e5e7eb', fontFamily: 'monospace',
+                        fontSize: '0.78rem', lineHeight: 1.55, color: '#111827', resize: 'none', outline: 'none',
+                      }}
+                    />
+                    {bootstrapErr ? <div style={{ color: '#ef4444', fontSize: '0.72rem', flexShrink: 0 }}>{bootstrapErr}</div> : null}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexShrink: 0 }}>
+                      <button
+                        type="button"
+                        onClick={handleBootstrapFromGoal}
+                        disabled={!goalInput.trim() || bootstrapLoading}
+                        style={{
+                          background: goalInput.trim() && !bootstrapLoading ? ACCENT : '#e5e7eb',
+                          border: 'none', color: goalInput.trim() && !bootstrapLoading ? '#000' : '#9ca3af',
+                          padding: '0.5rem 1.35rem', borderRadius: 6, fontFamily: 'monospace', fontWeight: 700,
+                          fontSize: '0.78rem', cursor: goalInput.trim() && !bootstrapLoading ? 'pointer' : 'not-allowed',
+                        }}
+                      >
+                        {bootstrapLoading ? 'Working…' : 'Do it'}
+                      </button>
+                      {bootstrapLoading ? (
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, color: '#6b7280', fontSize: '0.72rem' }}>
+                          <KarlSpinner size="sm" color={ACCENT} /> Wiring data selection and filters…
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+                  ) : (
+                  <>
                   {/* ── TOP STRIP: name / desc / format ─────────────────── */}
                   <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid #e5e7eb', background: '#fafafa', flexShrink: 0, display: 'flex', gap: '0.75rem', alignItems: 'flex-end', flexWrap: 'wrap' }}>
                     {isSystem && (
@@ -707,7 +818,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                         <input value={editCustomSuffix} onChange={e => setEditCustomSuffix(e.target.value)} placeholder="e.g. final" style={inputSt(false)} />
                       </div>
                     )}
-                    {!isNew && previewFilename && (
+                    {previewFilename && (recipeReady || !isNew) && (
                       <div style={{ width: '100%', fontSize: '0.6rem', color: '#aaa', marginTop: '0.1rem' }}>
                         Next extract: <span style={{ color: '#666', fontFamily: 'monospace' }}>{previewFilename}</span>
                       </div>
@@ -715,7 +826,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                   </div>
 
                   {/* ── DATA CONFIG: elements + scope side-by-side ───────────────── */}
-                  {!isNew && !isSystem && (
+                  {(recipeReady || !isNew) && !isSystem && (
                     <div style={{ flexShrink: 0, borderBottom: '1px solid #e5e7eb', background: '#fafafa', display: 'flex', gap: '0.75rem', padding: '0.45rem 0.75rem', minHeight: 104 }}>
                       <div style={{ flex: '1 1 45%', minWidth: 220, display: 'flex', flexDirection: 'column', border: '1px solid #e5e7eb', borderRadius: 4, overflow: 'hidden', background: '#fff' }}>
                         <div style={{ padding: '0.3rem 0.5rem', borderBottom: '1px solid #f0f0f0', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -785,7 +896,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                       {!isSystem && assistOpen && (
                         <div style={{ borderBottom: `1px solid ${ACCENT_BORDER}`, background: '#f8fffe', flexShrink: 0 }}>
                           {assistHistory.length > 0 && (
-                            <div style={{ maxHeight: 140, overflowY: 'auto', padding: '0.5rem 0.75rem', scrollbarWidth: 'thin' }}>
+                            <div style={{ maxHeight: 200, overflowY: 'auto', padding: '0.5rem 0.75rem', scrollbarWidth: 'thin' }}>
                               {assistHistory.map((m, i) => (
                                 <div key={i} style={{ marginBottom: '0.35rem', fontSize: '0.7rem', color: m.role === 'user' ? '#0f766e' : '#374151', paddingLeft: m.role === 'user' ? '0.4rem' : 0, borderLeft: m.role === 'user' ? `2px solid ${ACCENT_BORDER}` : 'none', lineHeight: 1.5 }}>
                                   {m.content}
@@ -806,8 +917,8 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                               onChange={e => setAssistInput(e.target.value)}
                               onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleAssist(); } }}
                               placeholder={editKarlPrompt ? 'Describe a change to the prompt...' : 'Describe what you want this template to produce...'}
-                              rows={2}
-                              style={{ flex: 1, minWidth: 160, background: '#fff', border: '1px solid #ddd', color: '#222', padding: '0.3rem 0.5rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.7rem', outline: 'none', resize: 'none', minHeight: 32 }}
+                              rows={5}
+                              style={{ flex: 1, minWidth: 200, background: '#fff', border: '1px solid #ddd', color: '#222', padding: '0.45rem 0.55rem', borderRadius: 4, fontFamily: 'monospace', fontSize: '0.72rem', outline: 'none', resize: 'vertical', minHeight: 100 }}
                             />
                             <Tooltip text="Rewrite the full Karl prompt from this thread and apply it to the prompt field.">
                               <button type="button" onClick={handleRegeneratePrompt} disabled={assistLoading || assistHistory.length === 0}
@@ -935,14 +1046,14 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                         </div>
                       )}
 
-                      {/* Right footer: 3 run buttons */}
-                      {selected && !isNew && (
-                        <div style={{ padding: '0.6rem 0.75rem', borderTop: '1px solid #e5e7eb', background: '#fafafa', display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0, justifyContent: 'flex-end' }}>
+                      {/* Right footer: preview (draft-friendly); generate only after template row exists */}
+                      {(selected || (isNew && recipeReady)) && (
+                        <div style={{ padding: '0.6rem 0.75rem', borderTop: '1px solid #e5e7eb', background: '#fafafa', display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
 
-                          <Tooltip text="Runs with sample data to show layout. Nothing is saved.">
+                          <Tooltip text="Stub sample rows — check headings and layout only. Nothing is saved.">
                             <button onClick={() => initiateRun('preview')} disabled={running}
                               style={{ background: 'transparent', border: `1px solid ${ACCENT}`, color: ACCENT, padding: '0.3rem 0.75rem', borderRadius: 4, fontSize: '0.68rem', fontFamily: 'monospace', cursor: running ? 'not-allowed' : 'pointer', opacity: running && runMode !== 'preview' ? 0.5 : 1 }}>
-                              {running && runMode === 'preview' ? '...' : '▶ Preview'}
+                              {running && runMode === 'preview' ? '...' : '▶ Preview (no data)'}
                             </button>
                           </Tooltip>
 
@@ -953,9 +1064,14 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                             </button>
                           </Tooltip>
 
-                          <Tooltip text={editElements.length > 0 ? 'Opens value picker, runs with live data, saves versioned extract.' : 'Runs with live data and saves a versioned extract.'}>
-                            <button onClick={() => initiateRun('generate')} disabled={running}
-                              style={{ background: running && runMode === 'generate' ? '#0f2a27' : ACCENT, border: 'none', color: '#000', padding: '0.3rem 1rem', borderRadius: 4, fontSize: '0.68rem', fontFamily: 'monospace', cursor: running ? 'not-allowed' : 'pointer', fontWeight: 700, opacity: running && runMode !== 'generate' ? 0.5 : 1 }}>
+                          <Tooltip text={selected ? 'Runs with live data and saves a versioned extract.' : 'Save the template first — then you can create a saved extract.'}>
+                            <button onClick={() => initiateRun('generate')} disabled={running || !selected}
+                              style={{
+                                background: running && runMode === 'generate' ? '#0f2a27' : ACCENT,
+                                border: 'none', color: '#000', padding: '0.3rem 1rem', borderRadius: 4, fontSize: '0.68rem', fontFamily: 'monospace',
+                                cursor: running || !selected ? 'not-allowed' : 'pointer', fontWeight: 700,
+                                opacity: (!selected || (running && runMode !== 'generate')) ? 0.45 : 1,
+                              }}>
                               {running && runMode === 'generate' ? '...' : 'Run + Create Extract'}
                             </button>
                           </Tooltip>
@@ -963,6 +1079,8 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                       )}
                     </div>
                   </div>
+                  </>
+                  )}
                 </div>
               )}
             </div>
@@ -979,10 +1097,10 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
       </div>
 
       {/* ── ELEMENT PICKER MODAL ───────────────────────────────────────────── */}
-      {pickerOpen && selected && (
+      {pickerOpen && (selected || (isNew && recipeReady)) && (
         <ElementPickerModal
           userId={userId}
-          templateId={selected.document_template_id}
+          templateId={selected?.document_template_id}
           currentElements={editElements}
           onSave={elements => {
             setEditElements(elements);

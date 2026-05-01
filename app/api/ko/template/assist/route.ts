@@ -26,9 +26,101 @@ export async function POST(req: NextRequest) {
       regenerate_prompt = false,
       selected_elements = [],
       element_filters = {},
+      bootstrap_from_goal = false,
     } = body;
     const message = String(rawMessage ?? '').trim() || (regenerate_prompt ? 'Regenerate' : '');
     if (!message) return NextResponse.json({ error: 'message required' }, { status: 400 });
+
+    // ── Bootstrap: user goal → elements + filters + Karl prompt (Templates modal step 1) ──
+    if (bootstrap_from_goal) {
+      const bootstrapSystem = `You are Karl, helping a KarlOps user define a **document template** from a short goal.
+
+They described what they want the output to do (report, list, status doc, etc.). You choose:
+- Which workspace objects and fields to pull (minimal set)
+- Sensible default scopes (date windows, buckets, etc.) in __scope when helpful
+- Clear **formatting instructions** (the Karl prompt): sections, bullets/tables, what to show per row — NOT raw data, NO {{placeholders}}
+
+## Allowed object types for suggested_elements (prefix before the dot)
+task, completion, meeting, contact, user_situation, external_reference
+
+Use keys like: completion.title, completion.completed_at, completion.outcome, task.title, task.bucket_key, meeting.title, meeting.meeting_date, contact.name, user_situation.brief, external_reference.title
+
+## suggested_element_filters shape
+A single JSON object. Put per-object query hints under "__scope":
+Example:
+{ "__scope": { "completion": { "window_days": 7 }, "task": { "bucket_key": ["now","soon"] } } }
+You may omit __scope if defaults are fine.
+
+## User message
+The user may paste only a goal, or a goal plus draft formatting instructions. Preserve useful wording from their draft inside suggested_instructions.
+
+Return ONLY valid JSON (no markdown fences):
+{
+  "response": "one short friendly sentence",
+  "suggested_name": "concise template name",
+  "suggested_description": "optional one-line purpose or empty string",
+  "suggested_instructions": "full formatting instructions text",
+  "suggested_elements": ["completion.title", "..."],
+  "suggested_element_filters": { }
+}
+
+If the goal is too vague, still make reasonable defaults and mention assumptions briefly in "response".`;
+
+      const resBoot = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.ANTHROPIC_API_KEY!,
+          'anthropic-version': '2023-06-01',
+          'anthropic-beta': 'prompt-caching-2024-07-31',
+        },
+        body: JSON.stringify({
+          model:      'claude-sonnet-4-20250514',
+          max_tokens: 2800,
+          system:     [{ type: 'text', text: bootstrapSystem, cache_control: { type: 'ephemeral' } }],
+          messages:   [{ role: 'user' as const, content: message }],
+        }),
+      });
+
+      const dataBoot = await resBoot.json();
+      if (!resBoot.ok || dataBoot.error) {
+        const msg =
+          typeof dataBoot.error?.message === 'string'
+            ? dataBoot.error.message
+            : typeof dataBoot.error === 'string'
+              ? dataBoot.error
+              : !resBoot.ok
+                ? `Assist HTTP ${resBoot.status}`
+                : 'Assist returned an error';
+        return NextResponse.json({ error: msg }, { status: !resBoot.ok ? resBoot.status : 500 });
+      }
+      const rawBoot = dataBoot.content?.[0]?.text ?? '';
+      try {
+        const parsed = JSON.parse(rawBoot.replace(/```json|```/g, '').trim());
+        const els = Array.isArray(parsed.suggested_elements)
+          ? parsed.suggested_elements.filter((x: unknown) => typeof x === 'string')
+          : [];
+        let filters: Record<string, unknown> = {};
+        if (parsed.suggested_element_filters && typeof parsed.suggested_element_filters === 'object' && !Array.isArray(parsed.suggested_element_filters)) {
+          filters = parsed.suggested_element_filters as Record<string, unknown>;
+        }
+        return NextResponse.json({
+          response:               parsed.response ?? 'Here is a first draft you can tweak.',
+          suggested_instructions: typeof parsed.suggested_instructions === 'string' ? parsed.suggested_instructions : null,
+          suggested_elements:     els,
+          suggested_element_filters: filters,
+          suggested_name:        typeof parsed.suggested_name === 'string' ? parsed.suggested_name : null,
+          suggested_description: typeof parsed.suggested_description === 'string' ? parsed.suggested_description : null,
+        });
+      } catch (_) {
+        return NextResponse.json({
+          response: rawBoot || 'Could not parse bootstrap plan.',
+          suggested_instructions: null,
+          suggested_elements: [],
+          suggested_element_filters: {},
+        });
+      }
+    }
 
     const elementsLine = Array.isArray(selected_elements) && selected_elements.length
       ? `\nSelected element keys (data columns): ${JSON.stringify(selected_elements)}`
