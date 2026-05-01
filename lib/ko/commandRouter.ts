@@ -99,6 +99,7 @@ export const OBJECT_TABLE: Record<string, string> = {
   meeting:            'meeting',
   external_reference: 'external_reference',
   document_template:  'document_template',
+  context:            'context',
   contact:            'contact',
   tag:                'tag',
   task_status:        'task_status',
@@ -110,6 +111,7 @@ export const OBJECT_PK: Record<string, string> = {
   meeting:            'meeting_id',
   external_reference: 'external_reference_id',
   document_template:  'document_template_id',
+  context:            'context_id',
   contact:            'contact_id',
   tag:                'tag_id',
   task_status:        'task_status_id',
@@ -121,6 +123,7 @@ export const OBJECT_MODAL: Record<string, string> = {
   meeting:            'MeetingsModal',
   external_reference: 'ExtractsModal',
   document_template:  'TemplatesModal',
+  context:            'TaskListModal',
   contact:            'ContactsModal',
   tag:                'TagManagerModal',
 };
@@ -134,13 +137,73 @@ const ANALYSIS_TRIGGERS = [
   'against my', 'pip', 'requirement', 'progress',
 ];
 
+const CONTEXT_GUIDE_TRIGGERS = [
+  'guide me through creating a context',
+  'create a context',
+  'set up a new context',
+  'setup a new context',
+  'i want to do something new',
+  'set up a different thing',
+  'new area of work',
+  'new niche',
+];
+
+const LIGHTWEIGHT_HELP_TRIGGERS = [
+  "i'm stuck",
+  'im stuck',
+  'what can i do',
+  'not sure what i want to do',
+  "i don't know what to do",
+  'help me decide',
+];
+
 function isAnalysisRequest(input: string): boolean {
   const lower = input.toLowerCase();
   return ANALYSIS_TRIGGERS.some(t => lower.includes(t));
 }
 
+function isContextGuideRequest(input: string): boolean {
+  const lower = input.toLowerCase();
+  return CONTEXT_GUIDE_TRIGGERS.some(t => lower.includes(t));
+}
+
+function isLightweightHelpRequest(input: string): boolean {
+  const lower = input.toLowerCase();
+  return LIGHTWEIGHT_HELP_TRIGGERS.some(t => lower.includes(t));
+}
+
 function isLongInput(input: string): boolean {
   return input.length > 500 || input.split('\n').length > 15;
+}
+
+function enforceTop4HelpResponse(raw: string): string {
+  const lines = raw.split('\n').map((l) => l.trim()).filter(Boolean);
+  const numbered = lines.filter((l) => /^\d+[\).\-:]\s+/.test(l));
+
+  const normalized = numbered
+    .slice(0, 4)
+    .map((line, idx) => {
+      const text = line.replace(/^\d+[\).\-:]\s+/, '').trim();
+      return `${idx + 1}) ${text}`;
+    });
+
+  const fallbackOptions = [
+    'Create a new context for the work lane you are entering.',
+    'Organize current tasks by context and tag for visibility.',
+    'Run a deliverables report for the last 7 days.',
+    'Start or refine a reusable template for repeatable output.',
+  ];
+
+  while (normalized.length < 4) {
+    normalized.push(`${normalized.length + 1}) ${fallbackOptions[normalized.length]}`);
+  }
+
+  return [
+    'What about one of these?',
+    ...normalized,
+    '',
+    'If none of these fit, tell me what you are trying to do.',
+  ].join('\n');
 }
 
 // ─── ALLOW_DELETE GATE ────────────────────────────────────────────────────────
@@ -542,11 +605,28 @@ export async function routeCommand(
   try {
     const { staticContext, dynamicContext } = contexts;
 
+    if (!pending && isContextGuideRequest(input)) {
+      const guidance =
+        'Great call. We can set this up in 60 seconds.\n\n' +
+        'A context is a work lane for a sustained area (not a single one-off task).\n' +
+        'If this is a one-time reminder, we should capture a task instead.\n\n' +
+        'First question: what should this new context be called?';
+      await appendSessionMessage(user_id, 'user', input);
+      await appendSessionMessage(user_id, 'karl', guidance);
+      return {
+        intent: 'question',
+        payload: { context_setup_pending: true, step: 'ask_name' },
+        response: guidance,
+      };
+    }
+
+    const wantsLightweightHelp = !pending && isLightweightHelpRequest(input);
+
     const { data: allMeta } = await db
       .from('ko_field_metadata')
       .select('object_type, field, label, field_type, insert_behavior, update_behavior, description, llm_notes')
       .eq('user_id', user_id)
-      .in('object_type', ['task', 'meeting', 'completion', 'external_reference', 'document_template', 'contact', 'task_status']);
+      .in('object_type', ['task', 'meeting', 'completion', 'external_reference', 'document_template', 'context', 'contact', 'task_status']);
 
     const meta = allMeta ?? [];
     const objectSummaries = buildObjectSummaries(meta);
@@ -605,7 +685,7 @@ export async function routeCommand(
       'You know the full schema via Field Knowledge. Use it.',
       '',
       '## FC Objects — What Karl Can Work With',
-      'task, completion, meeting, external_reference (extract), document_template (template), contact, tag',
+      'task, completion, meeting, external_reference (extract), document_template (template), context, contact, tag',
       '',
       '## Actions Karl Can Propose',
       '- insert           — create any FC object',
@@ -620,6 +700,24 @@ export async function routeCommand(
       '- create_tag       — propose new tag (ALWAYS pending, never silent)',
       '- summarize        — no DB write, Karl summarizes in chat',
       '- command          — UI-only helper commands (open modals without DB write)',
+      '',
+      '## Context Setup Guide — Plain Language',
+      'When user says "I want to do something new", "set up a different thing", or asks to create a context:',
+      '1) Explain simply: a context is for an ongoing lane of work; a task is for a specific action.',
+      '2) Ask for a context name.',
+      '3) Ask whether they also want a starter tag and/or starter capture task.',
+      '4) Then propose pending actions as needed:',
+      '   - insert context (required)',
+      '   - create_tag (optional)',
+      '   - insert task bucket=capture with context_name/context_id (optional)',
+      'Use plain words suitable for mobile/on-the-go users.',
+      '',
+      '## Lightweight "I am stuck" Assistant',
+      'When user says they are stuck or asks "what can I do", return intent:"question" with a short "Top 4 next moves" list.',
+      'Rank the 4 options using Karl observations and recent activity context (what this user has actually been doing).',
+      'Each option should be one line and action-oriented.',
+      'End with: "If none of these fit, tell me what you are trying to do."',
+      'Do NOT create pending actions yet unless user picks one.',
       '',
       '## Delete Rules — CRITICAL',
       'Before proposing delete_object for any object type, you MUST reason about allow_delete.',
@@ -753,6 +851,15 @@ export async function routeCommand(
       '',
       '// question:',
       '{ "intent": "question", "response": "Karl answer in plain English" }',
+      '',
+      '// question — context setup kickoff:',
+      '{ "intent": "question", "response": "A context is a lane for ongoing work. What should this one be called?", "payload": { "context_setup_pending": true, "step": "ask_name" } }',
+      '',
+      '// question — stuck helper:',
+      '{ "intent": "question", "response": "What about one of these?\\n1) ...\\n2) ...\\n3) ...\\n4) ...\\n\\nIf none of these fit, tell me what you are trying to do.", "payload": { "lightweight_help_pending": true } }',
+      '',
+      '// pending — context with optional starter setup:',
+      '{ "intent": "pending", "actions": [{ "action": "insert", "object_type": "context", "fields": { "name": "KO-HR-Buster" } }, { "action": "create_tag", "fields": { "name": "KarlOps", "tag_group": "General" } }, { "action": "insert", "object_type": "task", "fields": { "title": "Define first outcomes for KO-HR-Buster", "bucket_key": "capture", "context_name": "KO-HR-Buster", "tags": ["KarlOps"] } }], "response": "I can create the context and starter setup now. Confirm?" }',
     ].filter(Boolean).join('\n');
 
     // ── Dynamic context — prepended to last user message, never in system ──
@@ -762,6 +869,10 @@ export async function routeCommand(
       `Today's date: ${new Date().toISOString().slice(0, 10)}.`,
       '',
       dynamicContext,
+      '',
+      wantsLightweightHelp
+        ? '## Lightweight Help Request\nThe user is asking for help choosing what to do next. Return a question with top 4 ranked actions based on observations and recent activity, then end with: "If none of these fit, tell me what you are trying to do."'
+        : '',
       '',
       pendingBlock,
       '',
@@ -832,8 +943,11 @@ export async function routeCommand(
       return { intent: 'unclear', response: 'Something went wrong parsing that. Try again.', usage };
     }
 
-    const intent       = parsed.intent as IntentType;
-    const karlResponse = parsed.response ?? "I'm not sure what to do with that.";
+    const intent = parsed.intent as IntentType;
+    let karlResponse = parsed.response ?? "I'm not sure what to do with that.";
+    if (wantsLightweightHelp && intent === 'question') {
+      karlResponse = enforceTop4HelpResponse(karlResponse);
+    }
 
     await appendSessionMessage(user_id, 'user', input);
     await appendSessionMessage(user_id, 'karl', karlResponse);
@@ -932,6 +1046,14 @@ export async function routeCommand(
       if (parsed.outcome_pending)    { qPayload.outcome_pending = true; qPayload.identifier = parsed.identifier; qPayload.object_type = parsed.object_type; }
       if (parsed.delegation_pending) { qPayload.delegation_pending = true; qPayload.identifier = parsed.identifier; qPayload.object_type = parsed.object_type; }
       if (parsed.open_modal)         { qPayload.open_modal = true; }
+      if (parsed.payload?.context_setup_pending) {
+        qPayload.context_setup_pending = true;
+        qPayload.step = parsed.payload.step ?? null;
+      }
+      if (parsed.payload?.lightweight_help_pending) {
+        qPayload.lightweight_help_pending = true;
+        qPayload.options = parsed.payload.options ?? null;
+      }
       if (parsed.payload?.template_choice_pending) {
         qPayload.template_choice_pending = true;
         qPayload.identifier = parsed.payload.identifier;

@@ -112,7 +112,7 @@
   const BUCKET_PREFIX_MAP: Record<string, string> = {
     N: 'now', S: 'soon', RW: 'realwork', L: 'later', D: 'delegate',
     CP: 'capture', CM: 'completion', MT: 'meeting',
-    EX: 'external_reference', TM: 'document_template', CT: 'contact',
+    EX: 'external_reference', TM: 'document_template', CX: 'context', CT: 'contact',
   };
 
   const MAX_FILE_BYTES = 5 * 1024 * 1024;
@@ -580,6 +580,22 @@
       }
       writeKarlObservation(user_id, `Created contact: "${fields.name}"`, 'pattern').catch(() => {});
       return { response: `Contact **${fields.name}** added.`, refresh: true };
+    }
+
+    if (object_type === 'context') {
+      const contextName = String(fields.name ?? '').trim();
+      if (!contextName) throw new Error('Context name is required');
+
+      const { error: contextError } = await db.from('context').insert({
+        user_id,
+        name: contextName,
+        is_archived: false,
+        is_visible: true,
+      });
+      if (contextError) throw new Error(contextError.message);
+
+      writeKarlObservation(user_id, `Created context: "${contextName}"`, 'pattern').catch(() => {});
+      return { response: `Context **${contextName}** created.`, refresh: true };
     }
 
     const { error } = await db.from(table).insert({ user_id, ...fields });
