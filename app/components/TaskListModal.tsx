@@ -4,6 +4,7 @@ import { useEffect, useState, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import TaskDetailModal from '@/app/components/TaskDetailModal';
 import TaskReportBuilderModal from '@/app/components/TaskReportBuilderModal';
+import TagPicker from '@/app/components/TagPicker';
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -23,6 +24,17 @@ interface Task {
 
 interface Context { context_id: string; name: string; }
 interface TaskStatus { task_status_id: string; label: string; }
+
+interface TagRow {
+  tag_id: string;
+  name: string;
+  tag_group_id: string;
+}
+
+interface TagGroupRow {
+  tag_group_id: string;
+  name: string;
+}
 
 interface TaskListModalProps {
   userId: string;
@@ -73,6 +85,39 @@ function exportAsCSV(tasks: Task[], statusMap: Record<string, string>): void {
   URL.revokeObjectURL(url);
 }
 
+function exportAsPlainText(tasks: Task[], statusMap: Record<string, string>): void {
+  const lines: string[] = [
+    '# KarlOps task list export',
+    `# Generated ${new Date().toISOString()}`,
+    `# Rows: ${tasks.length}`,
+    '',
+  ];
+  for (let i = 0; i < tasks.length; i++) {
+    const t = tasks[i];
+    const id = `${BUCKET_META[t.bucket_key]?.id ?? t.bucket_key}${i + 1}`;
+    const bucket = BUCKET_META[t.bucket_key]?.label ?? t.bucket_key;
+    const status = t.task_status_id ? (statusMap[t.task_status_id] ?? '') : '';
+    const tags = (t.tags ?? []).join(', ');
+    const ctx = t.context?.name ?? '';
+    const target = t.target_date ? formatDate(t.target_date) : '';
+    const created = formatDate(t.created_at);
+    const flags = [t.is_completed ? 'done' : '', t.is_archived ? 'archived' : ''].filter(Boolean).join(' ');
+    lines.push(
+      `${id} | ${t.title}`,
+      `  bucket: ${bucket} | status: ${status || '—'} | context: ${ctx || '—'}`,
+      `  tags: ${tags || '—'} | target: ${target || '—'} | created: ${created}${flags ? ` | ${flags}` : ''}`,
+      ''
+    );
+  }
+  const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `tasks-${new Date().toISOString().slice(0, 10)}.txt`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 // ─── COMPONENT ───────────────────────────────────────────────────────────────
 
 export default function TaskListModal({ userId, accessToken, onClose, onSaved }: TaskListModalProps) {
@@ -84,6 +129,10 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [showReportBuilder, setShowReportBuilder] = useState(false);
+
+  const [allTags, setAllTags] = useState<TagRow[]>([]);
+  const [tagGroups, setTagGroups] = useState<TagGroupRow[]>([]);
+  const [listScopeTags, setListScopeTags] = useState<string[]>([]);
 
   // ─── Filters + sort ────────────────────────────────────────────────────────
   const [search, setSearch]               = useState('');
@@ -134,13 +183,28 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
     }
   };
 
+  const reloadTags = async () => {
+    const [{ data: grData }, { data: tgData }] = await Promise.all([
+      supabase.from('tag_group').select('tag_group_id, name').eq('user_id', userId).order('name'),
+      supabase.from('tag').select('tag_id, name, tag_group_id').eq('user_id', userId).order('name'),
+    ]);
+    if (grData) setTagGroups(grData as TagGroupRow[]);
+    if (tgData) setAllTags(tgData as TagRow[]);
+  };
+
   useEffect(() => { loadTasks(); loadContexts(); loadStatuses(); }, []);
 
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape' && !selectedTaskId) onClose(); };
+    reloadTags();
+  }, [userId]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !selectedTaskId && !showReportBuilder) onClose();
+    };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [selectedTaskId]);
+  }, [selectedTaskId, showReportBuilder]);
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
@@ -163,6 +227,12 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
       if (filterBucket && t.bucket_key !== filterBucket) return false;
       if (filterContext && t.context_id !== filterContext) return false;
       if (filterStatus && t.task_status_id !== filterStatus) return false;
+      if (listScopeTags.length > 0) {
+        const taskTags = t.tags ?? [];
+        for (const tag of listScopeTags) {
+          if (!taskTags.includes(tag)) return false;
+        }
+      }
       return true;
     })
     .sort((a, b) => {
@@ -201,7 +271,7 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
   return (
     <>
       <div style={{ position: 'fixed', inset: 0, zIndex: 100, pointerEvents: 'none' }}>
-        <div ref={modalRef} style={{ position: 'absolute', left: pos.x, top: pos.y, width: size.w, height: size.h, background: '#ffffff', border: `2px solid ${ACCENT}`, borderRadius: '8px', display: 'flex', flexDirection: 'column', fontFamily: 'monospace', boxShadow: '0 20px 60px rgba(0,0,0,0.3)', overflow: 'hidden', pointerEvents: 'all' }}>
+        <div ref={modalRef} style={{ position: 'absolute', left: pos.x, top: pos.y, width: size.w, height: size.h, background: '#ffffff', border: `2px solid ${ACCENT}`, borderRadius: '8px', display: 'flex', flexDirection: 'column', fontFamily: 'monospace', boxShadow: '0 20px 60px rgba(0,0,0,0.3)', overflow: 'hidden', pointerEvents: 'all', minHeight: 0 }}>
 
           {/* Header */}
           <div
@@ -222,6 +292,7 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
                   <div style={{ position: 'absolute', top: '100%', right: 0, marginTop: '0.25rem', background: '#fff', border: '1px solid #ddd', borderRadius: '4px', boxShadow: '0 4px 12px rgba(0,0,0,0.15)', zIndex: 10, minWidth: '120px' }}>
                     <div onClick={() => { setShowReportBuilder(true); setShowExportMenu(false); }} style={{ padding: '0.5rem 0.75rem', fontSize: '0.75rem', color: '#333', cursor: 'pointer', fontFamily: 'monospace' }} onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BG)} onMouseLeave={e => (e.currentTarget.style.background = '#fff')}>Report Builder</div>
                     <div onClick={() => { exportAsCSV(filtered, statusMap); setShowExportMenu(false); }} style={{ padding: '0.5rem 0.75rem', fontSize: '0.75rem', color: '#333', cursor: 'pointer', fontFamily: 'monospace' }} onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BG)} onMouseLeave={e => (e.currentTarget.style.background = '#fff')}>Export CSV</div>
+                    <div onClick={() => { exportAsPlainText(filtered, statusMap); setShowExportMenu(false); }} style={{ padding: '0.5rem 0.75rem', fontSize: '0.75rem', color: '#333', cursor: 'pointer', fontFamily: 'monospace' }} onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BG)} onMouseLeave={e => (e.currentTarget.style.background = '#fff')}>Export plain text</div>
                   </div>
                 )}
               </div>
@@ -258,14 +329,48 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
             <span style={{ color: '#999', fontSize: '0.65rem', fontFamily: 'monospace', marginLeft: 'auto' }}>{filtered.length} of {totalAll}</span>
           </div>
 
+          {/* Tag scope — same TagPicker as task detail; filters list + seeds Report Builder + exports */}
+          <div
+            style={{
+              padding: '0.5rem 1.25rem 0.65rem',
+              borderBottom: `1px solid ${ACCENT_BORDER}`,
+              background: '#fff',
+              flexShrink: 0,
+              maxHeight: '220px',
+              overflowY: 'auto',
+            }}
+          >
+            <div style={{ fontSize: '0.62rem', color: '#666', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600, marginBottom: '0.35rem' }}>
+              Tags on this view
+            </div>
+            <p style={{ fontSize: '0.65rem', color: '#6b7280', margin: '0 0 0.45rem', lineHeight: 1.45 }}>
+              Tasks must include <strong>all</strong> selected tags. Use the list as-is, export CSV / plain text, or open Report Builder — all use this scope.
+            </p>
+            <TagPicker
+              selected={listScopeTags}
+              allTags={allTags}
+              tagGroups={tagGroups}
+              onChange={setListScopeTags}
+              onTagCreated={reloadTags}
+              accentColor="#b45309"
+              objectType="task"
+              contextText={search.trim() ? `Task list search: ${search.trim()}` : 'All tasks list'}
+              accessToken={accessToken}
+              userId={userId}
+              maxTags={12}
+              label="Filter list & exports by tags"
+            />
+          </div>
+
           {/* Table header */}
           <div style={{ display: 'flex', alignItems: 'center', padding: '0.4rem 1.25rem', borderBottom: '1px solid #eee', background: '#fafafa', flexShrink: 0, gap: '0.5rem' }}>
             <div style={{ width: '52px', flexShrink: 0 }}>
               <button onClick={() => toggleSort('bucket')} style={colBtnStyle}>Bucket {sortIcon('bucket')}</button>
             </div>
-            <div style={{ flex: 1 }}>
+            <div style={{ flex: 1, minWidth: '120px' }}>
               <button onClick={() => toggleSort('title')} style={colBtnStyle}>Title {sortIcon('title')}</button>
             </div>
+            <div style={{ width: '100px', flexShrink: 0, fontSize: '0.65rem', color: '#888', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Tags</div>
             <div style={{ width: '110px', flexShrink: 0 }}>
               <button onClick={() => toggleSort('status')} style={colBtnStyle}>Status {sortIcon('status')}</button>
             </div>
@@ -280,7 +385,7 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
           </div>
 
           {/* Table body */}
-          <div style={{ flex: 1, overflowY: 'auto', scrollbarWidth: 'thin', scrollbarColor: '#ddd transparent' }}>
+          <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', scrollbarWidth: 'thin', scrollbarColor: '#ddd transparent' }}>
             {loading ? (
               <div style={{ color: '#999', fontSize: '0.75rem', padding: '1.5rem', fontFamily: 'monospace' }}>Loading...</div>
             ) : filtered.length === 0 ? (
@@ -305,8 +410,15 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
                     </div>
 
                     {/* Title */}
-                    <div style={{ flex: 1, overflow: 'hidden' }}>
+                    <div style={{ flex: 1, minWidth: '120px', overflow: 'hidden' }}>
                       <span style={{ color: isCompleted || isArchived ? '#999' : '#111', fontSize: '0.82rem', fontFamily: 'monospace', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', display: 'block', textDecoration: isCompleted ? 'line-through' : 'none' }}>{t.title}</span>
+                    </div>
+
+                    {/* Tags */}
+                    <div style={{ width: '100px', flexShrink: 0, overflow: 'hidden' }}>
+                      <span style={{ fontSize: '0.62rem', color: '#555', fontFamily: 'monospace', display: 'block', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={(t.tags ?? []).join(', ')}>
+                        {(t.tags ?? []).length ? (t.tags ?? []).join(', ') : '—'}
+                      </span>
                     </div>
 
                     {/* Status */}
@@ -366,6 +478,7 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
           userId={userId}
           accessToken={accessToken}
           contextOptions={contexts}
+          initialScopeTags={listScopeTags}
           scope={{
             search,
             bucket: filterBucket,

@@ -36,6 +36,8 @@ interface TaskReportBuilderModalProps {
   userId: string;
   accessToken: string;
   contextOptions: Context[];
+  /** Seed scope tags when opening from Task list (same picker selection). */
+  initialScopeTags?: string[];
   scope: {
     search: string;
     bucket: string;
@@ -206,6 +208,7 @@ export default function TaskReportBuilderModal({
   userId,
   accessToken,
   contextOptions,
+  initialScopeTags = [],
   scope,
   onClose,
 }: TaskReportBuilderModalProps) {
@@ -225,7 +228,7 @@ export default function TaskReportBuilderModal({
 
   const [allTags, setAllTags] = useState<TagRow[]>([]);
   const [tagGroups, setTagGroups] = useState<TagGroupRow[]>([]);
-  const [scopeTags, setScopeTags] = useState<string[]>([]);
+  const [scopeTags, setScopeTags] = useState<string[]>(() => [...initialScopeTags]);
   const [quickTagValue, setQuickTagValue] = useState('');
 
   const [recordTitle, setRecordTitle] = useState('My task report');
