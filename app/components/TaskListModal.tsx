@@ -3,6 +3,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import TaskDetailModal from '@/app/components/TaskDetailModal';
+import TaskReportBuilderModal from '@/app/components/TaskReportBuilderModal';
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -82,6 +83,7 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
   const [statusMap, setStatusMap]   = useState<Record<string, string>>({});
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const [showReportBuilder, setShowReportBuilder] = useState(false);
 
   // ─── Filters + sort ────────────────────────────────────────────────────────
   const [search, setSearch]               = useState('');
@@ -218,6 +220,7 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
                 >export ▾</button>
                 {showExportMenu && (
                   <div style={{ position: 'absolute', top: '100%', right: 0, marginTop: '0.25rem', background: '#fff', border: '1px solid #ddd', borderRadius: '4px', boxShadow: '0 4px 12px rgba(0,0,0,0.15)', zIndex: 10, minWidth: '120px' }}>
+                    <div onClick={() => { setShowReportBuilder(true); setShowExportMenu(false); }} style={{ padding: '0.5rem 0.75rem', fontSize: '0.75rem', color: '#333', cursor: 'pointer', fontFamily: 'monospace' }} onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BG)} onMouseLeave={e => (e.currentTarget.style.background = '#fff')}>Report Builder</div>
                     <div onClick={() => { exportAsCSV(filtered, statusMap); setShowExportMenu(false); }} style={{ padding: '0.5rem 0.75rem', fontSize: '0.75rem', color: '#333', cursor: 'pointer', fontFamily: 'monospace' }} onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BG)} onMouseLeave={e => (e.currentTarget.style.background = '#fff')}>Export CSV</div>
                   </div>
                 )}
@@ -355,6 +358,24 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
           accessToken={accessToken}
           onClose={() => setSelectedTaskId(null)}
           onSaved={() => { loadTasks(); setSelectedTaskId(null); onSaved(); }}
+        />
+      )}
+
+      {showReportBuilder && (
+        <TaskReportBuilderModal
+          userId={userId}
+          accessToken={accessToken}
+          contextOptions={contexts}
+          scope={{
+            search,
+            bucket: filterBucket,
+            contextId: filterContext,
+            statusId: filterStatus,
+            showCompleted,
+            showArchived,
+            filteredCount: filtered.length,
+          }}
+          onClose={() => setShowReportBuilder(false)}
         />
       )}
     </>
