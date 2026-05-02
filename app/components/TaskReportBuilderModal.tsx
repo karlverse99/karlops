@@ -9,7 +9,6 @@ import {
   serializeExtractRunData,
 } from '@/lib/ko/extractRunData';
 import KarlSpinner from './KarlSpinner';
-import TagPicker from '@/app/components/TagPicker';
 
 interface Context {
   context_id: string;
@@ -224,8 +223,8 @@ export default function TaskReportBuilderModal({
   const [saveMsg, setSaveMsg] = useState('');
 
   const [allTags, setAllTags] = useState<TagRow[]>([]);
-  const [tagGroups, setTagGroups] = useState<TagGroupRow[]>([]);
   const [scopeTags, setScopeTags] = useState<string[]>([]);
+  const [quickTagValue, setQuickTagValue] = useState('');
 
   const [recordTitle, setRecordTitle] = useState('My task report');
   const [savedFilename, setSavedFilename] = useState(() => defaultSuggestedFilenameDdMmYyyyColonHhMm('md'));
@@ -255,11 +254,11 @@ export default function TaskReportBuilderModal({
   }, [userId]);
 
   const reloadTags = async () => {
-    const [{ data: grData }, { data: tgData }] = await Promise.all([
-      supabase.from('tag_group').select('tag_group_id, name').eq('user_id', userId).order('name'),
-      supabase.from('tag').select('tag_id, name, tag_group_id').eq('user_id', userId).order('name'),
-    ]);
-    if (grData) setTagGroups(grData as TagGroupRow[]);
+    const { data: tgData } = await supabase
+      .from('tag')
+      .select('tag_id, name, tag_group_id')
+      .eq('user_id', userId)
+      .order('name');
     if (tgData) setAllTags(tgData as TagRow[]);
   };
 
@@ -548,19 +547,79 @@ export default function TaskReportBuilderModal({
             </div>
 
             <div style={{ marginBottom: '0.7rem' }}>
-              <TagPicker
-                selected={scopeTags}
-                allTags={allTags}
-                tagGroups={tagGroups}
-                onChange={setScopeTags}
-                onTagCreated={reloadTags}
-                accentColor={ACCENT}
-                objectType="extract"
-                contextText={recordTitle || templateName}
-                accessToken={accessToken}
-                userId={userId}
-                label="Scope tags (tasks must include)"
-              />
+              <div style={labelSt}>Scope tags (tasks must include)</div>
+              <div style={{ display: 'flex', gap: '0.4rem', marginBottom: '0.35rem' }}>
+                <select
+                  value={quickTagValue}
+                  onChange={(e) => setQuickTagValue(e.target.value)}
+                  style={{ ...inputSt, cursor: 'pointer', flex: 1 } as any}
+                >
+                  <option value="">Select a tag...</option>
+                  {allTags.map((t) => (
+                    <option key={t.tag_id} value={t.name}>{t.name}</option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const v = quickTagValue.trim();
+                    if (!v) return;
+                    if (!scopeTags.includes(v)) setScopeTags((prev) => [...prev, v]);
+                    setQuickTagValue('');
+                  }}
+                  style={{
+                    background: ACCENT_BG,
+                    border: `1px solid ${ACCENT_BORDER}`,
+                    color: '#6d28d9',
+                    padding: '0.35rem 0.65rem',
+                    borderRadius: 4,
+                    fontSize: '0.68rem',
+                    fontFamily: 'monospace',
+                    cursor: 'pointer',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  add tag
+                </button>
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem' }}>
+                {scopeTags.length === 0 && (
+                  <span style={{ color: '#9ca3af', fontSize: '0.66rem' }}>No scope tags selected</span>
+                )}
+                {scopeTags.map((tag) => (
+                  <span
+                    key={tag}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '0.3rem',
+                      background: ACCENT_BG,
+                      border: `1px solid ${ACCENT_BORDER}`,
+                      color: '#6d28d9',
+                      borderRadius: 999,
+                      padding: '0.08rem 0.45rem',
+                      fontSize: '0.66rem',
+                    }}
+                  >
+                    #{tag}
+                    <button
+                      type="button"
+                      onClick={() => setScopeTags((prev) => prev.filter((t) => t !== tag))}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        color: '#6d28d9',
+                        cursor: 'pointer',
+                        fontSize: '0.72rem',
+                        lineHeight: 1,
+                        padding: 0,
+                      }}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
             </div>
 
             <div style={{ marginBottom: '0.7rem' }}>
