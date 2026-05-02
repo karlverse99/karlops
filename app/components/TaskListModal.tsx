@@ -156,6 +156,9 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
   const dragStart       = useRef({ mx: 0, my: 0, px: 0, py: 0 });
   const resizeStart     = useRef({ mx: 0, my: 0, w: 0, h: 0 });
   const modalRef        = useRef<HTMLDivElement>(null);
+  const [filterDropdown, setFilterDropdown] = useState<null | 'context' | 'status'>(null);
+  const ctxFilterRef    = useRef<HTMLDivElement>(null);
+  const statusFilterRef = useRef<HTMLDivElement>(null);
 
   // ─── Load ──────────────────────────────────────────────────────────────────
 
@@ -202,11 +205,28 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !selectedTaskId && !showReportBuilder) onClose();
+      if (e.key === 'Escape') {
+        if (filterDropdown) {
+          setFilterDropdown(null);
+          return;
+        }
+        if (!selectedTaskId && !showReportBuilder) onClose();
+      }
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [selectedTaskId, showReportBuilder]);
+  }, [selectedTaskId, showReportBuilder, filterDropdown]);
+
+  useEffect(() => {
+    if (!filterDropdown) return;
+    const close = (e: MouseEvent) => {
+      const n = e.target as Node;
+      if (ctxFilterRef.current?.contains(n) || statusFilterRef.current?.contains(n)) return;
+      setFilterDropdown(null);
+    };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [filterDropdown]);
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
@@ -354,76 +374,207 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
                 </button>
               )}
             </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.25rem', maxWidth: '340px' }}>
-              <span style={{ fontSize: '0.62rem', color: '#666', fontFamily: 'monospace' }}>Ctx</span>
-              {contexts.map((c) => {
-                const on = filterContextIds.includes(c.context_id);
-                return (
-                  <button
-                    key={c.context_id}
-                    type="button"
-                    title={c.name}
-                    onClick={() =>
-                      setFilterContextIds((prev) =>
-                        on ? prev.filter((id) => id !== c.context_id) : [...prev, c.context_id]
-                      )
-                    }
-                    style={{
-                      fontSize: '0.58rem',
-                      fontFamily: 'monospace',
-                      maxWidth: '88px',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
-                      padding: '0.15rem 0.35rem',
-                      borderRadius: 4,
-                      border: on ? `1px solid ${ACCENT}` : '1px solid #e5e7eb',
-                      background: on ? ACCENT_BG : '#fff',
-                      color: on ? '#713f12' : '#64748b',
-                      cursor: 'pointer',
-                      fontWeight: on ? 700 : 500,
-                    }}
-                  >
-                    {c.name}
-                  </button>
-                );
-              })}
-              {filterContextIds.length > 0 && (
-                <button type="button" onClick={() => setFilterContextIds([])} style={{ fontSize: '0.58rem', color: '#94a3b8', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', fontFamily: 'monospace' }}>clear</button>
+            <div ref={ctxFilterRef} style={{ position: 'relative' }}>
+              <button
+                type="button"
+                onClick={() => setFilterDropdown((o) => (o === 'context' ? null : 'context'))}
+                style={{
+                  ...inputStyle,
+                  width: 'auto',
+                  minWidth: '148px',
+                  maxWidth: '220px',
+                  fontSize: '0.72rem',
+                  padding: '0.3rem 0.55rem',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '0.35rem',
+                  borderColor: filterContextIds.length ? ACCENT : '#ddd',
+                  background: filterContextIds.length ? ACCENT_BG : '#fff',
+                }}
+              >
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'left' }}>
+                  {filterContextIds.length === 0
+                    ? 'All contexts'
+                    : filterContextIds.length === 1
+                      ? contexts.find((c) => c.context_id === filterContextIds[0])?.name ?? '1 context'
+                      : `${filterContextIds.length} contexts`}
+                </span>
+                <span style={{ opacity: 0.7, flexShrink: 0 }}>{filterDropdown === 'context' ? '▴' : '▾'}</span>
+              </button>
+              {filterDropdown === 'context' && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: '100%',
+                    left: 0,
+                    marginTop: 4,
+                    minWidth: 220,
+                    maxWidth: 280,
+                    maxHeight: 240,
+                    overflowY: 'auto',
+                    background: '#fff',
+                    border: '1px solid #ddd',
+                    borderRadius: 6,
+                    boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
+                    zIndex: 60,
+                    padding: '0.35rem 0',
+                  }}
+                  onMouseDown={(e) => e.preventDefault()}
+                >
+                  {contexts.map((c) => {
+                    const on = filterContextIds.includes(c.context_id);
+                    return (
+                      <label
+                        key={c.context_id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.45rem',
+                          padding: '0.35rem 0.65rem',
+                          fontSize: '0.72rem',
+                          cursor: 'pointer',
+                          color: '#333',
+                          background: on ? ACCENT_BG : 'transparent',
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={on}
+                          onChange={() =>
+                            setFilterContextIds((prev) =>
+                              on ? prev.filter((id) => id !== c.context_id) : [...prev, c.context_id]
+                            )
+                          }
+                          style={{ accentColor: '#b45309', cursor: 'pointer' }}
+                        />
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.name}</span>
+                      </label>
+                    );
+                  })}
+                  {filterContextIds.length > 0 && (
+                    <div style={{ borderTop: '1px solid #eee', padding: '0.35rem 0.65rem 0.15rem' }}>
+                      <button
+                        type="button"
+                        onClick={() => setFilterContextIds([])}
+                        style={{
+                          fontSize: '0.65rem',
+                          color: '#64748b',
+                          background: 'none',
+                          border: 'none',
+                          cursor: 'pointer',
+                          fontFamily: 'monospace',
+                          textDecoration: 'underline',
+                          padding: 0,
+                        }}
+                      >
+                        Clear contexts
+                      </button>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.25rem', maxWidth: '280px' }}>
-              <span style={{ fontSize: '0.62rem', color: '#666', fontFamily: 'monospace' }}>St</span>
-              {statuses.map((s) => {
-                const on = filterStatusIds.includes(s.task_status_id);
-                return (
-                  <button
-                    key={s.task_status_id}
-                    type="button"
-                    title={s.label}
-                    onClick={() =>
-                      setFilterStatusIds((prev) =>
-                        on ? prev.filter((id) => id !== s.task_status_id) : [...prev, s.task_status_id]
-                      )
-                    }
-                    style={{
-                      fontSize: '0.58rem',
-                      fontFamily: 'monospace',
-                      padding: '0.15rem 0.35rem',
-                      borderRadius: 4,
-                      border: on ? `1px solid ${ACCENT}` : '1px solid #e5e7eb',
-                      background: on ? ACCENT_BG : '#fff',
-                      color: on ? '#713f12' : '#64748b',
-                      cursor: 'pointer',
-                      fontWeight: on ? 700 : 500,
-                    }}
-                  >
-                    {s.label}
-                  </button>
-                );
-              })}
-              {filterStatusIds.length > 0 && (
-                <button type="button" onClick={() => setFilterStatusIds([])} style={{ fontSize: '0.58rem', color: '#94a3b8', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', fontFamily: 'monospace' }}>clear</button>
+            <div ref={statusFilterRef} style={{ position: 'relative' }}>
+              <button
+                type="button"
+                onClick={() => setFilterDropdown((o) => (o === 'status' ? null : 'status'))}
+                style={{
+                  ...inputStyle,
+                  width: 'auto',
+                  minWidth: '132px',
+                  maxWidth: '200px',
+                  fontSize: '0.72rem',
+                  padding: '0.3rem 0.55rem',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '0.35rem',
+                  borderColor: filterStatusIds.length ? ACCENT : '#ddd',
+                  background: filterStatusIds.length ? ACCENT_BG : '#fff',
+                }}
+              >
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'left' }}>
+                  {filterStatusIds.length === 0
+                    ? 'All statuses'
+                    : filterStatusIds.length === 1
+                      ? statuses.find((s) => s.task_status_id === filterStatusIds[0])?.label ?? '1 status'
+                      : `${filterStatusIds.length} statuses`}
+                </span>
+                <span style={{ opacity: 0.7, flexShrink: 0 }}>{filterDropdown === 'status' ? '▴' : '▾'}</span>
+              </button>
+              {filterDropdown === 'status' && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: '100%',
+                    left: 0,
+                    marginTop: 4,
+                    minWidth: 200,
+                    maxHeight: 220,
+                    overflowY: 'auto',
+                    background: '#fff',
+                    border: '1px solid #ddd',
+                    borderRadius: 6,
+                    boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
+                    zIndex: 60,
+                    padding: '0.35rem 0',
+                  }}
+                  onMouseDown={(e) => e.preventDefault()}
+                >
+                  {statuses.map((s) => {
+                    const on = filterStatusIds.includes(s.task_status_id);
+                    return (
+                      <label
+                        key={s.task_status_id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.45rem',
+                          padding: '0.35rem 0.65rem',
+                          fontSize: '0.72rem',
+                          cursor: 'pointer',
+                          color: '#333',
+                          background: on ? ACCENT_BG : 'transparent',
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={on}
+                          onChange={() =>
+                            setFilterStatusIds((prev) =>
+                              on ? prev.filter((id) => id !== s.task_status_id) : [...prev, s.task_status_id]
+                            )
+                          }
+                          style={{ accentColor: '#b45309', cursor: 'pointer' }}
+                        />
+                        <span>{s.label}</span>
+                      </label>
+                    );
+                  })}
+                  {filterStatusIds.length > 0 && (
+                    <div style={{ borderTop: '1px solid #eee', padding: '0.35rem 0.65rem 0.15rem' }}>
+                      <button
+                        type="button"
+                        onClick={() => setFilterStatusIds([])}
+                        style={{
+                          fontSize: '0.65rem',
+                          color: '#64748b',
+                          background: 'none',
+                          border: 'none',
+                          cursor: 'pointer',
+                          fontFamily: 'monospace',
+                          textDecoration: 'underline',
+                          padding: 0,
+                        }}
+                      >
+                        Clear statuses
+                      </button>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.72rem', color: '#555', cursor: 'pointer', fontFamily: 'monospace' }}>
