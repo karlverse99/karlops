@@ -175,7 +175,15 @@ export async function POST(req: NextRequest) {
           }
           const normalizedScope = normalizeQueryScope(objType, scope);
           const resolvedScope = await resolveObjectScope(supabase, user.id, normalizedScope);
-          const block = await pullObjectData(supabase, user.id, objType, resolvedScope, bucketLabels, fields);
+          const block = await pullObjectData(
+            supabase,
+            user.id,
+            objType,
+            resolvedScope,
+            bucketLabels,
+            fields,
+            bucketKeyOrder,
+          );
           if (block) dataBlocks.push(`${objType}:\n${block}`);
         }
       }
@@ -189,7 +197,7 @@ export async function POST(req: NextRequest) {
         const objType = mapSectionSourceToObjectType(source);
         const sectionBlock = isPreview
           ? generateStub(objType, bucketLabels, bucketKeyOrder)
-          : await pullObjectData(supabase, user.id, objType, scope, bucketLabels, []);
+          : await pullObjectData(supabase, user.id, objType, scope, bucketLabels, [], bucketKeyOrder);
         dataBlocks.push(`${label}:\n${sectionBlock || '(no data)'}`);
       }
     }
@@ -479,6 +487,18 @@ async function normalizeSectionScope(
   return out;
 }
 
+// ─── Bucket group ordering (concept_registry display_order via bucketKeyOrder) ─
+
+function sortBucketKeys(keys: string[], registryOrder: string[]): string[] {
+  const idx = new Map(registryOrder.map((k, i) => [k, i]));
+  return [...keys].sort((a, b) => {
+    const ia = idx.has(a) ? idx.get(a)! : registryOrder.length + keys.indexOf(a);
+    const ib = idx.has(b) ? idx.get(b)! : registryOrder.length + keys.indexOf(b);
+    if (ia !== ib) return ia - ib;
+    return a.localeCompare(b);
+  });
+}
+
 // ─── Per-object data puller ───────────────────────────────────────────────────
 // scope: field → filter value (from element_filters, keyed by field name only)
 // fields: which fields were selected for this object type
@@ -491,6 +511,7 @@ async function pullObjectData(
   scope:        Record<string, any>,
   bucketLabels: Record<string, string>,
   fields:       string[],
+  bucketKeyOrder: string[] = [],
 ): Promise<string> {
   const today = new Date().toISOString().slice(0, 10);
 
@@ -522,8 +543,9 @@ async function pullObjectData(
         `- ${t.title}${status ? ' · ' + status : ''}${due ? ' · Due: ' + due + overdue : ''}`
       );
     }
-    return Object.entries(byBucket)
-      .map(([b, items]) => `${bucketLabels[b] ?? b}:\n${items.join('\n')}`)
+    const orderedKeys = sortBucketKeys(Object.keys(byBucket), bucketKeyOrder);
+    return orderedKeys
+      .map((b) => `${bucketLabels[b] ?? b}:\n${byBucket[b].join('\n')}`)
       .join('\n\n');
   }
 

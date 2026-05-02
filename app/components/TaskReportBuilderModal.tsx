@@ -3,7 +3,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { buildDocumentTemplateFilenameStub } from '@/lib/ko/documentTemplateFilenameStub';
+import {
+  buildExtractRunDataV1,
+  defaultSuggestedFilenameDdMmYyyyColonHhMm,
+  serializeExtractRunData,
+} from '@/lib/ko/extractRunData';
 import KarlSpinner from './KarlSpinner';
+import TagPicker from '@/app/components/TagPicker';
 
 interface Context {
   context_id: string;
@@ -12,6 +18,17 @@ interface Context {
 
 interface TemplateLite {
   document_template_id: string;
+  name: string;
+}
+
+interface TagRow {
+  tag_id: string;
+  name: string;
+  tag_group_id: string;
+}
+
+interface TagGroupRow {
+  tag_group_id: string;
   name: string;
 }
 
@@ -57,7 +74,8 @@ function defaultTaskInstructions() {
 
 function renderScopeSummary(
   scope: TaskReportBuilderModalProps['scope'],
-  contexts: Context[]
+  contexts: Context[],
+  scopeTags: string[]
 ) {
   const parts: string[] = [];
   if (scope.bucket) parts.push(`bucket=${scope.bucket}`);
@@ -65,6 +83,7 @@ function renderScopeSummary(
     const ctx = contexts.find((c) => c.context_id === scope.contextId);
     parts.push(`context=${ctx?.name ?? scope.contextId}`);
   }
+  if (scopeTags.length) parts.push(`tags=${scopeTags.join(', ')}`);
   if (scope.search.trim()) parts.push(`search="${scope.search.trim()}"`);
   if (scope.statusId) parts.push('status filter active');
   if (scope.showCompleted) parts.push('include completed');
@@ -204,6 +223,15 @@ export default function TaskReportBuilderModal({
   const [error, setError] = useState('');
   const [saveMsg, setSaveMsg] = useState('');
 
+  const [allTags, setAllTags] = useState<TagRow[]>([]);
+  const [tagGroups, setTagGroups] = useState<TagGroupRow[]>([]);
+  const [scopeTags, setScopeTags] = useState<string[]>([]);
+
+  const [recordTitle, setRecordTitle] = useState('My task report');
+  const [savedFilename, setSavedFilename] = useState(() => defaultSuggestedFilenameDdMmYyyyColonHhMm('md'));
+  const [storageWhere, setStorageWhere] = useState('');
+  const [locator, setLocator] = useState('');
+
   const initX = Math.max(30, Math.round(window.innerWidth / 2 - 620));
   const initY = Math.max(30, Math.round(window.innerHeight / 2 - 350));
   const [pos, setPos] = useState({ x: initX, y: initY });
@@ -224,6 +252,19 @@ export default function TaskReportBuilderModal({
       if (data) setTemplates(data as TemplateLite[]);
     };
     loadTemplates();
+  }, [userId]);
+
+  const reloadTags = async () => {
+    const [{ data: grData }, { data: tgData }] = await Promise.all([
+      supabase.from('tag_group').select('tag_group_id, name').eq('user_id', userId).order('name'),
+      supabase.from('tag').select('tag_id, name, tag_group_id').eq('user_id', userId).order('name'),
+    ]);
+    if (grData) setTagGroups(grData as TagGroupRow[]);
+    if (tgData) setAllTags(tgData as TagRow[]);
+  };
+
+  useEffect(() => {
+    reloadTags();
   }, [userId]);
 
   useEffect(() => {
@@ -257,12 +298,18 @@ export default function TaskReportBuilderModal({
     const base: Record<string, unknown> = {};
     if (scope.bucket) base.bucket_key = [scope.bucket];
     if (scope.contextId) base.context_id = scope.contextId;
+    if (scopeTags.length > 0) base.tags = scopeTags;
     return { __scope: { task: base } };
-  }, [scope.bucket, scope.contextId]);
+  }, [scope.bucket, scope.contextId, scopeTags]);
 
   const scopeSummary = useMemo(
-    () => renderScopeSummary(scope, contextOptions),
-    [scope, contextOptions]
+    () => renderScopeSummary(scope, contextOptions, scopeTags),
+    [scope, contextOptions, scopeTags]
+  );
+
+  const selectedElements = useMemo(
+    () => ['task.title', 'task.bucket_key', 'task.target_date', 'task.tags'],
+    []
   );
 
   const runPreview = async () => {
@@ -274,6 +321,8 @@ export default function TaskReportBuilderModal({
       const body: Record<string, unknown> = {
         run_mode: 'preview_live',
         user_additions: focusPrompt.trim(),
+        element_filters: taskScope,
+        selected_elements: selectedElements,
       };
       if (templateId) {
         body.template_id = templateId;
@@ -285,7 +334,7 @@ export default function TaskReportBuilderModal({
           template_mode: 'karl',
           output_format: 'md',
           filename_suffix_format: 'date',
-          selected_elements: ['task.title', 'task.bucket_key', 'task.target_date', 'task.tags'],
+          selected_elements: selectedElements,
           element_filters: taskScope,
         };
       }
@@ -339,7 +388,7 @@ export default function TaskReportBuilderModal({
         prompt_template: instructions.trim(),
         template_mode: 'karl',
         filename_suffix_format: 'date',
-        selected_elements: ['task.title', 'task.bucket_key', 'task.target_date', 'task.tags'],
+        selected_elements: selectedElements,
         element_filters: taskScope,
         sections: [] as unknown[],
         tags: [] as string[],
@@ -379,25 +428,30 @@ export default function TaskReportBuilderModal({
     try {
       const now = new Date();
       const dateSlug = now.toISOString().slice(0, 10);
-      const titleBase = (templateName.trim() || 'Task Report').slice(0, 90);
-      const runSnapshot = {
+      const titleBase = (recordTitle.trim() || templateName.trim() || 'Task report').slice(0, 120);
+      const fn = savedFilename.trim() || defaultSuggestedFilenameDdMmYyyyColonHhMm('md');
+      const runPayload = buildExtractRunDataV1({
         template_id: templateId || null,
-        instructions,
+        prompt_snapshot: templateId ? null : instructions.trim() || null,
         focus_prompt: focusPrompt.trim() || null,
-        selected_elements: ['task.title', 'task.bucket_key', 'task.target_date', 'task.tags'],
-        element_filters: taskScope,
-        scope,
+        selected_elements: selectedElements,
+        element_filters: taskScope as Record<string, unknown>,
+        task_list_scope: { ...scope, scope_tags: scopeTags },
+        scope_tags: scopeTags,
+        approved_summary: summaryDraft.trim(),
         approved_at: now.toISOString(),
-        approval_mode: 'manual',
-      };
+        suggested_filename: fn,
+        storage_label: storageWhere.trim() || null,
+        locator: locator.trim() || null,
+      });
       const { error: saveErr } = await supabase.from('external_reference').insert({
         user_id: userId,
         title: `${titleBase} · approved ${dateSlug}`,
-        filename: `${titleBase.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')}-${dateSlug}.md`,
-        location: 'task_report_approved',
+        filename: fn,
+        location: storageWhere.trim() || null,
         description: templateDesc.trim() || 'Approved task extract run',
         notes: summaryDraft.trim(),
-        run_data: JSON.stringify(runSnapshot),
+        run_data: serializeExtractRunData(runPayload),
         output: null,
         output_encrypted: false,
         section_data: taskScope,
@@ -492,6 +546,23 @@ export default function TaskReportBuilderModal({
               <div style={labelSt}>Template Description</div>
               <input value={templateDesc} onChange={(e) => setTemplateDesc(e.target.value)} style={inputSt} />
             </div>
+
+            <div style={{ marginBottom: '0.7rem' }}>
+              <TagPicker
+                selected={scopeTags}
+                allTags={allTags}
+                tagGroups={tagGroups}
+                onChange={setScopeTags}
+                onTagCreated={reloadTags}
+                accentColor={ACCENT}
+                objectType="extract"
+                contextText={recordTitle || templateName}
+                accessToken={accessToken}
+                userId={userId}
+                label="Scope tags (tasks must include)"
+              />
+            </div>
+
             <div style={{ marginBottom: '0.7rem' }}>
               <div style={labelSt}>Run Focus (data tweak per run)</div>
               <textarea
@@ -510,6 +581,66 @@ export default function TaskReportBuilderModal({
                 rows={13}
                 style={{ ...inputSt, resize: 'vertical', minHeight: 220 } as any}
               />
+            </div>
+
+            <div
+              style={{
+                marginBottom: '0.75rem',
+                padding: '0.65rem',
+                border: `1px solid ${ACCENT_BORDER}`,
+                borderRadius: 6,
+                background: '#fafafa',
+              }}
+            >
+              <div style={labelSt}>Your file (reference only — not stored in KarlOps)</div>
+              <p style={{ fontSize: '0.65rem', color: '#6b7280', margin: '0 0 0.55rem', lineHeight: 1.45 }}>
+                Use this to remember what you named the file and where it lives. KarlOps does not verify paths or links or custodial chain — that stays with you and your storage.
+              </p>
+              <div style={{ marginBottom: '0.5rem' }}>
+                <div style={labelSt}>Record title (in KarlOps)</div>
+                <input value={recordTitle} onChange={(e) => setRecordTitle(e.target.value)} style={inputSt} placeholder="e.g. Weekly task status" />
+              </div>
+              <div style={{ marginBottom: '0.5rem' }}>
+                <div style={{ ...labelSt, display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  <span>Suggested filename</span>
+                  <button
+                    type="button"
+                    onClick={() => setSavedFilename(defaultSuggestedFilenameDdMmYyyyColonHhMm('md'))}
+                    style={{
+                      background: 'transparent',
+                      border: `1px solid ${ACCENT_BORDER}`,
+                      color: '#6d28d9',
+                      fontSize: '0.58rem',
+                      padding: '0.12rem 0.4rem',
+                      borderRadius: 3,
+                      cursor: 'pointer',
+                      fontFamily: 'monospace',
+                    }}
+                  >
+                    Use date stamp DDMMYYYY:HHMM.md
+                  </button>
+                </div>
+                <input value={savedFilename} onChange={(e) => setSavedFilename(e.target.value)} style={inputSt} placeholder="my-report.md" />
+              </div>
+              <div style={{ marginBottom: '0.5rem' }}>
+                <div style={labelSt}>Where (short)</div>
+                <input
+                  value={storageWhere}
+                  onChange={(e) => setStorageWhere(e.target.value)}
+                  style={inputSt}
+                  placeholder="e.g. This PC · Downloads, Dropbox, Google Drive"
+                />
+              </div>
+              <div style={{ marginBottom: 0 }}>
+                <div style={labelSt}>Locator (path or URL)</div>
+                <textarea
+                  value={locator}
+                  onChange={(e) => setLocator(e.target.value)}
+                  rows={2}
+                  style={{ ...inputSt, resize: 'vertical', fontSize: '0.72rem' } as any}
+                  placeholder="Paste a link or path — KarlOps does not check that it works."
+                />
+              </div>
             </div>
 
             <div style={{ display: 'flex', gap: '0.45rem', alignItems: 'center', flexWrap: 'wrap' }}>
