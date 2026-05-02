@@ -58,17 +58,29 @@ const ACCENT        = '#fbbf24';
 const ACCENT_BG     = '#fffbeb';
 const ACCENT_BORDER = '#fde68a';
 
+/** Human-facing bucket name: concept_registry first, then static fallback. */
+function resolveBucketLabel(bucketKey: string, registry: Record<string, string>): string {
+  const reg = registry[bucketKey];
+  if (reg) return reg;
+  return BUCKET_META[bucketKey]?.label ?? bucketKey;
+}
+
+/** Keys in registry order when present; else built-in bucket keys. */
+function bucketKeysOrdered(registryOrder: string[]): string[] {
+  return registryOrder.length > 0 ? registryOrder : Object.keys(BUCKET_META);
+}
+
 function formatDate(dateStr: string): string {
   const d = new Date(dateStr);
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-function exportAsCSV(tasks: Task[], statusMap: Record<string, string>): void {
+function exportAsCSV(tasks: Task[], statusMap: Record<string, string>, bucketLabels: Record<string, string>): void {
   const headers = ['Identifier', 'Title', 'Bucket', 'Status', 'Context', 'Target Date', 'Tags', 'Completed', 'Archived', 'Created'];
   const rows = tasks.map((t, i) => [
     `${BUCKET_META[t.bucket_key]?.id ?? t.bucket_key}${i + 1}`,
     `"${t.title.replace(/"/g, '""')}"`,
-    BUCKET_META[t.bucket_key]?.label ?? t.bucket_key,
+    resolveBucketLabel(t.bucket_key, bucketLabels),
     t.task_status_id ? (statusMap[t.task_status_id] ?? '') : '',
     t.context?.name ?? '',
     t.target_date ? formatDate(t.target_date) : '',
@@ -85,7 +97,7 @@ function exportAsCSV(tasks: Task[], statusMap: Record<string, string>): void {
   URL.revokeObjectURL(url);
 }
 
-function exportAsPlainText(tasks: Task[], statusMap: Record<string, string>): void {
+function exportAsPlainText(tasks: Task[], statusMap: Record<string, string>, bucketLabels: Record<string, string>): void {
   const lines: string[] = [
     '# KarlOps task list export',
     `# Generated ${new Date().toISOString()}`,
@@ -95,7 +107,7 @@ function exportAsPlainText(tasks: Task[], statusMap: Record<string, string>): vo
   for (let i = 0; i < tasks.length; i++) {
     const t = tasks[i];
     const id = `${BUCKET_META[t.bucket_key]?.id ?? t.bucket_key}${i + 1}`;
-    const bucket = BUCKET_META[t.bucket_key]?.label ?? t.bucket_key;
+    const bucket = resolveBucketLabel(t.bucket_key, bucketLabels);
     const status = t.task_status_id ? (statusMap[t.task_status_id] ?? '') : '';
     const tags = (t.tags ?? []).join(', ');
     const ctx = t.context?.name ?? '';
@@ -133,6 +145,9 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
   const [allTags, setAllTags] = useState<TagRow[]>([]);
   const [tagGroups, setTagGroups] = useState<TagGroupRow[]>([]);
   const [listScopeTags, setListScopeTags] = useState<string[]>([]);
+  const [bucketConceptLabels, setBucketConceptLabels] = useState<Record<string, string>>({});
+  const [bucketConceptIcons, setBucketConceptIcons] = useState<Record<string, string | null>>({});
+  const [bucketConceptOrder, setBucketConceptOrder] = useState<string[]>([]);
 
   // ─── Filters + sort ────────────────────────────────────────────────────────
   const [search, setSearch]               = useState('');
@@ -189,6 +204,37 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
     }
   };
 
+  const loadBucketConcepts = async () => {
+    try {
+      const { data: koUser } = await supabase.from('ko_user').select('implementation_type').eq('id', userId).maybeSingle();
+      const implType = koUser?.implementation_type ?? 'personal';
+      const { data } = await supabase
+        .from('concept_registry')
+        .select('concept_key, label, icon, display_order')
+        .eq('implementation_type', implType)
+        .eq('concept_type', 'bucket')
+        .eq('is_active', true)
+        .order('display_order');
+      const labels: Record<string, string> = {};
+      const icons: Record<string, string | null> = {};
+      const order: string[] = [];
+      for (const r of data ?? []) {
+        const shortKey = String(r.concept_key ?? '').replace(/^bucket_/, '');
+        if (!shortKey) continue;
+        order.push(shortKey);
+        labels[shortKey] = String(r.label ?? '').trim() || shortKey;
+        icons[shortKey] = r.icon && String(r.icon).trim() ? String(r.icon).trim() : null;
+      }
+      setBucketConceptOrder(order);
+      setBucketConceptLabels(labels);
+      setBucketConceptIcons(icons);
+    } catch {
+      setBucketConceptOrder([]);
+      setBucketConceptLabels({});
+      setBucketConceptIcons({});
+    }
+  };
+
   const reloadTags = async () => {
     const [{ data: grData }, { data: tgData }] = await Promise.all([
       supabase.from('tag_group').select('tag_group_id, name').eq('user_id', userId).order('name'),
@@ -198,7 +244,7 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
     if (tgData) setAllTags(tgData as TagRow[]);
   };
 
-  useEffect(() => { loadTasks(); loadContexts(); loadStatuses(); }, []);
+  useEffect(() => { loadTasks(); loadContexts(); loadStatuses(); loadBucketConcepts(); }, []);
 
   useEffect(() => {
     reloadTags();
@@ -314,8 +360,8 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
                 {showExportMenu && (
                   <div style={{ position: 'absolute', top: '100%', right: 0, marginTop: '0.25rem', background: '#fff', border: '1px solid #ddd', borderRadius: '4px', boxShadow: '0 4px 12px rgba(0,0,0,0.15)', zIndex: 10, minWidth: '120px' }}>
                     <div onClick={() => { setShowReportBuilder(true); setShowExportMenu(false); }} style={{ padding: '0.5rem 0.75rem', fontSize: '0.75rem', color: '#333', cursor: 'pointer', fontFamily: 'monospace' }} onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BG)} onMouseLeave={e => (e.currentTarget.style.background = '#fff')}>Report Builder</div>
-                    <div onClick={() => { exportAsCSV(filtered, statusMap); setShowExportMenu(false); }} style={{ padding: '0.5rem 0.75rem', fontSize: '0.75rem', color: '#333', cursor: 'pointer', fontFamily: 'monospace' }} onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BG)} onMouseLeave={e => (e.currentTarget.style.background = '#fff')}>Export CSV</div>
-                    <div onClick={() => { exportAsPlainText(filtered, statusMap); setShowExportMenu(false); }} style={{ padding: '0.5rem 0.75rem', fontSize: '0.75rem', color: '#333', cursor: 'pointer', fontFamily: 'monospace' }} onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BG)} onMouseLeave={e => (e.currentTarget.style.background = '#fff')}>Export plain text</div>
+                    <div onClick={() => { exportAsCSV(filtered, statusMap, bucketConceptLabels); setShowExportMenu(false); }} style={{ padding: '0.5rem 0.75rem', fontSize: '0.75rem', color: '#333', cursor: 'pointer', fontFamily: 'monospace' }} onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BG)} onMouseLeave={e => (e.currentTarget.style.background = '#fff')}>Export CSV</div>
+                    <div onClick={() => { exportAsPlainText(filtered, statusMap, bucketConceptLabels); setShowExportMenu(false); }} style={{ padding: '0.5rem 0.75rem', fontSize: '0.75rem', color: '#333', cursor: 'pointer', fontFamily: 'monospace' }} onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BG)} onMouseLeave={e => (e.currentTarget.style.background = '#fff')}>Export plain text</div>
                   </div>
                 )}
               </div>
@@ -353,7 +399,7 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
                   {filterBuckets.length === 0
                     ? 'All buckets'
                     : filterBuckets.length === 1
-                      ? BUCKET_META[filterBuckets[0]]?.label ?? filterBuckets[0]
+                      ? resolveBucketLabel(filterBuckets[0], bucketConceptLabels)
                       : `${filterBuckets.length} buckets`}
                 </span>
                 <span style={{ opacity: 0.7, flexShrink: 0 }}>{filterDropdown === 'bucket' ? '▴' : '▾'}</span>
@@ -377,8 +423,11 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
                   }}
                   onMouseDown={(e) => e.preventDefault()}
                 >
-                  {Object.entries(BUCKET_META).map(([key, meta]) => {
+                  {bucketKeysOrdered(bucketConceptOrder).map((key) => {
+                    const meta = BUCKET_META[key];
                     const on = filterBuckets.includes(key);
+                    const label = resolveBucketLabel(key, bucketConceptLabels);
+                    const icon = bucketConceptIcons[key];
                     return (
                       <label
                         key={key}
@@ -409,13 +458,18 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
                             alignSelf: 'stretch',
                             minHeight: 14,
                             borderRadius: 1,
-                            background: meta.color,
+                            background: meta?.color ?? '#cbd5e1',
                             flexShrink: 0,
                           }}
                         />
-                        <span style={{ flex: 1 }}>
-                          <span style={{ fontWeight: 600 }}>{meta.label}</span>
-                          <span style={{ color: '#94a3b8', marginLeft: '0.35rem', fontSize: '0.65rem' }}>{meta.id}</span>
+                        <span style={{ flex: 1, minWidth: 0 }}>
+                          <span style={{ fontWeight: 600 }}>
+                            {icon ? `${icon} ` : ''}
+                            {label}
+                          </span>
+                          {meta?.id && (
+                            <span style={{ color: '#94a3b8', marginLeft: '0.35rem', fontSize: '0.65rem' }}>{meta.id}</span>
+                          )}
                         </span>
                       </label>
                     );
@@ -692,7 +746,7 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
 
           {/* Table header */}
           <div style={{ display: 'flex', alignItems: 'center', padding: '0.4rem 1.25rem', borderBottom: '1px solid #eee', background: '#fafafa', flexShrink: 0, gap: '0.5rem' }}>
-            <div style={{ width: '52px', flexShrink: 0 }}>
+            <div style={{ width: '138px', flexShrink: 0 }}>
               <button onClick={() => toggleSort('bucket')} style={colBtnStyle}>Bucket {sortIcon('bucket')}</button>
             </div>
             <div style={{ flex: 1, minWidth: '120px' }}>
@@ -719,9 +773,10 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
             ) : filtered.length === 0 ? (
               <div style={{ color: '#bbb', fontSize: '0.75rem', padding: '1.5rem', fontFamily: 'monospace' }}>No tasks match the current filters.</div>
             ) : (
-              filtered.map((t, idx) => {
+              filtered.map((t) => {
                 const bm = BUCKET_META[t.bucket_key];
-                const identifier = `${bm?.id ?? t.bucket_key}${idx + 1}`;
+                const bucketTitle = resolveBucketLabel(t.bucket_key, bucketConceptLabels);
+                const bucketIcon = bucketConceptIcons[t.bucket_key];
                 const isCompleted = t.is_completed;
                 const isArchived  = t.is_archived;
 
@@ -732,9 +787,28 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
                     onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BG)}
                     onMouseLeave={e => (e.currentTarget.style.background = isCompleted ? '#f9fafb' : isArchived ? '#f5f5f5' : '#fff')}
                   >
-                    {/* Bucket identifier */}
-                    <div style={{ width: '52px', flexShrink: 0 }}>
-                      <span style={{ color: bm?.accent ?? '#999', fontSize: '0.65rem', fontWeight: 700, fontFamily: 'monospace', background: '#f5f5f5', borderLeft: `3px solid ${bm?.color ?? '#999'}`, padding: '0.1rem 0.3rem', borderRadius: '2px' }}>{identifier}</span>
+                    {/* Bucket — concept_registry labels (how people refer to buckets) */}
+                    <div style={{ width: '138px', flexShrink: 0, overflow: 'hidden' }}>
+                      <span
+                        title={`${bucketTitle}${bm?.id ? ` (${bm.id})` : ''} · ${t.bucket_key}`}
+                        style={{
+                          display: 'block',
+                          color: bm?.accent ?? '#374151',
+                          fontSize: '0.68rem',
+                          fontWeight: 600,
+                          fontFamily: 'system-ui, sans-serif',
+                          background: '#f9fafb',
+                          borderLeft: `3px solid ${bm?.color ?? '#94a3b8'}`,
+                          padding: '0.2rem 0.4rem',
+                          borderRadius: '2px',
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          lineHeight: 1.25,
+                        }}
+                      >
+                        {bucketIcon ? `${bucketIcon} ` : ''}{bucketTitle}
+                      </span>
                     </div>
 
                     {/* Title */}
