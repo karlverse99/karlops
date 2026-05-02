@@ -9,6 +9,7 @@ import {
   serializeExtractRunData,
 } from '@/lib/ko/extractRunData';
 import KarlSpinner from './KarlSpinner';
+import TagPicker from '@/app/components/TagPicker';
 
 interface Context {
   context_id: string;
@@ -223,6 +224,7 @@ export default function TaskReportBuilderModal({
   const [saveMsg, setSaveMsg] = useState('');
 
   const [allTags, setAllTags] = useState<TagRow[]>([]);
+  const [tagGroups, setTagGroups] = useState<TagGroupRow[]>([]);
   const [scopeTags, setScopeTags] = useState<string[]>([]);
   const [quickTagValue, setQuickTagValue] = useState('');
 
@@ -254,11 +256,11 @@ export default function TaskReportBuilderModal({
   }, [userId]);
 
   const reloadTags = async () => {
-    const { data: tgData } = await supabase
-      .from('tag')
-      .select('tag_id, name, tag_group_id')
-      .eq('user_id', userId)
-      .order('name');
+    const [{ data: grData }, { data: tgData }] = await Promise.all([
+      supabase.from('tag_group').select('tag_group_id, name').eq('user_id', userId).order('name'),
+      supabase.from('tag').select('tag_id, name, tag_group_id').eq('user_id', userId).order('name'),
+    ]);
+    if (grData) setTagGroups(grData as TagGroupRow[]);
     if (tgData) setAllTags(tgData as TagRow[]);
   };
 
@@ -619,6 +621,31 @@ export default function TaskReportBuilderModal({
                     </button>
                   </span>
                 ))}
+              </div>
+              <div
+                style={{
+                  marginTop: '0.55rem',
+                  paddingTop: '0.55rem',
+                  borderTop: `1px dashed ${ACCENT_BORDER}`,
+                }}
+              >
+                <div style={{ ...labelSt, textTransform: 'none', letterSpacing: '0.02em' }}>
+                  Full tag picker (same as task detail — browse, create)
+                </div>
+                <TagPicker
+                  selected={scopeTags}
+                  allTags={allTags}
+                  tagGroups={tagGroups}
+                  onChange={setScopeTags}
+                  onTagCreated={reloadTags}
+                  accentColor={ACCENT}
+                  objectType="extract"
+                  contextText={recordTitle || templateName}
+                  accessToken={accessToken}
+                  userId={userId}
+                  maxTags={12}
+                  label="Tags for this report scope"
+                />
               </div>
             </div>
 
