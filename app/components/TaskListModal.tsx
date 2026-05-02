@@ -156,7 +156,8 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
   const dragStart       = useRef({ mx: 0, my: 0, px: 0, py: 0 });
   const resizeStart     = useRef({ mx: 0, my: 0, w: 0, h: 0 });
   const modalRef        = useRef<HTMLDivElement>(null);
-  const [filterDropdown, setFilterDropdown] = useState<null | 'context' | 'status'>(null);
+  const [filterDropdown, setFilterDropdown] = useState<null | 'bucket' | 'context' | 'status'>(null);
+  const bucketFilterRef = useRef<HTMLDivElement>(null);
   const ctxFilterRef    = useRef<HTMLDivElement>(null);
   const statusFilterRef = useRef<HTMLDivElement>(null);
 
@@ -221,7 +222,7 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
     if (!filterDropdown) return;
     const close = (e: MouseEvent) => {
       const n = e.target as Node;
-      if (ctxFilterRef.current?.contains(n) || statusFilterRef.current?.contains(n)) return;
+      if (bucketFilterRef.current?.contains(n) || ctxFilterRef.current?.contains(n) || statusFilterRef.current?.contains(n)) return;
       setFilterDropdown(null);
     };
     document.addEventListener('mousedown', close);
@@ -328,50 +329,118 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
               style={{ ...inputStyle, width: '200px', fontSize: '0.75rem', padding: '0.3rem 0.6rem' }}
               onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')}
             />
-            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.25rem', maxWidth: '420px' }}>
-              <span style={{ fontSize: '0.62rem', color: '#666', fontFamily: 'monospace', marginRight: '0.15rem' }}>Buckets</span>
-              {Object.entries(BUCKET_META).map(([key, meta]) => {
-                const on = filterBuckets.includes(key);
-                return (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={() =>
-                      setFilterBuckets((prev) => (on ? prev.filter((k) => k !== key) : [...prev, key]))
-                    }
-                    title={meta.label}
-                    style={{
-                      fontSize: '0.62rem',
-                      fontFamily: 'monospace',
-                      padding: '0.15rem 0.4rem',
-                      borderRadius: 4,
-                      border: on ? `1px solid ${ACCENT}` : '1px solid #e5e7eb',
-                      background: on ? ACCENT_BG : '#fff',
-                      color: on ? '#713f12' : '#64748b',
-                      cursor: 'pointer',
-                      fontWeight: on ? 700 : 500,
-                    }}
-                  >
-                    {meta.id}
-                  </button>
-                );
-              })}
-              {filterBuckets.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setFilterBuckets([])}
+            <div ref={bucketFilterRef} style={{ position: 'relative' }}>
+              <button
+                type="button"
+                onClick={() => setFilterDropdown((o) => (o === 'bucket' ? null : 'bucket'))}
+                style={{
+                  ...inputStyle,
+                  width: 'auto',
+                  minWidth: '136px',
+                  maxWidth: '200px',
+                  fontSize: '0.72rem',
+                  padding: '0.3rem 0.55rem',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '0.35rem',
+                  borderColor: filterBuckets.length ? ACCENT : '#ddd',
+                  background: filterBuckets.length ? ACCENT_BG : '#fff',
+                }}
+              >
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textAlign: 'left' }}>
+                  {filterBuckets.length === 0
+                    ? 'All buckets'
+                    : filterBuckets.length === 1
+                      ? BUCKET_META[filterBuckets[0]]?.label ?? filterBuckets[0]
+                      : `${filterBuckets.length} buckets`}
+                </span>
+                <span style={{ opacity: 0.7, flexShrink: 0 }}>{filterDropdown === 'bucket' ? '▴' : '▾'}</span>
+              </button>
+              {filterDropdown === 'bucket' && (
+                <div
                   style={{
-                    fontSize: '0.58rem',
-                    color: '#94a3b8',
-                    background: 'none',
-                    border: 'none',
-                    cursor: 'pointer',
-                    textDecoration: 'underline',
-                    fontFamily: 'monospace',
+                    position: 'absolute',
+                    top: '100%',
+                    left: 0,
+                    marginTop: 4,
+                    minWidth: 220,
+                    maxHeight: 260,
+                    overflowY: 'auto',
+                    background: '#fff',
+                    border: '1px solid #ddd',
+                    borderRadius: 6,
+                    boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
+                    zIndex: 60,
+                    padding: '0.35rem 0',
                   }}
+                  onMouseDown={(e) => e.preventDefault()}
                 >
-                  clear
-                </button>
+                  {Object.entries(BUCKET_META).map(([key, meta]) => {
+                    const on = filterBuckets.includes(key);
+                    return (
+                      <label
+                        key={key}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.45rem',
+                          padding: '0.35rem 0.65rem',
+                          fontSize: '0.72rem',
+                          cursor: 'pointer',
+                          color: '#333',
+                          background: on ? ACCENT_BG : 'transparent',
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={on}
+                          onChange={() =>
+                            setFilterBuckets((prev) =>
+                              on ? prev.filter((k) => k !== key) : [...prev, key]
+                            )
+                          }
+                          style={{ accentColor: '#b45309', cursor: 'pointer' }}
+                        />
+                        <span
+                          style={{
+                            width: 4,
+                            alignSelf: 'stretch',
+                            minHeight: 14,
+                            borderRadius: 1,
+                            background: meta.color,
+                            flexShrink: 0,
+                          }}
+                        />
+                        <span style={{ flex: 1 }}>
+                          <span style={{ fontWeight: 600 }}>{meta.label}</span>
+                          <span style={{ color: '#94a3b8', marginLeft: '0.35rem', fontSize: '0.65rem' }}>{meta.id}</span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                  {filterBuckets.length > 0 && (
+                    <div style={{ borderTop: '1px solid #eee', padding: '0.35rem 0.65rem 0.15rem' }}>
+                      <button
+                        type="button"
+                        onClick={() => setFilterBuckets([])}
+                        style={{
+                          fontSize: '0.65rem',
+                          color: '#64748b',
+                          background: 'none',
+                          border: 'none',
+                          cursor: 'pointer',
+                          fontFamily: 'monospace',
+                          textDecoration: 'underline',
+                          padding: 0,
+                        }}
+                      >
+                        Clear buckets
+                      </button>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
             <div ref={ctxFilterRef} style={{ position: 'relative' }}>
