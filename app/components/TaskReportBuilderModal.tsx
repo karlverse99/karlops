@@ -521,8 +521,23 @@ export default function TaskReportBuilderModal({
           Current task scope: {scopeSummary}
         </div>
 
-        <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1.1fr 1.4fr', overflow: 'hidden' }}>
-          <div style={{ borderRight: `1px solid ${ACCENT_BORDER}`, overflowY: 'auto', padding: '0.8rem' }}>
+        <div
+          style={{
+            flex: 1,
+            minHeight: 0,
+            display: 'grid',
+            gridTemplateColumns: '1.1fr 1.4fr',
+            overflow: 'hidden',
+          }}
+        >
+          <div
+            style={{
+              borderRight: `1px solid ${ACCENT_BORDER}`,
+              overflowY: 'auto',
+              minHeight: 0,
+              padding: '0.8rem',
+            }}
+          >
             <div style={{ marginBottom: '0.7rem' }}>
               <div style={labelSt}>Use Existing Template (optional)</div>
               <select
@@ -550,13 +565,30 @@ export default function TaskReportBuilderModal({
 
             <div style={{ marginBottom: '0.7rem' }}>
               <div style={labelSt}>Scope tags (tasks must include)</div>
-              <div style={{ display: 'flex', gap: '0.4rem', marginBottom: '0.35rem' }}>
+              <p style={{ fontSize: '0.65rem', color: '#6b7280', margin: '0 0 0.5rem', lineHeight: 1.45 }}>
+                Search, browse, or create tags — same controls as task detail. Scope is AND: tasks must include every selected tag.
+              </p>
+              <TagPicker
+                selected={scopeTags}
+                allTags={allTags}
+                tagGroups={tagGroups}
+                onChange={setScopeTags}
+                onTagCreated={reloadTags}
+                accentColor={ACCENT}
+                objectType="extract"
+                contextText={recordTitle || templateName}
+                accessToken={accessToken}
+                userId={userId}
+                maxTags={12}
+                label="Tags for this report scope"
+              />
+              <div style={{ display: 'flex', gap: '0.4rem', marginTop: '0.45rem', marginBottom: '0.35rem' }}>
                 <select
                   value={quickTagValue}
                   onChange={(e) => setQuickTagValue(e.target.value)}
                   style={{ ...inputSt, cursor: 'pointer', flex: 1 } as any}
                 >
-                  <option value="">Select a tag...</option>
+                  <option value="">Quick add from list…</option>
                   {allTags.map((t) => (
                     <option key={t.tag_id} value={t.name}>{t.name}</option>
                   ))}
@@ -583,69 +615,6 @@ export default function TaskReportBuilderModal({
                 >
                   add tag
                 </button>
-              </div>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem' }}>
-                {scopeTags.length === 0 && (
-                  <span style={{ color: '#9ca3af', fontSize: '0.66rem' }}>No scope tags selected</span>
-                )}
-                {scopeTags.map((tag) => (
-                  <span
-                    key={tag}
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '0.3rem',
-                      background: ACCENT_BG,
-                      border: `1px solid ${ACCENT_BORDER}`,
-                      color: '#6d28d9',
-                      borderRadius: 999,
-                      padding: '0.08rem 0.45rem',
-                      fontSize: '0.66rem',
-                    }}
-                  >
-                    #{tag}
-                    <button
-                      type="button"
-                      onClick={() => setScopeTags((prev) => prev.filter((t) => t !== tag))}
-                      style={{
-                        background: 'none',
-                        border: 'none',
-                        color: '#6d28d9',
-                        cursor: 'pointer',
-                        fontSize: '0.72rem',
-                        lineHeight: 1,
-                        padding: 0,
-                      }}
-                    >
-                      ×
-                    </button>
-                  </span>
-                ))}
-              </div>
-              <div
-                style={{
-                  marginTop: '0.55rem',
-                  paddingTop: '0.55rem',
-                  borderTop: `1px dashed ${ACCENT_BORDER}`,
-                }}
-              >
-                <div style={{ ...labelSt, textTransform: 'none', letterSpacing: '0.02em' }}>
-                  Full tag picker (same as task detail — browse, create)
-                </div>
-                <TagPicker
-                  selected={scopeTags}
-                  allTags={allTags}
-                  tagGroups={tagGroups}
-                  onChange={setScopeTags}
-                  onTagCreated={reloadTags}
-                  accentColor={ACCENT}
-                  objectType="extract"
-                  contextText={recordTitle || templateName}
-                  accessToken={accessToken}
-                  userId={userId}
-                  maxTags={12}
-                  label="Tags for this report scope"
-                />
               </div>
             </div>
 
@@ -753,7 +722,7 @@ export default function TaskReportBuilderModal({
             </div>
           </div>
 
-          <div style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+          <div style={{ overflow: 'hidden', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
             <div style={{ padding: '0.6rem 0.8rem', borderBottom: `1px solid ${ACCENT_BORDER}`, fontSize: '0.68rem', color: '#6b7280', background: '#fafafa' }}>
               Rich Preview (recipe-based, rerunnable with new data)
             </div>
