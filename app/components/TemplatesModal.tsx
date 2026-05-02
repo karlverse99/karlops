@@ -168,7 +168,11 @@ function summarizeScopeHuman(filters: Record<string, any>): string {
       bits.push(`contexts: ${v}`);
     }
     if (conf.tags && Array.isArray(conf.tags) && conf.tags.length > 0) bits.push(`tags: ${conf.tags.join(', ')}`);
-    const extra = Object.keys(conf).filter(k => !['window_days', 'context_id', 'tags'].includes(k));
+    if (conf.bucket_key != null && conf.bucket_key !== '') {
+      const bk = Array.isArray(conf.bucket_key) ? conf.bucket_key.join(', ') : String(conf.bucket_key);
+      bits.push(`buckets: ${bk}`);
+    }
+    const extra = Object.keys(conf).filter(k => !['window_days', 'context_id', 'tags', 'bucket_key'].includes(k));
     if (extra.length > 0) bits.push(`custom: ${extra.join(', ')}`);
     parts.push(`${objType} → ${bits.join(' | ') || 'default scope'}`);
   }
@@ -210,7 +214,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
   const [running, setRunning]               = useState(false);
   const [runOutput, setRunOutput]           = useState<string | null>(null);
   const [runErr, setRunErr]                 = useState('');
-  const [runMode, setRunMode]               = useState<'preview' | 'preview_live' | 'generate'>('preview');
+  const [runMode, setRunMode]               = useState<'preview' | 'preview_live' | 'generate'>('preview_live');
   const [copied, setCopied]                 = useState(false);
   const [savedToExtracts, setSavedToExtracts] = useState(false);
 
@@ -404,6 +408,12 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
           ...payload, updated_at: new Date().toISOString(),
         }).eq('document_template_id', selected.document_template_id);
         if (error) throw error;
+        const { data: fresh, error: fetchErr } = await supabase
+          .from('document_template')
+          .select('*')
+          .eq('document_template_id', selected.document_template_id)
+          .single();
+        if (!fetchErr && fresh) selectTemplate(fresh as Template);
       }
       await loadTemplates();
       setIsNew(false);
@@ -462,7 +472,6 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
       const body: Record<string, unknown> = {
         run_mode:          mode,
         karl_prompt:       editKarlPrompt.trim() || undefined,
-        user_additions:    '',
         output_format:     editFormat,
         selected_elements: editElements,
         element_filters:   parsedFilters.value,
@@ -1035,8 +1044,8 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                         {!running && !runErr && !runOutput && (
                           <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: '0.5rem', color: '#ccc' }}>
                             <span style={{ fontSize: '1.5rem' }}>▶</span>
-                            <span style={{ fontSize: '0.75rem' }}>Preview to see output here</span>
-                            <span style={{ fontSize: '0.65rem', color: '#ddd' }}>Tweak instructions, preview again, repeat until right</span>
+                            <span style={{ fontSize: '0.75rem' }}>Use Preview with Data for live tasks</span>
+                            <span style={{ fontSize: '0.65rem', color: '#ddd' }}>Matches Report Builder runs · Stub preview only checks layout</span>
                           </div>
                         )}
                       </div>
@@ -1057,17 +1066,17 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
                       {(selected || (isNew && recipeReady)) && (
                         <div style={{ padding: '0.6rem 0.75rem', borderTop: '1px solid #e5e7eb', background: '#fafafa', display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
 
-                          <Tooltip text="Stub sample rows — check headings and layout only. Nothing is saved.">
-                            <button onClick={() => initiateRun('preview')} disabled={running}
-                              style={{ background: 'transparent', border: `1px solid ${ACCENT}`, color: ACCENT, padding: '0.3rem 0.75rem', borderRadius: 4, fontSize: '0.68rem', fontFamily: 'monospace', cursor: running ? 'not-allowed' : 'pointer', opacity: running && runMode !== 'preview' ? 0.5 : 1 }}>
-                              {running && runMode === 'preview' ? '...' : '▶ Preview (no data)'}
+                          <Tooltip text={editElements.length > 0 ? 'Same engine as Report Builder — live tasks from DB. Nothing is saved.' : 'Live workspace data. Nothing is saved.'}>
+                            <button onClick={() => initiateRun('preview_live')} disabled={running}
+                              style={{ background: ACCENT_BG, border: `1px solid ${ACCENT}`, color: '#0f766e', padding: '0.3rem 0.85rem', borderRadius: 4, fontSize: '0.68rem', fontFamily: 'monospace', cursor: running ? 'not-allowed' : 'pointer', fontWeight: 700, opacity: running && runMode !== 'preview_live' ? 0.5 : 1 }}>
+                              {running && runMode === 'preview_live' ? '...' : '▶ Preview with Data'}
                             </button>
                           </Tooltip>
 
-                          <Tooltip text={editElements.length > 0 ? 'Opens value picker, then runs with your live data. Nothing is saved.' : 'Runs with your live data using section defaults. Nothing is saved.'}>
-                            <button onClick={() => initiateRun('preview_live')} disabled={running}
-                              style={{ background: 'transparent', border: `1px solid ${ACCENT}`, color: ACCENT, padding: '0.3rem 0.75rem', borderRadius: 4, fontSize: '0.68rem', fontFamily: 'monospace', cursor: running ? 'not-allowed' : 'pointer', opacity: running && runMode !== 'preview_live' ? 0.5 : 1 }}>
-                              {running && runMode === 'preview_live' ? '...' : '▶ Preview with Data'}
+                          <Tooltip text="Stub sample rows — layout only, not your tasks.">
+                            <button onClick={() => initiateRun('preview')} disabled={running}
+                              style={{ background: 'transparent', border: `1px solid ${ACCENT_BORDER}`, color: '#64748b', padding: '0.3rem 0.75rem', borderRadius: 4, fontSize: '0.68rem', fontFamily: 'monospace', cursor: running ? 'not-allowed' : 'pointer', opacity: running && runMode !== 'preview' ? 0.5 : 1 }}>
+                              {running && runMode === 'preview' ? '...' : 'Preview (no data)'}
                             </button>
                           </Tooltip>
 

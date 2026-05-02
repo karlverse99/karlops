@@ -136,9 +136,11 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
 
   // ─── Filters + sort ────────────────────────────────────────────────────────
   const [search, setSearch]               = useState('');
-  const [filterBucket, setFilterBucket]   = useState('');
-  const [filterContext, setFilterContext] = useState('');
-  const [filterStatus, setFilterStatus]   = useState('');
+  /** Empty = all buckets; otherwise task must be in one of these (OR). */
+  const [filterBuckets, setFilterBuckets]   = useState<string[]>([]);
+  /** OR filter — empty means any */
+  const [filterContextIds, setFilterContextIds] = useState<string[]>([]);
+  const [filterStatusIds, setFilterStatusIds]   = useState<string[]>([]);
   const [showCompleted, setShowCompleted] = useState(false);
   const [showArchived, setShowArchived]   = useState(false);
   const [sortBy, setSortBy]               = useState<'created' | 'target' | 'bucket' | 'title' | 'status'>('created');
@@ -224,9 +226,9 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
       if (!showCompleted && t.is_completed) return false;
       if (!showArchived && t.is_archived) return false;
       if (search && !t.title.toLowerCase().includes(search.toLowerCase())) return false;
-      if (filterBucket && t.bucket_key !== filterBucket) return false;
-      if (filterContext && t.context_id !== filterContext) return false;
-      if (filterStatus && t.task_status_id !== filterStatus) return false;
+      if (filterBuckets.length > 0 && !filterBuckets.includes(t.bucket_key)) return false;
+      if (filterContextIds.length > 0 && (!t.context_id || !filterContextIds.includes(t.context_id))) return false;
+      if (filterStatusIds.length > 0 && (!t.task_status_id || !filterStatusIds.includes(t.task_status_id))) return false;
       if (listScopeTags.length > 0) {
         const taskTags = t.tags ?? [];
         for (const tag of listScopeTags) {
@@ -306,18 +308,124 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
               style={{ ...inputStyle, width: '200px', fontSize: '0.75rem', padding: '0.3rem 0.6rem' }}
               onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')}
             />
-            <select value={filterBucket} onChange={e => setFilterBucket(e.target.value)} style={{ ...inputStyle, width: '130px', fontSize: '0.72rem', padding: '0.3rem 0.5rem' }}>
-              <option value="">All buckets</option>
-              {Object.entries(BUCKET_META).map(([key, meta]) => <option key={key} value={key}>{meta.label}</option>)}
-            </select>
-            <select value={filterContext} onChange={e => setFilterContext(e.target.value)} style={{ ...inputStyle, width: '130px', fontSize: '0.72rem', padding: '0.3rem 0.5rem' }}>
-              <option value="">All contexts</option>
-              {contexts.map(c => <option key={c.context_id} value={c.context_id}>{c.name}</option>)}
-            </select>
-            <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} style={{ ...inputStyle, width: '130px', fontSize: '0.72rem', padding: '0.3rem 0.5rem' }}>
-              <option value="">All statuses</option>
-              {statuses.map(s => <option key={s.task_status_id} value={s.task_status_id}>{s.label}</option>)}
-            </select>
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.25rem', maxWidth: '420px' }}>
+              <span style={{ fontSize: '0.62rem', color: '#666', fontFamily: 'monospace', marginRight: '0.15rem' }}>Buckets</span>
+              {Object.entries(BUCKET_META).map(([key, meta]) => {
+                const on = filterBuckets.includes(key);
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() =>
+                      setFilterBuckets((prev) => (on ? prev.filter((k) => k !== key) : [...prev, key]))
+                    }
+                    title={meta.label}
+                    style={{
+                      fontSize: '0.62rem',
+                      fontFamily: 'monospace',
+                      padding: '0.15rem 0.4rem',
+                      borderRadius: 4,
+                      border: on ? `1px solid ${ACCENT}` : '1px solid #e5e7eb',
+                      background: on ? ACCENT_BG : '#fff',
+                      color: on ? '#713f12' : '#64748b',
+                      cursor: 'pointer',
+                      fontWeight: on ? 700 : 500,
+                    }}
+                  >
+                    {meta.id}
+                  </button>
+                );
+              })}
+              {filterBuckets.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setFilterBuckets([])}
+                  style={{
+                    fontSize: '0.58rem',
+                    color: '#94a3b8',
+                    background: 'none',
+                    border: 'none',
+                    cursor: 'pointer',
+                    textDecoration: 'underline',
+                    fontFamily: 'monospace',
+                  }}
+                >
+                  clear
+                </button>
+              )}
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.25rem', maxWidth: '340px' }}>
+              <span style={{ fontSize: '0.62rem', color: '#666', fontFamily: 'monospace' }}>Ctx</span>
+              {contexts.map((c) => {
+                const on = filterContextIds.includes(c.context_id);
+                return (
+                  <button
+                    key={c.context_id}
+                    type="button"
+                    title={c.name}
+                    onClick={() =>
+                      setFilterContextIds((prev) =>
+                        on ? prev.filter((id) => id !== c.context_id) : [...prev, c.context_id]
+                      )
+                    }
+                    style={{
+                      fontSize: '0.58rem',
+                      fontFamily: 'monospace',
+                      maxWidth: '88px',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                      padding: '0.15rem 0.35rem',
+                      borderRadius: 4,
+                      border: on ? `1px solid ${ACCENT}` : '1px solid #e5e7eb',
+                      background: on ? ACCENT_BG : '#fff',
+                      color: on ? '#713f12' : '#64748b',
+                      cursor: 'pointer',
+                      fontWeight: on ? 700 : 500,
+                    }}
+                  >
+                    {c.name}
+                  </button>
+                );
+              })}
+              {filterContextIds.length > 0 && (
+                <button type="button" onClick={() => setFilterContextIds([])} style={{ fontSize: '0.58rem', color: '#94a3b8', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', fontFamily: 'monospace' }}>clear</button>
+              )}
+            </div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0.25rem', maxWidth: '280px' }}>
+              <span style={{ fontSize: '0.62rem', color: '#666', fontFamily: 'monospace' }}>St</span>
+              {statuses.map((s) => {
+                const on = filterStatusIds.includes(s.task_status_id);
+                return (
+                  <button
+                    key={s.task_status_id}
+                    type="button"
+                    title={s.label}
+                    onClick={() =>
+                      setFilterStatusIds((prev) =>
+                        on ? prev.filter((id) => id !== s.task_status_id) : [...prev, s.task_status_id]
+                      )
+                    }
+                    style={{
+                      fontSize: '0.58rem',
+                      fontFamily: 'monospace',
+                      padding: '0.15rem 0.35rem',
+                      borderRadius: 4,
+                      border: on ? `1px solid ${ACCENT}` : '1px solid #e5e7eb',
+                      background: on ? ACCENT_BG : '#fff',
+                      color: on ? '#713f12' : '#64748b',
+                      cursor: 'pointer',
+                      fontWeight: on ? 700 : 500,
+                    }}
+                  >
+                    {s.label}
+                  </button>
+                );
+              })}
+              {filterStatusIds.length > 0 && (
+                <button type="button" onClick={() => setFilterStatusIds([])} style={{ fontSize: '0.58rem', color: '#94a3b8', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', fontFamily: 'monospace' }}>clear</button>
+              )}
+            </div>
             <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.72rem', color: '#555', cursor: 'pointer', fontFamily: 'monospace' }}>
               <input type="checkbox" checked={showCompleted} onChange={e => setShowCompleted(e.target.checked)} />
               completed
@@ -481,9 +589,9 @@ export default function TaskListModal({ userId, accessToken, onClose, onSaved }:
           initialScopeTags={listScopeTags}
           scope={{
             search,
-            bucket: filterBucket,
-            contextId: filterContext,
-            statusId: filterStatus,
+            bucketKeys: filterBuckets,
+            contextIds: filterContextIds,
+            statusIds: filterStatusIds,
             showCompleted,
             showArchived,
             filteredCount: filtered.length,

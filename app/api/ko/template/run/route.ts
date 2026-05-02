@@ -528,6 +528,10 @@ async function pullObjectData(
       .in('bucket_key', buckets)
       .order('sort_order', { ascending: true, nullsFirst: false });
     if (scope.context_id)  q = Array.isArray(scope.context_id) ? q.in('context_id', scope.context_id) : q.eq('context_id', scope.context_id);
+    if (scope.task_status_id != null && scope.task_status_id !== '')
+      q = Array.isArray(scope.task_status_id)
+        ? q.in('task_status_id', scope.task_status_id as string[])
+        : q.eq('task_status_id', scope.task_status_id as string);
     if (scope.tags?.length) q = q.contains('tags', scope.tags);
 
     const { data: tasks } = await q;

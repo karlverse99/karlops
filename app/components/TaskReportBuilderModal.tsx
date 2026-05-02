@@ -40,9 +40,16 @@ interface TaskReportBuilderModalProps {
   initialScopeTags?: string[];
   scope: {
     search: string;
-    bucket: string;
-    contextId: string;
-    statusId: string;
+    /** Single-bucket filter (legacy); ignored if bucketKeys set */
+    bucket?: string;
+    /** Multiple buckets (OR): task.bucket_key in list — e.g. now + delegate */
+    bucketKeys?: string[];
+    contextId?: string;
+    /** OR filter across contexts */
+    contextIds?: string[];
+    statusId?: string;
+    /** OR filter across statuses */
+    statusIds?: string[];
     showCompleted: boolean;
     showArchived: boolean;
     filteredCount: number;
@@ -80,14 +87,21 @@ function renderScopeSummary(
   scopeTags: string[]
 ) {
   const parts: string[] = [];
-  if (scope.bucket) parts.push(`bucket=${scope.bucket}`);
-  if (scope.contextId) {
+  if (scope.bucketKeys?.length) parts.push(`buckets=${scope.bucketKeys.join('+')}`);
+  else if (scope.bucket) parts.push(`bucket=${scope.bucket}`);
+  if (scope.contextIds?.length) {
+    const names = scope.contextIds
+      .map((id) => contexts.find((c) => c.context_id === id)?.name ?? id)
+      .join(', ');
+    parts.push(`contexts=${names}`);
+  } else if (scope.contextId) {
     const ctx = contexts.find((c) => c.context_id === scope.contextId);
     parts.push(`context=${ctx?.name ?? scope.contextId}`);
   }
+  if (scope.statusIds?.length) parts.push(`statuses=${scope.statusIds.length} selected`);
+  else if (scope.statusId) parts.push('status filter active');
   if (scopeTags.length) parts.push(`tags=${scopeTags.join(', ')}`);
   if (scope.search.trim()) parts.push(`search="${scope.search.trim()}"`);
-  if (scope.statusId) parts.push('status filter active');
   if (scope.showCompleted) parts.push('include completed');
   if (scope.showArchived) parts.push('include archived');
   return parts.length ? parts.join(' | ') : 'all open task defaults';
@@ -300,11 +314,15 @@ export default function TaskReportBuilderModal({
 
   const taskScope = useMemo(() => {
     const base: Record<string, unknown> = {};
-    if (scope.bucket) base.bucket_key = [scope.bucket];
-    if (scope.contextId) base.context_id = scope.contextId;
+    if (scope.bucketKeys?.length) base.bucket_key = scope.bucketKeys;
+    else if (scope.bucket) base.bucket_key = [scope.bucket];
+    if (scope.contextIds?.length) base.context_id = scope.contextIds;
+    else if (scope.contextId) base.context_id = scope.contextId;
+    if (scope.statusIds?.length) base.task_status_id = scope.statusIds;
+    else if (scope.statusId) base.task_status_id = scope.statusId;
     if (scopeTags.length > 0) base.tags = scopeTags;
     return { __scope: { task: base } };
-  }, [scope.bucket, scope.contextId, scopeTags]);
+  }, [scope.bucket, scope.bucketKeys, scope.contextId, scope.contextIds, scope.statusId, scope.statusIds, scopeTags]);
 
   const scopeSummary = useMemo(
     () => renderScopeSummary(scope, contextOptions, scopeTags),
