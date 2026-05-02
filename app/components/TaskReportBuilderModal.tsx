@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
+import { buildDocumentTemplateFilenameStub } from '@/lib/ko/documentTemplateFilenameStub';
 import KarlSpinner from './KarlSpinner';
 
 interface Context {
@@ -332,6 +333,7 @@ export default function TaskReportBuilderModal({
       const payload = {
         user_id: userId,
         name: templateName.trim(),
+        filename_stub: buildDocumentTemplateFilenameStub(templateName.trim(), templateDesc.trim() || null),
         description: templateDesc.trim() || null,
         output_format: 'md',
         prompt_template: instructions.trim(),
@@ -339,6 +341,8 @@ export default function TaskReportBuilderModal({
         filename_suffix_format: 'date',
         selected_elements: ['task.title', 'task.bucket_key', 'task.target_date', 'task.tags'],
         element_filters: taskScope,
+        sections: [] as unknown[],
+        tags: [] as string[],
         is_system: false,
         is_active: true,
       };

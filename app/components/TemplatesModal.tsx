@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
+import { buildDocumentTemplateFilenameStub } from '@/lib/ko/documentTemplateFilenameStub';
 import KarlSpinner from './KarlSpinner';
 import ElementPickerModal from './ElementPickerModal';
 
@@ -377,6 +378,7 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
     try {
       const payload = {
         name:                  editName.trim(),
+        filename_stub:         buildDocumentTemplateFilenameStub(editName.trim(), editDesc.trim() || null),
         description:           editDesc.trim() || null,
         output_format:         editFormat,
         prompt_template:       editKarlPrompt.trim() || '',
@@ -388,7 +390,12 @@ export default function TemplatesModal({ userId, accessToken, onClose, onCountCh
       };
       if (isNew) {
         const { data: inserted, error } = await supabase.from('document_template').insert({
-          user_id: userId, ...payload, is_system: false, is_active: true,
+          user_id: userId,
+          ...payload,
+          sections: [],
+          tags: [],
+          is_system: false,
+          is_active: true,
         }).select('*').single();
         if (error) throw error;
         if (inserted) selectTemplate(inserted as Template);
