@@ -358,7 +358,7 @@ export default function TaskReportBuilderModal({
         .join(' | ')
         .slice(0, 380);
       setSummaryDraft(
-        `Approved task extract preview on ${new Date().toLocaleString()}. Scope: ${scopeSummary}. Snippet: ${firstLines || '(empty output)'}`.slice(
+        `Task extract preview on ${new Date().toLocaleString()}. Scope: ${scopeSummary}. Snippet: ${firstLines || '(empty output)'}`.slice(
           0,
           900
         )
@@ -415,11 +415,11 @@ export default function TaskReportBuilderModal({
 
   const approveExtract = async () => {
     if (!previewOutput.trim()) {
-      setError('Run preview before approving extract.');
+      setError('Run preview before Run as extract.');
       return;
     }
     if (!summaryDraft.trim()) {
-      setError('Summary is required to approve extract.');
+      setError('Summary is required before Run as extract.');
       return;
     }
     setApprovingExtract(true);
@@ -460,9 +460,9 @@ export default function TaskReportBuilderModal({
         tags: [],
       });
       if (saveErr) throw saveErr;
-      setSaveMsg('Extract approved and run record saved.');
+      setSaveMsg('Run as extract saved.');
     } catch (e: any) {
-      setError(e.message ?? 'Approve extract failed');
+      setError(e.message ?? 'Run as extract failed');
     } finally {
       setApprovingExtract(false);
     }
@@ -660,7 +660,7 @@ export default function TaskReportBuilderModal({
                   cursor: previewOutput.trim() ? 'pointer' : 'not-allowed',
                 }}
               >
-                {approvingExtract ? 'approving...' : 'Approve Extract'}
+                {approvingExtract ? 'saving...' : 'Run as extract'}
               </button>
               {saveMsg && <span style={{ color: '#047857', fontSize: '0.66rem' }}>{saveMsg}</span>}
               {error && <span style={{ color: '#ef4444', fontSize: '0.66rem' }}>{error}</span>}
@@ -688,7 +688,7 @@ export default function TaskReportBuilderModal({
             {previewOutput && (
               <div style={{ borderTop: `1px solid ${ACCENT_BORDER}`, padding: '0.45rem 0.8rem', background: '#fff', display: 'grid', gap: '0.45rem' }}>
                 <div>
-                  <div style={labelSt}>Approval Summary (persisted on Approve Extract)</div>
+                  <div style={labelSt}>Summary (persisted on Run as extract)</div>
                   <textarea
                     value={summaryDraft}
                     onChange={(e) => setSummaryDraft(e.target.value)}
