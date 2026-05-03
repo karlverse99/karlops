@@ -32,28 +32,42 @@ interface TagGroupRow {
   name: string;
 }
 
+export interface TaskReportListScope {
+  search: string;
+  /** Single-bucket filter (legacy); ignored if bucketKeys set */
+  bucket?: string;
+  /** Multiple buckets (OR): task.bucket_key in list — e.g. now + delegate */
+  bucketKeys?: string[];
+  contextId?: string;
+  /** OR filter across contexts */
+  contextIds?: string[];
+  statusId?: string;
+  /** OR filter across statuses */
+  statusIds?: string[];
+  showCompleted: boolean;
+  showArchived: boolean;
+  filteredCount: number;
+}
+
+export interface CompletionReportListScope {
+  contextId: string;
+  tag: string;
+  dateRange: 'all' | 'today' | 'week' | 'month';
+  filteredCount: number;
+}
+
 interface TaskReportBuilderModalProps {
   userId: string;
   accessToken: string;
   contextOptions: Context[];
-  /** Seed scope tags when opening from Task list (same picker selection). */
+  /** Seed scope tags when opening from Task or Completions list. */
   initialScopeTags?: string[];
-  scope: {
-    search: string;
-    /** Single-bucket filter (legacy); ignored if bucketKeys set */
-    bucket?: string;
-    /** Multiple buckets (OR): task.bucket_key in list — e.g. now + delegate */
-    bucketKeys?: string[];
-    contextId?: string;
-    /** OR filter across contexts */
-    contextIds?: string[];
-    statusId?: string;
-    /** OR filter across statuses */
-    statusIds?: string[];
-    showCompleted: boolean;
-    showArchived: boolean;
-    filteredCount: number;
-  };
+  /** Defaults to `task` — use `completion` with `completionScope` from Completions modal. */
+  variant?: 'task' | 'completion';
+  /** Required when `variant` is `'task'` (default). */
+  scope?: TaskReportListScope;
+  /** Required when `variant` is `'completion'`. Mirrors list filters + live count. */
+  completionScope?: CompletionReportListScope;
   onClose: () => void;
 }
 
@@ -81,8 +95,43 @@ function defaultTaskInstructions() {
   ].join('\n');
 }
 
+function defaultCompletionInstructions() {
+  return [
+    '# Completion Log Report',
+    '',
+    '## Summary',
+    '- Brief narrative of what was accomplished in this scope.',
+    '- Call out themes (e.g. product, ops, people).',
+    '',
+    '## By time',
+    '| **When** | **What** | **Outcome** |',
+    '|------------|----------|-------------|',
+    '| ... | ... | ... |',
+    '',
+    '## Notes',
+    '- Keep rows faithful to the data; do not invent completions.',
+  ].join('\n');
+}
+
+function renderCompletionScopeSummary(
+  cs: CompletionReportListScope,
+  contexts: Context[],
+  scopeTags: string[]
+) {
+  const parts: string[] = [];
+  if (cs.contextId) {
+    const name = contexts.find((c) => c.context_id === cs.contextId)?.name ?? cs.contextId;
+    parts.push(`context=${name}`);
+  }
+  if (cs.tag) parts.push(`tag=${cs.tag}`);
+  if (scopeTags.length) parts.push(`scope tags (AND)=${scopeTags.join(', ')}`);
+  if (cs.dateRange !== 'all') parts.push(`date=${cs.dateRange}`);
+  parts.push(`list count=${cs.filteredCount}`);
+  return parts.length ? parts.join(' | ') : 'all completions (wide pull)';
+}
+
 function renderScopeSummary(
-  scope: TaskReportBuilderModalProps['scope'],
+  scope: TaskReportListScope,
   contexts: Context[],
   scopeTags: string[]
 ) {
@@ -218,14 +267,25 @@ function MarkdownPreview({ content }: { content: string }) {
   return <div>{blocks}</div>;
 }
 
+const COMPLETION_SELECTED_ELEMENTS = [
+  'completion.title',
+  'completion.completed_at',
+  'completion.outcome',
+  'completion.tags',
+  'completion.context_id',
+];
+
 export default function TaskReportBuilderModal({
   userId,
   accessToken,
   contextOptions,
   initialScopeTags = [],
+  variant = 'task',
   scope,
+  completionScope,
   onClose,
 }: TaskReportBuilderModalProps) {
+  const isCompletion = variant === 'completion';
   const [templates, setTemplates] = useState<TemplateLite[]>([]);
   const [templateId, setTemplateId] = useState('');
   const [templateName, setTemplateName] = useState('Task Report Template');
@@ -286,6 +346,14 @@ export default function TaskReportBuilderModal({
   }, [userId]);
 
   useEffect(() => {
+    if (!isCompletion) return;
+    setTemplateName('Completion Report Template');
+    setTemplateDesc('Reusable completion log recipe.');
+    setInstructions(defaultCompletionInstructions());
+    setRecordTitle('My completion report');
+  }, [isCompletion]);
+
+  useEffect(() => {
     const onMove = (e: MouseEvent) => {
       if (dragging.current) {
         setPos({
@@ -312,26 +380,51 @@ export default function TaskReportBuilderModal({
     };
   }, []);
 
-  const taskScope = useMemo(() => {
+  const elementFilterPayload = useMemo(() => {
+    if (isCompletion) {
+      const cs = completionScope!;
+      const base: Record<string, unknown> = {};
+      if (cs.contextId) base.context_id = cs.contextId;
+      const mergedTags = Array.from(new Set([...(cs.tag ? [cs.tag] : []), ...scopeTags]));
+      if (mergedTags.length > 0) base.tags = mergedTags;
+      if (cs.dateRange === 'week') base.window_days = 7;
+      else if (cs.dateRange === 'month') base.window_days = 30;
+      else if (cs.dateRange === 'today') base.window_days = 1;
+      return { __scope: { completion: base } };
+    }
+    const s = scope!;
     const base: Record<string, unknown> = {};
-    if (scope.bucketKeys?.length) base.bucket_key = scope.bucketKeys;
-    else if (scope.bucket) base.bucket_key = [scope.bucket];
-    if (scope.contextIds?.length) base.context_id = scope.contextIds;
-    else if (scope.contextId) base.context_id = scope.contextId;
-    if (scope.statusIds?.length) base.task_status_id = scope.statusIds;
-    else if (scope.statusId) base.task_status_id = scope.statusId;
+    if (s.bucketKeys?.length) base.bucket_key = s.bucketKeys;
+    else if (s.bucket) base.bucket_key = [s.bucket];
+    if (s.contextIds?.length) base.context_id = s.contextIds;
+    else if (s.contextId) base.context_id = s.contextId;
+    if (s.statusIds?.length) base.task_status_id = s.statusIds;
+    else if (s.statusId) base.task_status_id = s.statusId;
     if (scopeTags.length > 0) base.tags = scopeTags;
     return { __scope: { task: base } };
-  }, [scope.bucket, scope.bucketKeys, scope.contextId, scope.contextIds, scope.statusId, scope.statusIds, scopeTags]);
+  }, [
+    isCompletion,
+    completionScope,
+    scope?.bucket,
+    scope?.bucketKeys,
+    scope?.contextId,
+    scope?.contextIds,
+    scope?.statusId,
+    scope?.statusIds,
+    scopeTags,
+  ]);
 
-  const scopeSummary = useMemo(
-    () => renderScopeSummary(scope, contextOptions, scopeTags),
-    [scope, contextOptions, scopeTags]
-  );
+  const scopeSummary = useMemo(() => {
+    if (isCompletion && completionScope) {
+      return renderCompletionScopeSummary(completionScope, contextOptions, scopeTags);
+    }
+    if (!scope) return '';
+    return renderScopeSummary(scope, contextOptions, scopeTags);
+  }, [isCompletion, completionScope, scope, contextOptions, scopeTags]);
 
   const selectedElements = useMemo(
-    () => ['task.title', 'task.bucket_key', 'task.target_date', 'task.tags'],
-    []
+    () => (isCompletion ? COMPLETION_SELECTED_ELEMENTS : ['task.title', 'task.bucket_key', 'task.target_date', 'task.tags']),
+    [isCompletion]
   );
 
   const runPreview = async () => {
@@ -343,7 +436,7 @@ export default function TaskReportBuilderModal({
       const body: Record<string, unknown> = {
         run_mode: 'preview_live',
         user_additions: focusPrompt.trim(),
-        element_filters: taskScope,
+        element_filters: elementFilterPayload,
         selected_elements: selectedElements,
       };
       if (templateId) {
@@ -357,7 +450,7 @@ export default function TaskReportBuilderModal({
           output_format: 'md',
           filename_suffix_format: 'date',
           selected_elements: selectedElements,
-          element_filters: taskScope,
+          element_filters: elementFilterPayload,
         };
       }
       const res = await fetch('/api/ko/template/run', {
@@ -379,8 +472,9 @@ export default function TaskReportBuilderModal({
         .slice(0, 3)
         .join(' | ')
         .slice(0, 380);
+      const kind = isCompletion ? 'Completion' : 'Task';
       setSummaryDraft(
-        `Task extract preview on ${new Date().toLocaleString()}. Scope: ${scopeSummary}. Snippet: ${firstLines || '(empty output)'}`.slice(
+        `${kind} extract preview on ${new Date().toLocaleString()}. Scope: ${scopeSummary}. Snippet: ${firstLines || '(empty output)'}`.slice(
           0,
           900
         )
@@ -411,7 +505,7 @@ export default function TaskReportBuilderModal({
         template_mode: 'karl',
         filename_suffix_format: 'date',
         selected_elements: selectedElements,
-        element_filters: taskScope,
+        element_filters: elementFilterPayload,
         sections: [] as unknown[],
         tags: [] as string[],
         is_system: false,
@@ -450,15 +544,18 @@ export default function TaskReportBuilderModal({
     try {
       const now = new Date();
       const dateSlug = now.toISOString().slice(0, 10);
-      const titleBase = (recordTitle.trim() || templateName.trim() || 'Task report').slice(0, 120);
+      const titleBase = (recordTitle.trim() || templateName.trim() || (isCompletion ? 'Completion report' : 'Task report')).slice(0, 120);
       const fn = savedFilename.trim() || defaultSuggestedFilenameDdMmYyyyColonHhMm('md');
+      const listScopeForRun = isCompletion
+        ? { source: 'completion' as const, ...completionScope, scope_tags: scopeTags }
+        : { ...scope!, scope_tags: scopeTags };
       const runPayload = buildExtractRunDataV1({
         template_id: templateId || null,
         prompt_snapshot: templateId ? null : instructions.trim() || null,
         focus_prompt: focusPrompt.trim() || null,
         selected_elements: selectedElements,
-        element_filters: taskScope as Record<string, unknown>,
-        task_list_scope: { ...scope, scope_tags: scopeTags },
+        element_filters: elementFilterPayload as Record<string, unknown>,
+        task_list_scope: listScopeForRun,
         scope_tags: scopeTags,
         approved_summary: summaryDraft.trim(),
         approved_at: now.toISOString(),
@@ -471,12 +568,12 @@ export default function TaskReportBuilderModal({
         title: `${titleBase} · approved ${dateSlug}`,
         filename: fn,
         location: storageWhere.trim() || null,
-        description: templateDesc.trim() || 'Approved task extract run',
+        description: templateDesc.trim() || (isCompletion ? 'Approved completion extract run' : 'Approved task extract run'),
         notes: summaryDraft.trim(),
         run_data: serializeExtractRunData(runPayload),
         output: null,
         output_encrypted: false,
-        section_data: taskScope,
+        section_data: elementFilterPayload,
         document_template_id: templateId || null,
         ref_type: 'generated',
         tags: [],
@@ -489,6 +586,18 @@ export default function TaskReportBuilderModal({
       setApprovingExtract(false);
     }
   };
+
+  if (isCompletion && !completionScope) {
+    return (
+      <div style={{ position: 'fixed', inset: 0, zIndex: 220, background: 'rgba(0,0,0,0.2)', pointerEvents: 'all', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'monospace' }}>
+        <div style={{ background: '#fff', padding: '1.5rem', borderRadius: 8, maxWidth: 360 }}>
+          <div style={{ color: '#ef4444', fontWeight: 700, marginBottom: '0.5rem' }}>Report Builder misconfigured</div>
+          <div style={{ fontSize: '0.8rem', color: '#555', marginBottom: '1rem' }}>completionScope is required when variant is completion.</div>
+          <button type="button" onClick={onClose} style={{ ...primaryBtn }}>Close</button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 220, pointerEvents: 'none' }}>
@@ -525,9 +634,13 @@ export default function TaskReportBuilderModal({
             userSelect: 'none',
           }}
         >
-          <span style={{ color: '#fff', fontWeight: 700, fontSize: '0.84rem' }}>Task Report Builder</span>
+          <span style={{ color: '#fff', fontWeight: 700, fontSize: '0.84rem' }}>
+            {isCompletion ? 'Completion Report Builder' : 'Task Report Builder'}
+          </span>
           <span style={{ color: '#ede9fe', fontSize: '0.66rem' }}>
-            {scope.filteredCount} tasks in current view
+            {isCompletion
+              ? `${completionScope?.filteredCount ?? 0} completions in current list`
+              : `${scope?.filteredCount ?? 0} tasks in current view`}
           </span>
           <span style={{ flex: 1 }} />
           <button
@@ -539,7 +652,7 @@ export default function TaskReportBuilderModal({
         </div>
 
         <div style={{ padding: '0.45rem 0.9rem', borderBottom: `1px solid ${ACCENT_BORDER}`, background: ACCENT_BG, color: '#6d28d9', fontSize: '0.65rem' }}>
-          Current task scope: {scopeSummary}
+          Current {isCompletion ? 'completion' : 'task'} scope: {scopeSummary}
         </div>
 
         <div
@@ -566,7 +679,7 @@ export default function TaskReportBuilderModal({
                 onChange={(e) => setTemplateId(e.target.value)}
                 style={{ ...inputSt, cursor: 'pointer' } as any}
               >
-                <option value="">Draft from this task view</option>
+                <option value="">{isCompletion ? 'Draft from this completion list' : 'Draft from this task view'}</option>
                 {templates.map((t) => (
                   <option key={t.document_template_id} value={t.document_template_id}>
                     {t.name}
@@ -585,9 +698,11 @@ export default function TaskReportBuilderModal({
             </div>
 
             <div style={{ marginBottom: '0.7rem' }}>
-              <div style={labelSt}>Scope tags (tasks must include)</div>
+              <div style={labelSt}>{isCompletion ? 'Scope tags (completions must include)' : 'Scope tags (tasks must include)'}</div>
               <p style={{ fontSize: '0.65rem', color: '#6b7280', margin: '0 0 0.5rem', lineHeight: 1.45 }}>
-                Search, browse, or create tags — same controls as task detail. Scope is AND: tasks must include every selected tag.
+                {isCompletion
+                  ? 'Refine which completions feed the report. AND: each completion must include every selected tag. List filters above are merged with these tags.'
+                  : 'Search, browse, or create tags — same controls as task detail. Scope is AND: tasks must include every selected tag.'}
               </p>
               <TagPicker
                 selected={scopeTags}
@@ -646,7 +761,11 @@ export default function TaskReportBuilderModal({
                 onChange={(e) => setFocusPrompt(e.target.value)}
                 rows={3}
                 style={{ ...inputSt, resize: 'vertical' } as any}
-                placeholder="Example: Emphasize overdue and delegated tasks this week."
+                placeholder={
+                  isCompletion
+                    ? 'Example: Group by week, highlight outcomes that mention blockers.'
+                    : 'Example: Emphasize overdue and delegated tasks this week.'
+                }
               />
             </div>
             <div style={{ marginBottom: '0.7rem' }}>
@@ -674,7 +793,12 @@ export default function TaskReportBuilderModal({
               </p>
               <div style={{ marginBottom: '0.5rem' }}>
                 <div style={labelSt}>Record title (in KarlOps)</div>
-                <input value={recordTitle} onChange={(e) => setRecordTitle(e.target.value)} style={inputSt} placeholder="e.g. Weekly task status" />
+                <input
+                  value={recordTitle}
+                  onChange={(e) => setRecordTitle(e.target.value)}
+                  style={inputSt}
+                  placeholder={isCompletion ? 'e.g. Weekly completion log' : 'e.g. Weekly task status'}
+                />
               </div>
               <div style={{ marginBottom: '0.5rem' }}>
                 <div style={{ ...labelSt, display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
@@ -751,7 +875,7 @@ export default function TaskReportBuilderModal({
               {running ? (
                 <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.7rem', color: '#6b7280', fontSize: '0.76rem' }}>
                   <KarlSpinner size="sm" color={ACCENT} />
-                  Rendering preview from current task data...
+                  {isCompletion ? 'Rendering preview from current completion data...' : 'Rendering preview from current task data...'}
                 </div>
               ) : previewOutput ? (
                 <MarkdownPreview content={previewOutput} />

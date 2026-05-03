@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import TagPicker from '@/app/components/TagPicker';
+import TaskReportBuilderModal from '@/app/components/TaskReportBuilderModal';
 import { supabase } from '@/lib/supabase';
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
@@ -155,6 +156,7 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
   const [saving, setSaving]           = useState(false);
   const [err, setErr]                 = useState('');
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const [showReportBuilder, setShowReportBuilder] = useState(false);
   const [confirmDelete, setConfirmDelete]   = useState(false);
   const [deleting, setDeleting]             = useState(false);
 
@@ -165,10 +167,12 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
   const [filterDateRange, setFilterDateRange] = useState<'all' | 'today' | 'week' | 'month'>('all');
 
   // ─── Drag/resize (main list modal) ─────────────────────────────────────────
-  const initX = Math.max(20, Math.round(window.innerWidth  / 2 - 340));
-  const initY = Math.max(20, Math.round(window.innerHeight / 2 - 360));
+  const defaultListW = 920;
+  const defaultListH = 800;
+  const initX = Math.max(20, Math.round(window.innerWidth / 2 - defaultListW / 2));
+  const initY = Math.max(20, Math.round(window.innerHeight / 2 - defaultListH / 2));
   const [pos, setPos]   = useState({ x: initX, y: initY });
-  const [size, setSize] = useState({ w: 680, h: 720 });
+  const [size, setSize] = useState({ w: defaultListW, h: defaultListH });
   const dragging        = useRef(false);
   const resizing        = useRef(false);
   const dragStart       = useRef({ mx: 0, my: 0, px: 0, py: 0 });
@@ -249,6 +253,10 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
+      if (showReportBuilder) {
+        setShowReportBuilder(false);
+        return;
+      }
       if (confirmDelete) {
         setConfirmDelete(false);
         return;
@@ -261,7 +269,7 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [mode, confirmDelete, closeDetail, onClose]);
+  }, [mode, confirmDelete, showReportBuilder, closeDetail, onClose]);
 
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
@@ -338,6 +346,16 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
       return true;
     });
   }, [completions, search, filterTag, filterContext, filterDateRange]);
+
+  const completionReportScope = useMemo(
+    () => ({
+      contextId: filterContext,
+      tag: filterTag,
+      dateRange: filterDateRange,
+      filteredCount: filtered.length,
+    }),
+    [filterContext, filterTag, filterDateRange, filtered.length]
+  );
 
   const orderedFormFields = useMemo(() => orderCompletionFields(listFields, fieldMeta), [listFields, fieldMeta]);
 
@@ -532,7 +550,8 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
                 onMouseEnter={e => (e.currentTarget.style.background = '#222')} onMouseLeave={e => (e.currentTarget.style.background = '#000')}
               >export ▾</button>
               {showExportMenu && (
-                <div style={{ position: 'absolute', top: '100%', right: 0, marginTop: '0.25rem', background: '#fff', border: '1px solid #ddd', borderRadius: '4px', boxShadow: '0 4px 12px rgba(0,0,0,0.15)', zIndex: 10, minWidth: '120px' }}>
+                <div style={{ position: 'absolute', top: '100%', right: 0, marginTop: '0.25rem', background: '#fff', border: '1px solid #ddd', borderRadius: '4px', boxShadow: '0 4px 12px rgba(0,0,0,0.15)', zIndex: 10, minWidth: '160px' }}>
+                  <div onClick={() => { setShowReportBuilder(true); setShowExportMenu(false); }} style={{ padding: '0.5rem 0.75rem', fontSize: '0.75rem', color: '#333', cursor: 'pointer', fontFamily: 'monospace', borderBottom: '1px solid #f0f0f0' }} onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BG)} onMouseLeave={e => (e.currentTarget.style.background = '#fff')}>Report Builder</div>
                   <div onClick={() => { exportAsCSV(filtered); setShowExportMenu(false); }} style={{ padding: '0.5rem 0.75rem', fontSize: '0.75rem', color: '#333', cursor: 'pointer', fontFamily: 'monospace', borderBottom: '1px solid #f0f0f0' }} onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BG)} onMouseLeave={e => (e.currentTarget.style.background = '#fff')}>Export CSV</div>
                   <div onClick={() => { exportAsMD(filtered); setShowExportMenu(false); }} style={{ padding: '0.5rem 0.75rem', fontSize: '0.75rem', color: '#333', cursor: 'pointer', fontFamily: 'monospace' }} onMouseEnter={e => (e.currentTarget.style.background = ACCENT_BG)} onMouseLeave={e => (e.currentTarget.style.background = '#fff')}>Export MD</div>
                 </div>
@@ -548,31 +567,33 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
 
         {/* Body — single column: filters + completion cards (task-detail style rows) */}
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          <div style={{ padding: '0.75rem 1rem', borderBottom: `1px solid ${ACCENT_BORDER}`, display: 'flex', flexDirection: 'column', gap: '0.45rem', flexShrink: 0 }}>
+          <div style={{ padding: '0.5rem 0.75rem', borderBottom: `1px solid ${ACCENT_BORDER}`, display: 'flex', flexDirection: 'column', gap: '0.35rem', flexShrink: 0 }}>
             <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search title or outcome..."
-              style={{ ...inputStyle, fontSize: '0.75rem', padding: '0.45rem 0.65rem' }}
+              style={{ ...inputStyle, fontSize: '0.72rem', padding: '0.38rem 0.55rem' }}
               onFocus={(e) => (e.target.style.borderColor = ACCENT)} onBlur={(e) => (e.target.style.borderColor = '#ddd')}
             />
-            <div style={{ display: 'flex', gap: '0.45rem' }}>
-              <select value={filterContext} onChange={(e) => setFilterContext(e.target.value)} style={{ ...inputStyle, flex: 1, fontSize: '0.72rem', padding: '0.35rem 0.5rem' }}>
+            <div style={{ display: 'flex', gap: '0.35rem' }}>
+              <select value={filterContext} onChange={(e) => setFilterContext(e.target.value)} style={{ ...inputStyle, flex: 1, fontSize: '0.7rem', padding: '0.28rem 0.45rem' }}>
                 <option value="">All contexts</option>
                 {contexts.map((c) => <option key={c.context_id} value={c.context_id}>{c.name}</option>)}
               </select>
-              <select value={filterTag} onChange={(e) => setFilterTag(e.target.value)} style={{ ...inputStyle, flex: 1, fontSize: '0.72rem', padding: '0.35rem 0.5rem' }}>
+              <select value={filterTag} onChange={(e) => setFilterTag(e.target.value)} style={{ ...inputStyle, flex: 1, fontSize: '0.7rem', padding: '0.28rem 0.45rem' }}>
                 <option value="">All tags</option>
                 {allTags.map((t) => <option key={t.tag_id} value={t.name}>{t.name}</option>)}
               </select>
             </div>
-            <select value={filterDateRange} onChange={(e) => setFilterDateRange(e.target.value as 'all' | 'today' | 'week' | 'month')} style={{ ...inputStyle, fontSize: '0.72rem', padding: '0.35rem 0.5rem' }}>
+            <select value={filterDateRange} onChange={(e) => setFilterDateRange(e.target.value as 'all' | 'today' | 'week' | 'month')} style={{ ...inputStyle, fontSize: '0.7rem', padding: '0.28rem 0.45rem' }}>
               <option value="all">All time</option>
               <option value="today">Today</option>
               <option value="week">This week</option>
               <option value="month">This month</option>
             </select>
-            <div style={{ color: '#999', fontSize: '0.65rem', fontFamily: 'monospace' }}>{filtered.length} of {completions.length}</div>
+            <div style={{ color: '#999', fontSize: '0.62rem', fontFamily: 'monospace', lineHeight: 1.35 }}>
+              {filtered.length} of {completions.length} · CSV / MD use this list. Report Builder uses the same filters (plus optional extra scope tags).
+            </div>
           </div>
 
-          <div style={{ flex: 1, overflowY: 'auto', padding: '0.75rem 1rem', scrollbarWidth: 'thin', scrollbarColor: '#ddd transparent' }}>
+          <div style={{ flex: 1, overflowY: 'auto', padding: '0.45rem 0.65rem', scrollbarWidth: 'thin', scrollbarColor: '#ddd transparent' }}>
             {loading ? (
               <div style={{ color: '#999', fontSize: '0.78rem', padding: '1.5rem', fontFamily: 'monospace', textAlign: 'center' }}>Loading…</div>
             ) : filtered.length === 0 ? (
@@ -590,9 +611,9 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
                     onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); loadIntoForm(c); } }}
                     style={{
                       border: `1px solid ${DETAIL_BORDER}`,
-                      borderRadius: '8px',
-                      padding: '0.75rem 1rem',
-                      marginBottom: '0.65rem',
+                      borderRadius: '6px',
+                      padding: '0.4rem 0.55rem',
+                      marginBottom: '0.38rem',
                       background: '#fff',
                       cursor: 'pointer',
                       outline: 'none',
@@ -600,20 +621,20 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
                       transition: 'box-shadow 0.12s, border-color 0.12s',
                     }}
                   >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '0.75rem' }}>
-                      <span style={{ color: '#ca8a04', fontSize: '0.68rem', fontWeight: 700, fontFamily: 'monospace' }}>{`CM${idx}`}</span>
-                      <span style={{ color: '#888', fontSize: '0.72rem', fontFamily: 'monospace', flexShrink: 0 }}>{formatDateTime(c.completed_at)}</span>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                      <span style={{ color: '#ca8a04', fontSize: '0.62rem', fontWeight: 700, fontFamily: 'monospace' }}>{`CM${idx}`}</span>
+                      <span style={{ color: '#888', fontSize: '0.65rem', fontFamily: 'monospace', flexShrink: 0 }}>{formatDate(c.completed_at)}</span>
                     </div>
-                    <div style={{ fontSize: '0.9rem', fontWeight: 700, color: '#111', marginTop: '0.35rem', lineHeight: 1.35 }}>{c.title}</div>
+                    <div style={{ fontSize: '0.8rem', fontWeight: 700, color: '#111', marginTop: '0.15rem', lineHeight: 1.3 }}>{c.title}</div>
                     {(c.outcome ?? '').trim() ? (
                       <div
                         style={{
-                          fontSize: '0.78rem',
+                          fontSize: '0.7rem',
                           color: '#555',
-                          marginTop: '0.4rem',
-                          lineHeight: 1.45,
+                          marginTop: '0.2rem',
+                          lineHeight: 1.38,
                           display: '-webkit-box',
-                          WebkitLineClamp: 2,
+                          WebkitLineClamp: 1,
                           WebkitBoxOrient: 'vertical',
                           overflow: 'hidden',
                         }}
@@ -621,15 +642,15 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
                         {c.outcome}
                       </div>
                     ) : null}
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem', marginTop: '0.5rem', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.22rem', marginTop: '0.28rem', alignItems: 'center' }}>
                       {c.context ? (
-                        <span style={{ fontSize: '0.62rem', padding: '0.12rem 0.4rem', borderRadius: '4px', background: DETAIL_BG, border: `1px solid ${DETAIL_BORDER}`, color: '#444' }}>{c.context.name}</span>
+                        <span style={{ fontSize: '0.58rem', padding: '0.06rem 0.32rem', borderRadius: '3px', background: DETAIL_BG, border: `1px solid ${DETAIL_BORDER}`, color: '#444' }}>{c.context.name}</span>
                       ) : null}
                       {(c.tags ?? []).map((t) => (
-                        <span key={t} style={{ fontSize: '0.62rem', padding: '0.12rem 0.4rem', borderRadius: '4px', background: '#fafafa', border: '1px solid #e5e5e5', color: '#555' }}>{t}</span>
+                        <span key={t} style={{ fontSize: '0.58rem', padding: '0.06rem 0.32rem', borderRadius: '3px', background: '#fafafa', border: '1px solid #e5e5e5', color: '#555' }}>{t}</span>
                       ))}
                       {c.task?.title ? (
-                        <span style={{ fontSize: '0.65rem', color: '#999', fontStyle: 'italic' }}>↳ {c.task.title}</span>
+                        <span style={{ fontSize: '0.6rem', color: '#999', fontStyle: 'italic', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }} title={c.task.title}>↳ {c.task.title}</span>
                       ) : null}
                     </div>
                   </div>
