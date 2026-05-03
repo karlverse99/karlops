@@ -787,6 +787,18 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
         </div>
       </div>
     )}
+
+    {showReportBuilder && (
+      <TaskReportBuilderModal
+        userId={userId}
+        accessToken={accessToken}
+        contextOptions={contexts}
+        initialScopeTags={filterTag ? [filterTag] : []}
+        variant="completion"
+        completionScope={completionReportScope}
+        onClose={() => setShowReportBuilder(false)}
+      />
+    )}
     </>
   );
 }
