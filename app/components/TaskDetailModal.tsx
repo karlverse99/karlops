@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
 import TagPicker from '@/app/components/TagPicker';
 
@@ -61,6 +61,40 @@ function missingForCuration(task: TaskDetail): string[] {
   if (!task.bucket_key || task.bucket_key === 'capture') missing.push('a real bucket');
   if (!task.tags || task.tags.length === 0) missing.push('at least one tag');
   return missing;
+}
+
+interface ListFieldItem {
+  field: string;
+  label?: string;
+  field_order: number;
+}
+
+function parseListFields(raw: unknown): ListFieldItem[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((row: Record<string, unknown>) => ({
+      field: String(row?.field ?? ''),
+      label: typeof row?.label === 'string' ? row.label : undefined,
+      field_order: typeof row?.field_order === 'number' ? row.field_order : Number(row?.field_order) || 0,
+    }))
+    .filter((r) => r.field);
+}
+
+/** Merge list view field order with ko_field_metadata (same idea as CompletionsModal). */
+function orderCompletionFields(listFields: ListFieldItem[], meta: FieldMeta[]): FieldMeta[] {
+  const metaByField = new Map(meta.map((m) => [m.field, m]));
+  const merged: FieldMeta[] = [];
+  const seen = new Set<string>();
+  for (const lf of [...listFields].sort((a, b) => a.field_order - b.field_order)) {
+    const base = metaByField.get(lf.field);
+    if (!base || base.display_order >= 999) continue;
+    merged.push(lf.label ? { ...base, label: lf.label } : base);
+    seen.add(lf.field);
+  }
+  const rest = [...meta]
+    .filter((m) => !seen.has(m.field) && m.display_order < 999)
+    .sort((a, b) => a.display_order - b.display_order);
+  return [...merged, ...rest];
 }
 
 // ─── BucketPicker ─────────────────────────────────────────────────────────────
@@ -182,10 +216,16 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
   const [saving, setSaving]       = useState(false);
   const [err, setErr]             = useState('');
 
-  // ─── Complete flow ────────────────────────────────────────────────────────
+  // ─── Complete flow (driven by ko_field_metadata + ko_list_view_config for completion) ─
   const [completing, setCompleting]               = useState(false);
+  const [completionMeta, setCompletionMeta]       = useState<FieldMeta[]>([]);
+  const [completionListFields, setCompletionListFields] = useState<ListFieldItem[]>([]);
   const [completionTitle, setCompletionTitle]     = useState('');
   const [completionOutcome, setCompletionOutcome] = useState('');
+  const [completionDescription, setCompletionDescription] = useState('');
+  const [completionCompletedAt, setCompletionCompletedAt] = useState('');
+  const [completionTags, setCompletionTags]       = useState<string[]>([]);
+  const [completionContextId, setCompletionContextId] = useState('');
   const [completionSaving, setCompletionSaving]   = useState(false);
 
   // ─── Delete state ─────────────────────────────────────────────────────────
@@ -250,25 +290,28 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
     async function load() {
       setLoading(true);
       try {
-        const [taskRes, metaRes, tagRes, groupRes, ctxRes, statusRes] = await Promise.all([
+        const [taskRes, metaRes, tagRes, groupRes, ctxRes, statusRes, compMetaRes, listCfgRes] = await Promise.all([
           supabase.from('task').select('*').eq('task_id', taskId).single(),
           supabase.from('ko_field_metadata').select('*').eq('user_id', userId).eq('object_type', 'task').order('display_order'),
           supabase.from('tag').select('tag_id, name, tag_group_id, description').eq('user_id', userId).eq('is_archived', false).order('name'),
           supabase.from('tag_group').select('tag_group_id, name').eq('user_id', userId).eq('is_archived', false).order('display_order'),
           supabase.from('context').select('context_id, name').eq('user_id', userId).eq('is_archived', false),
           supabase.from('task_status').select('task_status_id, label').eq('user_id', userId).order('display_order'),
+          supabase.from('ko_field_metadata').select('*').eq('user_id', userId).eq('object_type', 'completion').order('display_order'),
+          supabase.from('ko_list_view_config').select('list_fields').eq('user_id', userId).eq('object_type', 'completion').maybeSingle(),
         ]);
 
         if (taskRes.error) throw taskRes.error;
         setTask(taskRes.data);
         setDraft(taskRes.data);
-        setCompletionTitle(taskRes.data.title ?? '');
 
         const allTagData   = tagRes.data ?? [];
         const allGroupData = groupRes.data ?? [];
         setAllTags(allTagData);
         setTagGroups(allGroupData);
         setFields((metaRes.data ?? []) as FieldMeta[]);
+        setCompletionMeta((compMetaRes.data ?? []) as FieldMeta[]);
+        setCompletionListFields(parseListFields(listCfgRes.data?.list_fields));
 
         // Resolve People tag group and filter People tags
         const peopleGroup = allGroupData.find(g => g.name === 'People');
@@ -331,19 +374,161 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
     }
   };
 
+  const completionVisibleFields = useMemo(() => {
+    const ordered = orderCompletionFields(completionListFields, completionMeta);
+    return ordered.filter((f) => f.insert_behavior !== 'automatic' && f.field !== 'task_id');
+  }, [completionListFields, completionMeta]);
+
+  const useDynamicCompletionForm = completionVisibleFields.length > 0;
+
+  const completionRequiredOk = useMemo(() => {
+    if (!useDynamicCompletionForm) return !!completionTitle.trim();
+    for (const f of completionVisibleFields) {
+      if (f.insert_behavior !== 'required') continue;
+      if (f.field === 'title' && !completionTitle.trim()) return false;
+      if (f.field === 'outcome' && !completionOutcome.trim()) return false;
+      if (f.field === 'completed_at' && !completionCompletedAt) return false;
+    }
+    return true;
+  }, [
+    useDynamicCompletionForm,
+    completionVisibleFields,
+    completionTitle,
+    completionOutcome,
+    completionCompletedAt,
+  ]);
+
+  const renderCompletionField = (meta: FieldMeta, autoFocus: boolean) => {
+    const required = meta.insert_behavior === 'required';
+    const lab = (
+      <div style={labelStyle}>
+        {meta.label}
+        {required && <span style={{ color: '#ef4444' }}>*</span>}
+      </div>
+    );
+
+    switch (meta.field) {
+      case 'title':
+        return (
+          <div key="title" style={fieldGroup}>
+            {lab}
+            <input
+              autoFocus={autoFocus}
+              value={completionTitle}
+              onChange={(e) => setCompletionTitle(e.target.value)}
+              style={inputStyle}
+              onFocus={(e) => (e.target.style.borderColor = ACCENT)}
+              onBlur={(e) => (e.target.style.borderColor = '#ddd')}
+            />
+          </div>
+        );
+      case 'outcome':
+        return (
+          <div key="outcome" style={fieldGroup}>
+            {lab}
+            <textarea
+              autoFocus={autoFocus}
+              value={completionOutcome}
+              onChange={(e) => setCompletionOutcome(e.target.value)}
+              placeholder="What was the result? What changed?"
+              rows={meta.field_type === 'textarea' ? 5 : 4}
+              style={{ ...inputStyle, resize: 'vertical', minHeight: '80px' }}
+              onFocus={(e) => (e.target.style.borderColor = ACCENT)}
+              onBlur={(e) => (e.target.style.borderColor = '#ddd')}
+            />
+          </div>
+        );
+      case 'description':
+        return (
+          <div key="description" style={fieldGroup}>
+            {lab}
+            <textarea
+              autoFocus={autoFocus}
+              value={completionDescription}
+              onChange={(e) => setCompletionDescription(e.target.value)}
+              rows={3}
+              style={{ ...inputStyle, resize: 'vertical' }}
+              onFocus={(e) => (e.target.style.borderColor = ACCENT)}
+              onBlur={(e) => (e.target.style.borderColor = '#ddd')}
+            />
+          </div>
+        );
+      case 'completed_at':
+        return (
+          <div key="completed_at" style={fieldGroup}>
+            {lab}
+            <input
+              type="datetime-local"
+              autoFocus={autoFocus}
+              value={completionCompletedAt}
+              onChange={(e) => setCompletionCompletedAt(e.target.value)}
+              style={{ ...inputStyle, colorScheme: 'light' }}
+              onFocus={(e) => (e.target.style.borderColor = ACCENT)}
+              onBlur={(e) => (e.target.style.borderColor = '#ddd')}
+            />
+          </div>
+        );
+      case 'tags':
+        return (
+          <div key="tags" style={{ ...fieldGroup, borderTop: '1px solid #f0f0f0', paddingTop: '0.75rem' }}>
+            <TagPicker
+              selected={completionTags}
+              allTags={allTags}
+              tagGroups={tagGroups}
+              onChange={setCompletionTags}
+              onTagCreated={loadTags}
+              accentColor={ACCENT}
+              objectType="completion"
+              contextText={completionTitle}
+              accessToken={accessToken}
+              userId={userId}
+              label={meta.label}
+            />
+          </div>
+        );
+      case 'context_id':
+        return (
+          <div key="context_id" style={fieldGroup}>
+            {lab}
+            <select
+              value={completionContextId}
+              onChange={(e) => setCompletionContextId(e.target.value)}
+              style={selectStyle}
+              onFocus={(e) => (e.target.style.borderColor = ACCENT)}
+              onBlur={(e) => (e.target.style.borderColor = '#ddd')}
+            >
+              <option value="">— none —</option>
+              {(fkData.context_id ?? []).map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        );
+      default:
+        return null;
+    }
+  };
+
   // ─── Complete ─────────────────────────────────────────────────────────────
   const handleCompleteConfirm = async () => {
-    if (!completionTitle.trim()) { setErr('Completion title is required'); return; }
+    if (!completionRequiredOk) {
+      setErr(completionVisibleFields.length > 0 ? 'Fill all required fields.' : 'Completion title is required');
+      return;
+    }
     setCompletionSaving(true); setErr('');
     try {
+      const completedAtIso = new Date(completionCompletedAt || new Date().toISOString()).toISOString();
       const { error: compErr } = await supabase.from('completion').insert({
-        user_id:      userId,
-        task_id:      taskId,
-        title:        completionTitle.trim(),
-        outcome:      completionOutcome.trim() || null,
-        completed_at: new Date().toISOString().slice(0, 10),
-        tags:         draft.tags ?? [],
-        context_id:   draft.context_id || null,
+        user_id:        userId,
+        task_id:        taskId,
+        title:          completionTitle.trim(),
+        outcome:        completionOutcome.trim() || null,
+        description:    completionDescription.trim() || null,
+        completed_at:   completedAtIso,
+        tags:           completionTags.length > 0 ? completionTags : null,
+        context_id:     completionContextId || null,
       });
       if (compErr) throw compErr;
       const { error: taskErr } = await supabase.from('task').update({ is_completed: true, completed_at: new Date().toISOString() }).eq('task_id', taskId);
@@ -418,26 +603,34 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
             <div style={{ color: '#aaa', fontSize: '0.8rem', textAlign: 'center', padding: '2rem' }}>Loading...</div>
           ) : completing ? (
 
-            // ─── COMPLETION FORM ─────────────────────────────────────────
+            // ─── COMPLETION FORM (ko_field_metadata + list_fields order) ───
             <div>
               <div style={{ color: '#888', fontSize: '0.78rem', marginBottom: '1.25rem', lineHeight: 1.5 }}>
-                Log what you accomplished. Edit the title if needed.
+                {completionVisibleFields.length > 0
+                  ? 'Log the completion using your workspace field settings. Task link is saved automatically.'
+                  : 'Log what you accomplished. Edit the title if needed.'}
               </div>
-              <div style={fieldGroup}>
-                <div style={labelStyle}>What did you complete <span style={{ color: '#ef4444' }}>*</span></div>
-                <input autoFocus value={completionTitle} onChange={e => setCompletionTitle(e.target.value)} style={inputStyle}
-                  onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} />
-              </div>
-              <div style={fieldGroup}>
-                <div style={labelStyle}>Outcome / what happened</div>
-                <textarea value={completionOutcome} onChange={e => setCompletionOutcome(e.target.value)}
-                  placeholder="What was the result? What changed? What did you learn?"
-                  rows={5} style={{ ...inputStyle, resize: 'vertical' }}
-                  onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} />
-              </div>
-              <div style={{ color: '#aaa', fontSize: '0.68rem', marginTop: '0.5rem' }}>
-                Tags and context will be inherited from the task. Completed today.
-              </div>
+              {completionVisibleFields.length > 0 ? (
+                completionVisibleFields.map((f, idx) => renderCompletionField(f, idx === 0))
+              ) : (
+                <>
+                  <div style={fieldGroup}>
+                    <div style={labelStyle}>What did you complete <span style={{ color: '#ef4444' }}>*</span></div>
+                    <input autoFocus value={completionTitle} onChange={(e) => setCompletionTitle(e.target.value)} style={inputStyle}
+                      onFocus={(e) => (e.target.style.borderColor = ACCENT)} onBlur={(e) => (e.target.style.borderColor = '#ddd')} />
+                  </div>
+                  <div style={fieldGroup}>
+                    <div style={labelStyle}>Outcome / what happened</div>
+                    <textarea value={completionOutcome} onChange={(e) => setCompletionOutcome(e.target.value)}
+                      placeholder="What was the result? What changed? What did you learn?"
+                      rows={5} style={{ ...inputStyle, resize: 'vertical' }}
+                      onFocus={(e) => (e.target.style.borderColor = ACCENT)} onBlur={(e) => (e.target.style.borderColor = '#ddd')} />
+                  </div>
+                  <div style={{ color: '#aaa', fontSize: '0.68rem', marginTop: '0.5rem' }}>
+                    No completion field metadata found — simple form. Add completion fields in Admin → Field metadata.
+                  </div>
+                </>
+              )}
               {err && <div style={{ color: '#ef4444', fontSize: '0.72rem', marginTop: '0.75rem' }}>{err}</div>}
             </div>
 
@@ -556,8 +749,8 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
             <>
               <button onClick={() => { setCompleting(false); setErr(''); }}
                 style={cancelBtn}>← back</button>
-              <button onClick={handleCompleteConfirm} disabled={completionSaving || !completionTitle.trim()}
-                style={{ ...actionBtn, background: '#fff7ed', border: '1px solid #fed7aa', color: '#c2410c', opacity: completionSaving || !completionTitle.trim() ? 0.5 : 1 }}>
+              <button onClick={handleCompleteConfirm} disabled={completionSaving || !completionRequiredOk}
+                style={{ ...actionBtn, background: '#fff7ed', border: '1px solid #fed7aa', color: '#c2410c', opacity: completionSaving || !completionRequiredOk ? 0.5 : 1 }}>
                 {completionSaving ? 'logging...' : '✓ log completion'}
               </button>
             </>
@@ -572,8 +765,20 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
           ) : (
             <>
               <div style={{ display: 'flex', gap: '0.5rem' }}>
-                <button onClick={() => { setCompleting(true); setErr(''); }} disabled={loading}
-                  style={{ ...actionBtn, background: '#fff7ed', border: '1px solid #fed7aa', color: '#c2410c' }}>
+                <button
+                  onClick={() => {
+                    setCompletionTitle(draft.title ?? '');
+                    setCompletionOutcome('');
+                    setCompletionDescription('');
+                    setCompletionCompletedAt(new Date().toISOString().slice(0, 16));
+                    setCompletionTags([...(draft.tags ?? [])]);
+                    setCompletionContextId(draft.context_id ?? '');
+                    setCompleting(true);
+                    setErr('');
+                  }}
+                  disabled={loading}
+                  style={{ ...actionBtn, background: '#fff7ed', border: '1px solid #fed7aa', color: '#c2410c' }}
+                >
                   ✓ complete
                 </button>
                 <button onClick={() => { setConfirmDelete(true); setErr(''); }} disabled={loading}
