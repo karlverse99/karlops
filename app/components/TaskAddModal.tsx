@@ -293,11 +293,14 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
               {/* 1b. NOTES */}
               {!multiMode && (
                 <div style={{ marginBottom: '1rem', marginTop: '-0.5rem' }}>
-                  <div style={labelStyle}>Notes</div>
+                  <div style={labelStyle}>Notes / Status</div>
+                  <p style={{ fontSize: '0.65rem', color: '#888', margin: '0 0 0.4rem', lineHeight: 1.45 }}>
+                    Optional on create. After save, use task detail to add dated status lines or edit the full log.
+                  </p>
                   <textarea
                     value={notes}
                     onChange={e => setNotes(e.target.value)}
-                    placeholder="Instructions, context, extra detail..."
+                    placeholder="Optional: handoff, context, or first status line…"
                     rows={2}
                     style={{ ...inputStyle, resize: 'vertical', minHeight: '52px' }}
                     onFocus={e => (e.target.style.borderColor = ACCENT)}

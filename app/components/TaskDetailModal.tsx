@@ -97,6 +97,50 @@ function orderCompletionFields(listFields: ListFieldItem[], meta: FieldMeta[]): 
   return [...merged, ...rest];
 }
 
+/** Prepend a dated block so the log reads newest-first (no versioning — one `notes` field). */
+function prependDatedStatusNote(existing: string | null | undefined, addition: string): string {
+  const t = addition.trim();
+  if (!t) return String(existing ?? '').replace(/\s+$/, '');
+  const date = new Date().toISOString().slice(0, 10);
+  const block = `[${date}]\n${t}\n\n`;
+  const prev = (existing ?? '').trim();
+  return prev ? `${block}${prev}` : `[${date}]\n${t}\n`;
+}
+
+function slugForStatusFilename(title: string): string {
+  const s = title
+    .trim()
+    .toLowerCase()
+    .replace(/[^\w\-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return s.slice(0, 48) || 'task';
+}
+
+/** Shareable status doc from current notes (email hook can reuse this body later). */
+function downloadStatusMarkdown(taskTitle: string, notes: string | null | undefined): void {
+  const title = taskTitle.trim() || 'Task';
+  const body = notes?.trim() || '_(No notes / status log yet.)_';
+  const stamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  const md = [
+    `# Status — ${title}`,
+    '',
+    `_Exported ${stamp} UTC · source: task notes / status in KarlOps_`,
+    '',
+    '---',
+    '',
+    body,
+    '',
+  ].join('\n');
+  const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const d = new Date().toISOString().slice(0, 10);
+  a.href = url;
+  a.download = `status-${slugForStatusFilename(title)}-${d}.md`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 // ─── BucketPicker ─────────────────────────────────────────────────────────────
 
 function BucketPicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
@@ -215,6 +259,7 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
   const [loading, setLoading]     = useState(true);
   const [saving, setSaving]       = useState(false);
   const [err, setErr]             = useState('');
+  const [pendingStatusNote, setPendingStatusNote] = useState('');
 
   // ─── Complete flow (driven by ko_field_metadata + ko_list_view_config for completion) ─
   const [completing, setCompleting]               = useState(false);
@@ -658,13 +703,78 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
                   onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} />
               </div>
 
-              {/* NOTES */}
+              {/* NOTES / STATUS — single field; dated prepends for quick updates */}
               <div style={fieldGroup}>
-                <div style={labelStyle}>Notes</div>
-                <textarea value={draft.notes ?? ''} onChange={e => setDraft(d => ({ ...d, notes: e.target.value }))}
-                  placeholder="Instructions, context, extra detail..."
-                  rows={2} style={{ ...inputStyle, resize: 'vertical', minHeight: '52px' }}
-                  onFocus={e => (e.target.style.borderColor = ACCENT)} onBlur={e => (e.target.style.borderColor = '#ddd')} />
+                <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  <div style={labelStyle}>Notes / Status</div>
+                  <button
+                    type="button"
+                    onClick={() => downloadStatusMarkdown(String(draft.title ?? ''), draft.notes)}
+                    style={{
+                      background: 'none',
+                      border: '1px solid #ddd',
+                      color: '#666',
+                      padding: '0.22rem 0.5rem',
+                      borderRadius: '4px',
+                      fontFamily: 'monospace',
+                      fontSize: '0.65rem',
+                      cursor: 'pointer',
+                    }}
+                    title="Download current log as Markdown (share with client or archive)"
+                  >
+                    download status (.md)
+                  </button>
+                </div>
+                <p style={{ fontSize: '0.65rem', color: '#888', margin: '0 0 0.45rem', lineHeight: 1.45 }}>
+                  One running log on the task — no separate versions. Add dated lines below (prepended), or edit the whole field. Save persists to the task.
+                </p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', marginBottom: '0.5rem' }}>
+                  <textarea
+                    value={pendingStatusNote}
+                    onChange={(e) => setPendingStatusNote(e.target.value)}
+                    placeholder="Add a note or status line…"
+                    rows={2}
+                    style={{ ...inputStyle, resize: 'vertical', minHeight: '44px', fontSize: '0.78rem' }}
+                    onFocus={(e) => (e.target.style.borderColor = ACCENT)}
+                    onBlur={(e) => (e.target.style.borderColor = '#ddd')}
+                  />
+                  <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                    <button
+                      type="button"
+                      disabled={!pendingStatusNote.trim()}
+                      onClick={() => {
+                        const next = prependDatedStatusNote(draft.notes, pendingStatusNote);
+                        setDraft((d) => ({ ...d, notes: next }));
+                        setPendingStatusNote('');
+                      }}
+                      style={{
+                        background: pendingStatusNote.trim() ? `${ACCENT}22` : '#f5f5f5',
+                        border: `1px solid ${pendingStatusNote.trim() ? ACCENT : '#e5e5e5'}`,
+                        color: pendingStatusNote.trim() ? '#92400e' : '#bbb',
+                        padding: '0.3rem 0.65rem',
+                        borderRadius: '4px',
+                        fontFamily: 'monospace',
+                        fontSize: '0.72rem',
+                        cursor: pendingStatusNote.trim() ? 'pointer' : 'not-allowed',
+                        fontWeight: 600,
+                      }}
+                    >
+                      add to log (prepend date)
+                    </button>
+                  </div>
+                </div>
+                <div style={{ fontSize: '0.62rem', color: '#999', marginBottom: '0.3rem', textTransform: 'uppercase', letterSpacing: '0.04em', fontWeight: 600 }}>
+                  Full field (saved with task)
+                </div>
+                <textarea
+                  value={draft.notes ?? ''}
+                  onChange={(e) => setDraft((d) => ({ ...d, notes: e.target.value }))}
+                  placeholder="Instructions, context, full status trail…"
+                  rows={4}
+                  style={{ ...inputStyle, resize: 'vertical', minHeight: '72px' }}
+                  onFocus={(e) => (e.target.style.borderColor = ACCENT)}
+                  onBlur={(e) => (e.target.style.borderColor = '#ddd')}
+                />
               </div>
 
               {/* BUCKET */}
