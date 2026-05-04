@@ -377,6 +377,11 @@ export default function WorkspacePage() {
   useEffect(() => {
     const init = async (session: any) => {
       if (!session?.user) { await supabase.auth.signOut(); window.location.href = '/login'; return; }
+      const { data: aal, error: aalErr } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+      if (!aalErr && aal?.nextLevel === 'aal2' && aal.currentLevel !== aal.nextLevel) {
+        window.location.href = '/login';
+        return;
+      }
       if (initDone.current) return;
       initDone.current = true;
       setAccessToken(session.access_token);
@@ -1059,6 +1064,8 @@ export default function WorkspacePage() {
             open(<span style={{ color: '#fbbf24', fontWeight: 600 }}>{contextFilter ? totalFiltered : totalOpen}</span>)
             {contextFilter && totalOpen !== totalFiltered && <span style={{ color: '#888' }}> / {totalOpen}</span>}
           </span>
+          <span style={{ color: '#333', fontSize: '0.7rem' }}>|</span>
+          <a href="/settings/mfa" style={{ color: '#ffffff', fontSize: '0.7rem', textDecoration: 'none', fontFamily: 'monospace' }} onMouseEnter={e => (e.currentTarget.style.color = '#fbbf24')} onMouseLeave={e => (e.currentTarget.style.color = '#ffffff')}>2FA</a>
           <span style={{ color: '#333', fontSize: '0.7rem' }}>|</span>
           <a href="/admin" style={{ color: '#ffffff', fontSize: '0.7rem', textDecoration: 'none', fontFamily: 'monospace' }} onMouseEnter={e => (e.currentTarget.style.color = '#fbbf24')} onMouseLeave={e => (e.currentTarget.style.color = '#ffffff')}>admin</a>
           <button onClick={handleLogout} style={{ background: 'none', border: 'none', color: '#ffffff', fontSize: '0.7rem', fontFamily: 'monospace', cursor: 'pointer', padding: 0 }} onMouseEnter={e => (e.currentTarget.style.color = '#fbbf24')} onMouseLeave={e => (e.currentTarget.style.color = '#ffffff')}>sign out</button>
