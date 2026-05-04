@@ -2,6 +2,7 @@
 
 import { useState, useEffect, FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 
 const inputStyle: React.CSSProperties = {
@@ -40,11 +41,13 @@ export default function LoginPage() {
   const [totpCode, setTotpCode] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [resetOk, setResetOk] = useState(false);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const err = params.get('error');
     if (err) setError(decodeURIComponent(err));
+    if (params.get('reset') === 'success') setResetOk(true);
   }, []);
 
   useEffect(() => {
@@ -142,6 +145,11 @@ export default function LoginPage() {
       <div style={{ textAlign: 'center', width: '100%', padding: '1rem' }}>
         <div style={{ color: '#fff', fontSize: '1.2rem', fontWeight: 700, marginBottom: '0.5rem' }}>KarlOps</div>
         <div style={{ color: '#555', fontSize: '0.75rem', marginBottom: '1.5rem' }}>Chaos, polished.</div>
+        {resetOk && (
+          <div style={{ color: '#4ade80', fontSize: '0.75rem', marginBottom: '1rem', maxWidth: '320px', marginLeft: 'auto', marginRight: 'auto' }}>
+            Password updated. Sign in with your new password.
+          </div>
+        )}
         {error && <div style={{ color: '#ef4444', fontSize: '0.75rem', marginBottom: '1rem', maxWidth: '320px', marginLeft: 'auto', marginRight: 'auto' }}>{error}</div>}
 
         {phase === 'password' && (
@@ -171,6 +179,12 @@ export default function LoginPage() {
             <button type="submit" disabled={loading} style={{ ...btnStyle, cursor: loading ? 'not-allowed' : 'pointer' }}>
               {loading ? '…' : 'Sign in'}
             </button>
+            <Link
+              href="/login/forgot-password"
+              style={{ marginTop: '1rem', color: '#666', fontSize: '0.72rem', textDecoration: 'underline' }}
+            >
+              Forgot password?
+            </Link>
           </form>
         )}
 
