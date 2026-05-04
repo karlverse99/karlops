@@ -192,6 +192,82 @@ function extractTaskTitleFromInput(input: string): string | null {
   return null;
 }
 
+function mapBucketPhraseToKey(input: string): string | null {
+  const n = normalizeIntentText(input);
+  if (/\b(on fire|fire|now)\b/.test(n)) return 'now';
+  if (/\b(up next|soon|next)\b/.test(n)) return 'soon';
+  if (/\b(real work|realwork)\b/.test(n)) return 'realwork';
+  if (/\b(later)\b/.test(n)) return 'later';
+  if (/\b(delegated?|delegate)\b/.test(n)) return 'delegate';
+  if (/\b(capture)\b/.test(n)) return 'capture';
+  return null;
+}
+
+function extractQuotedValue(input: string, labelPattern: RegExp): string | null {
+  const m = input.match(labelPattern);
+  if (!m?.[1]) return null;
+  return m[1].trim();
+}
+
+function extractSimpleValue(input: string, labelPattern: RegExp): string | null {
+  const m = input.match(labelPattern);
+  if (!m?.[1]) return null;
+  return m[1].trim().replace(/[.,;:]$/, '');
+}
+
+function parseExplicitTaskCapture(input: string): {
+  title: string | null;
+  context_name?: string | null;
+  bucket_key?: string | null;
+  tags?: string[];
+} {
+  // Common support phrasing:
+  // "Add a task... the task is "Trademark TUO" Context is The Unobsolete, Bucket is Up Next Tags #Jen Schroeder and #Operations"
+  let title =
+    extractQuotedValue(input, /(?:task\s+is|title\s+is)\s*"([^"]+)"/i) ??
+    extractQuotedValue(input, /(?:task\s+is|title\s+is)\s*'([^']+)'/i) ??
+    extractSimpleValue(input, /(?:task\s+is|title\s+is)\s*([^,\n]+)(?:,|\n|$)/i) ??
+    extractTaskTitleFromInput(input);
+
+  if (title) {
+    title = title
+      .replace(/\bcontext\s+is\b[\s\S]*$/i, '')
+      .replace(/\bbucket\s+is\b[\s\S]*$/i, '')
+      .replace(/\btags?\s*(?:are|is)?\b[\s\S]*$/i, '')
+      .trim();
+  }
+
+  const context_name = extractSimpleValue(
+    input,
+    /\bcontext\s+is\s+([^,\n]+)(?:,|\n|$)/i
+  );
+
+  const bucketPhrase = extractSimpleValue(
+    input,
+    /\bbucket\s+is\s+([^,\n]+)(?:,|\n|$)/i
+  );
+  const bucket_key = bucketPhrase ? mapBucketPhraseToKey(bucketPhrase) : mapBucketPhraseToKey(input);
+
+  const hashTags = Array.from(input.matchAll(/#([A-Za-z0-9][A-Za-z0-9 _\-/]{0,40})/g))
+    .map((m) => m[1].trim().replace(/\s{2,}/g, ' '))
+    .filter(Boolean);
+
+  const explicitTagSegment = extractSimpleValue(
+    input,
+    /\btags?\s*(?:are|is)?\s+(.+)$/i
+  );
+  const textTags = explicitTagSegment
+    ? explicitTagSegment
+        .split(/\s*(?:,| and )\s*/i)
+        .map((t) => t.replace(/^#/, '').trim())
+        .filter((t) => !!t && !/^context\b|^bucket\b/i.test(t))
+    : [];
+
+  const tags = Array.from(new Set([...hashTags, ...textTags])).slice(0, 8);
+
+  return { title: title && title.length > 1 ? title : null, context_name, bucket_key, tags };
+}
+
 function normalizeIntentText(input: string): string {
   return input
     .toLowerCase()
@@ -730,6 +806,32 @@ export async function routeCommand(
     // Deterministic fallback for explicit capture prompts.
     // This prevents dead-end "not sure" responses for a very common capture intent.
     if (!pending) {
+      const explicitCapture = parseExplicitTaskCapture(input);
+      if (explicitCapture.title && (isCaptureTaskRequest(input) || /\btask\s+is\b|\btitle\s+is\b/i.test(input))) {
+        const response = `I can add this task: "${explicitCapture.title}". Confirm?`;
+        await appendSessionMessage(user_id, 'user', input);
+        await appendSessionMessage(user_id, 'karl', response);
+        return {
+          intent: 'pending',
+          actions: [{
+            action: 'insert',
+            object_type: 'task',
+            modal: 'TaskAddModal',
+            fields: {
+              title: explicitCapture.title,
+              bucket_key: explicitCapture.bucket_key ?? 'capture',
+              context_name: explicitCapture.context_name ?? null,
+              context_id: null,
+              tags: explicitCapture.tags ?? [],
+              notes: null,
+              target_date: null,
+              delegated_to: null,
+            },
+          }],
+          response,
+        };
+      }
+
       if (isCaptureTaskRequest(input)) {
         const response = 'Absolutely. What is the task title?';
         await appendSessionMessage(user_id, 'user', input);
