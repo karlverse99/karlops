@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
+import { buildTaskStatusMarkdown } from '@/lib/ko/taskStatusMarkdown';
 import TagPicker from '@/app/components/TagPicker';
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
@@ -116,21 +117,9 @@ function slugForStatusFilename(title: string): string {
   return s.slice(0, 48) || 'task';
 }
 
-/** Shareable status doc from current notes (email hook can reuse this body later). */
 function downloadStatusMarkdown(taskTitle: string, notes: string | null | undefined): void {
   const title = taskTitle.trim() || 'Task';
-  const body = notes?.trim() || '_(No notes / status log yet.)_';
-  const stamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
-  const md = [
-    `# Status — ${title}`,
-    '',
-    `_Exported ${stamp} UTC · source: task notes / status in KarlOps_`,
-    '',
-    '---',
-    '',
-    body,
-    '',
-  ].join('\n');
+  const md = buildTaskStatusMarkdown(title, notes);
   const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -260,6 +249,10 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
   const [saving, setSaving]       = useState(false);
   const [err, setErr]             = useState('');
   const [pendingStatusNote, setPendingStatusNote] = useState('');
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  const [emailSending, setEmailSending] = useState(false);
+  const [emailOk, setEmailOk] = useState('');
+  const exportMenuRef = useRef<HTMLDivElement>(null);
 
   // ─── Complete flow (driven by ko_field_metadata + ko_list_view_config for completion) ─
   const [completing, setCompleting]               = useState(false);
@@ -291,6 +284,7 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        if (showExportMenu) { setShowExportMenu(false); return; }
         if (confirmDelete) { setConfirmDelete(false); return; }
         if (completing)    { setCompleting(false); setErr(''); return; }
         onClose();
@@ -298,7 +292,16 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [onClose, confirmDelete, completing]);
+  }, [onClose, confirmDelete, completing, showExportMenu]);
+
+  useEffect(() => {
+    if (!showExportMenu) return;
+    const onDown = (e: MouseEvent) => {
+      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) setShowExportMenu(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [showExportMenu]);
 
   // ─── Drag/resize ─────────────────────────────────────────────────────────
   const onDragStart = useCallback((e: React.MouseEvent) => {
@@ -416,6 +419,44 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
       setErr(e.message);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const sendStatusEmail = async () => {
+    setShowExportMenu(false);
+    setEmailOk('');
+    const { data: { session } } = await supabase.auth.getSession();
+    const defaultTo = session?.user?.email ?? '';
+    const entered = window.prompt(
+      'Recipient email (leave blank to send to your login email):',
+      defaultTo,
+    );
+    if (entered === null) return;
+    const to = entered.trim() || undefined;
+    setErr('');
+    setEmailSending(true);
+    try {
+      const res = await fetch('/api/ko/task-email', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({
+          taskId,
+          ...(to ? { to } : {}),
+          title: String(draft.title ?? ''),
+          notes: draft.notes == null ? '' : String(draft.notes),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(typeof data.error === 'string' ? data.error : 'Send failed');
+      setEmailOk('Email sent.');
+      setTimeout(() => setEmailOk(''), 5000);
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : 'Send failed');
+    } finally {
+      setEmailSending(false);
     }
   };
 
@@ -706,24 +747,76 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
               {/* NOTES / STATUS — single field; dated prepends for quick updates */}
               <div style={fieldGroup}>
                 <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap' }}>
-                  <div style={labelStyle}>Notes / Status</div>
-                  <button
-                    type="button"
-                    onClick={() => downloadStatusMarkdown(String(draft.title ?? ''), draft.notes)}
-                    style={{
-                      background: 'none',
-                      border: '1px solid #ddd',
-                      color: '#666',
-                      padding: '0.22rem 0.5rem',
-                      borderRadius: '4px',
-                      fontFamily: 'monospace',
-                      fontSize: '0.65rem',
-                      cursor: 'pointer',
-                    }}
-                    title="Download current log as Markdown (share with client or archive)"
-                  >
-                    download status (.md)
-                  </button>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.5rem', flexWrap: 'wrap' }}>
+                    <div style={labelStyle}>Notes / Status</div>
+                    {emailOk && <span style={{ fontSize: '0.65rem', color: '#15803d', fontWeight: 600 }}>{emailOk}</span>}
+                  </div>
+                  <div ref={exportMenuRef} style={{ position: 'relative' }}>
+                    <button
+                      type="button"
+                      disabled={emailSending}
+                      onClick={() => setShowExportMenu((v) => !v)}
+                      style={{
+                        background: '#000',
+                        border: '1px solid #000',
+                        color: ACCENT,
+                        padding: '0.22rem 0.55rem',
+                        borderRadius: '4px',
+                        fontFamily: 'monospace',
+                        fontSize: '0.65rem',
+                        cursor: emailSending ? 'wait' : 'pointer',
+                        fontWeight: 600,
+                        opacity: emailSending ? 0.7 : 1,
+                      }}
+                      onMouseEnter={(e) => { if (!emailSending) e.currentTarget.style.background = '#222'; }}
+                      onMouseLeave={(e) => { if (!emailSending) e.currentTarget.style.background = '#000'; }}
+                      title="Export status log"
+                    >
+                      export ▾
+                    </button>
+                    {showExportMenu && (
+                      <div
+                        style={{
+                          position: 'absolute',
+                          top: '100%',
+                          right: 0,
+                          marginTop: '0.25rem',
+                          background: '#fff',
+                          border: '1px solid #ddd',
+                          borderRadius: '4px',
+                          boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                          zIndex: 20,
+                          minWidth: '148px',
+                        }}
+                      >
+                        <div
+                          onClick={() => {
+                            downloadStatusMarkdown(String(draft.title ?? ''), draft.notes);
+                            setShowExportMenu(false);
+                          }}
+                          style={{ padding: '0.5rem 0.75rem', fontSize: '0.72rem', color: '#333', cursor: 'pointer', fontFamily: 'monospace' }}
+                          onMouseEnter={(e) => (e.currentTarget.style.background = ACCENT_BG)}
+                          onMouseLeave={(e) => (e.currentTarget.style.background = '#fff')}
+                        >
+                          Download status (.md)
+                        </div>
+                        <div
+                          onClick={() => { if (!emailSending) void sendStatusEmail(); }}
+                          style={{
+                            padding: '0.5rem 0.75rem',
+                            fontSize: '0.72rem',
+                            color: emailSending ? '#bbb' : '#333',
+                            cursor: emailSending ? 'wait' : 'pointer',
+                            fontFamily: 'monospace',
+                          }}
+                          onMouseEnter={(e) => { if (!emailSending) e.currentTarget.style.background = ACCENT_BG; }}
+                          onMouseLeave={(e) => (e.currentTarget.style.background = '#fff')}
+                        >
+                          Email this log
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
                 <p style={{ fontSize: '0.65rem', color: '#888', margin: '0 0 0.45rem', lineHeight: 1.45 }}>
                   One running log on the task — no separate versions. Add dated lines below (prepended), or edit the whole field. Save persists to the task.
