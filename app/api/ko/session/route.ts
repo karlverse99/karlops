@@ -24,7 +24,7 @@ export async function POST(req: NextRequest) {
     );
 
     if (!result.success) {
-      return NextResponse.json({ error: result.error }, { status: 500 });
+      return NextResponse.json({ success: false, error: result.error }, { status: 500 });
     }
 
     // Weighted random greeting from karl_greeting
@@ -57,7 +57,12 @@ export async function POST(req: NextRequest) {
     });
   } catch (err: any) {
     console.error('[POST /api/ko/session]', err);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    const msg = String(err?.message ?? '');
+    const setup = msg.includes('Missing server Supabase');
+    return NextResponse.json(
+      { success: false, error: setup ? msg : 'Internal server error' },
+      { status: setup ? 503 : 500 },
+    );
   }
 }
 

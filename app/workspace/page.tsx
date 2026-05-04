@@ -391,8 +391,10 @@ export default function WorkspacePage() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}` },
         });
-        const data = await res.json();
-        if (!data.success) throw new Error(data.error ?? 'Session init failed');
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.success) {
+          throw new Error(data.error ?? `Session init failed (HTTP ${res.status})`);
+        }
 
         const { data: koUserData, error: koErr } = await supabase
           .from('ko_user')
@@ -946,8 +948,20 @@ export default function WorkspacePage() {
       <div style={centeredStyle}>
         <div style={{ color: '#ef4444', fontFamily: 'monospace', fontSize: '0.8rem', textAlign: 'center' }}>
           <div style={{ marginBottom: '0.5rem' }}>Session error</div>
-          <div style={{ color: '#aaa', fontSize: '0.75rem', marginBottom: '1rem' }}>{sessionError}</div>
-          <button onClick={() => window.location.reload()} style={ghostBtn}>Retry</button>
+          <div style={{ color: '#aaa', fontSize: '0.75rem', marginBottom: '1rem', maxWidth: '420px' }}>{sessionError}</div>
+          <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'center', flexWrap: 'wrap' }}>
+            <button onClick={() => window.location.reload()} style={ghostBtn}>Retry</button>
+            <button
+              type="button"
+              onClick={async () => {
+                await supabase.auth.signOut();
+                window.location.href = '/login';
+              }}
+              style={ghostBtn}
+            >
+              Sign out
+            </button>
+          </div>
         </div>
       </div>
     );
