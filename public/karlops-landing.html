@@ -1,0 +1,894 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KarlOps — Chaos, Polished.</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --black: #0a0a0a;
+    --white: #fafaf8;
+    --warm-white: #f5f3ee;
+    --gray-100: #e8e6e0;
+    --gray-400: #8a8880;
+    --gray-600: #4a4844;
+    --ko-red: #c0392b;
+    --ko-red-dark: #922b21;
+    --ko-amber: #d4851a;
+    --ko-teal: #14b8a6;
+    --ko-blue: #2563eb;
+    --ko-purple: #7c3aed;
+    --ko-wine: #991b1b;
+  }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    font-family: 'DM Sans', sans-serif;
+    background: var(--black);
+    color: var(--white);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* NAV */
+  nav {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1.25rem 3rem;
+    background: rgba(10,10,10,0.85);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+  }
+
+  .nav-logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    text-decoration: none;
+  }
+
+  .nav-logo-icon {
+    width: 32px;
+    height: 32px;
+  }
+
+  .nav-logo-text {
+    font-family: 'Syne', sans-serif;
+    font-weight: 800;
+    font-size: 1.1rem;
+    color: var(--white);
+    letter-spacing: -0.02em;
+  }
+
+  .nav-logo-text span { color: var(--ko-red); }
+
+  .nav-links {
+    display: flex;
+    align-items: center;
+    gap: 2.5rem;
+    list-style: none;
+  }
+
+  .nav-links a {
+    font-size: 0.85rem;
+    font-weight: 500;
+    color: var(--gray-400);
+    text-decoration: none;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    transition: color 0.2s;
+  }
+
+  .nav-links a:hover { color: var(--white); }
+
+  .nav-cta {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.78rem;
+    padding: 0.5rem 1.25rem;
+    background: var(--ko-red);
+    color: var(--white);
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+    text-decoration: none;
+    letter-spacing: 0.02em;
+    transition: background 0.2s;
+  }
+
+  .nav-cta:hover { background: var(--ko-red-dark); }
+
+  /* HERO */
+  .hero {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 8rem 3rem 4rem;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .hero-grid-bg {
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(192,57,43,0.04) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(192,57,43,0.04) 1px, transparent 1px);
+    background-size: 60px 60px;
+    mask-image: radial-gradient(ellipse 80% 80% at 20% 50%, black 30%, transparent 80%);
+  }
+
+  .hero-reticle {
+    position: absolute;
+    right: 8%;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 420px;
+    height: 420px;
+    opacity: 0.12;
+    animation: slow-spin 30s linear infinite;
+  }
+
+  @keyframes slow-spin {
+    from { transform: translateY(-50%) rotate(0deg); }
+    to { transform: translateY(-50%) rotate(360deg); }
+  }
+
+  .hero-eyebrow {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.75rem;
+    color: var(--ko-red);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 1.5rem;
+    opacity: 0;
+    animation: fade-up 0.6s ease 0.2s forwards;
+  }
+
+  .hero-headline {
+    font-family: 'Syne', sans-serif;
+    font-weight: 800;
+    font-size: clamp(3.5rem, 7vw, 6.5rem);
+    line-height: 0.95;
+    letter-spacing: -0.04em;
+    max-width: 14ch;
+    margin-bottom: 1.5rem;
+    opacity: 0;
+    animation: fade-up 0.6s ease 0.35s forwards;
+  }
+
+  .hero-headline em {
+    font-style: normal;
+    color: var(--ko-red);
+  }
+
+  .hero-sub {
+    font-size: 1.15rem;
+    font-weight: 300;
+    color: var(--gray-400);
+    max-width: 42ch;
+    line-height: 1.7;
+    margin-bottom: 3rem;
+    opacity: 0;
+    animation: fade-up 0.6s ease 0.5s forwards;
+  }
+
+  .hero-actions {
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+    opacity: 0;
+    animation: fade-up 0.6s ease 0.65s forwards;
+  }
+
+  .btn-primary {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.82rem;
+    padding: 0.85rem 2rem;
+    background: var(--ko-red);
+    color: var(--white);
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+    text-decoration: none;
+    letter-spacing: 0.04em;
+    transition: background 0.2s, transform 0.1s;
+  }
+
+  .btn-primary:hover { background: var(--ko-red-dark); transform: translateY(-1px); }
+
+  .btn-ghost {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.82rem;
+    padding: 0.85rem 2rem;
+    background: transparent;
+    color: var(--gray-400);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 3px;
+    cursor: pointer;
+    text-decoration: none;
+    letter-spacing: 0.04em;
+    transition: color 0.2s, border-color 0.2s;
+  }
+
+  .btn-ghost:hover { color: var(--white); border-color: rgba(255,255,255,0.3); }
+
+  .hero-scroll-hint {
+    position: absolute;
+    bottom: 2.5rem;
+    left: 3rem;
+    font-family: 'DM Mono', monospace;
+    font-size: 0.72rem;
+    color: var(--gray-600);
+    letter-spacing: 0.08em;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .hero-scroll-hint::before {
+    content: '';
+    display: block;
+    width: 40px;
+    height: 1px;
+    background: var(--gray-600);
+  }
+
+  @keyframes fade-up {
+    from { opacity: 0; transform: translateY(20px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* TAGLINE STRIP */
+  .tagline-strip {
+    background: var(--ko-red);
+    padding: 1rem 3rem;
+    display: flex;
+    gap: 3rem;
+    align-items: center;
+    overflow: hidden;
+  }
+
+  .tagline-strip-inner {
+    display: flex;
+    gap: 4rem;
+    animation: marquee 20s linear infinite;
+    white-space: nowrap;
+  }
+
+  .tagline-item {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.75rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.85);
+  }
+
+  .tagline-dot {
+    color: rgba(255,255,255,0.4);
+  }
+
+  @keyframes marquee {
+    from { transform: translateX(0); }
+    to { transform: translateX(-50%); }
+  }
+
+  /* WHAT WE DO */
+  .section {
+    padding: 6rem 3rem;
+  }
+
+  .section-label {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.72rem;
+    color: var(--ko-red);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 1rem;
+  }
+
+  .section-title {
+    font-family: 'Syne', sans-serif;
+    font-weight: 700;
+    font-size: clamp(2rem, 4vw, 3rem);
+    letter-spacing: -0.03em;
+    margin-bottom: 1.5rem;
+    line-height: 1.1;
+  }
+
+  .section-body {
+    font-size: 1.05rem;
+    font-weight: 300;
+    color: var(--gray-400);
+    max-width: 56ch;
+    line-height: 1.8;
+  }
+
+  /* PREMISE */
+  .premise {
+    background: var(--warm-white);
+    color: var(--black);
+    padding: 6rem 3rem;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6rem;
+    align-items: center;
+  }
+
+  .premise .section-label { color: var(--ko-red); }
+
+  .premise .section-body { color: var(--gray-600); }
+
+  .premise-quote {
+    font-family: 'Syne', sans-serif;
+    font-weight: 700;
+    font-size: clamp(1.4rem, 2.5vw, 2rem);
+    letter-spacing: -0.02em;
+    line-height: 1.3;
+    color: var(--black);
+    border-left: 3px solid var(--ko-red);
+    padding-left: 1.5rem;
+    margin-top: 2rem;
+  }
+
+  .premise-right {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+  }
+
+  .premise-stat {
+    padding: 1.5rem;
+    border: 1px solid var(--gray-100);
+    border-radius: 4px;
+    background: white;
+  }
+
+  .premise-stat-num {
+    font-family: 'Syne', sans-serif;
+    font-weight: 800;
+    font-size: 2.5rem;
+    color: var(--ko-red);
+    letter-spacing: -0.04em;
+  }
+
+  .premise-stat-label {
+    font-size: 0.85rem;
+    color: var(--gray-600);
+    margin-top: 0.25rem;
+  }
+
+  /* PRODUCTS */
+  .products {
+    background: var(--black);
+    padding: 6rem 3rem;
+  }
+
+  .products-header {
+    margin-bottom: 3rem;
+  }
+
+  .products-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1.5px;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.06);
+  }
+
+  .product-card {
+    background: var(--black);
+    padding: 2.5rem;
+    text-decoration: none;
+    color: inherit;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    transition: background 0.2s;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .product-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+    background: var(--card-accent, var(--ko-red));
+    transform: scaleX(0);
+    transform-origin: left;
+    transition: transform 0.3s ease;
+  }
+
+  .product-card:hover { background: rgba(255,255,255,0.03); }
+  .product-card:hover::before { transform: scaleX(1); }
+
+  .product-badge {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.68rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 0.3rem 0.65rem;
+    border-radius: 2px;
+    display: inline-block;
+    align-self: flex-start;
+    background: var(--badge-bg, rgba(192,57,43,0.15));
+    color: var(--badge-color, var(--ko-red));
+  }
+
+  .product-id {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.72rem;
+    color: var(--gray-600);
+    letter-spacing: 0.06em;
+  }
+
+  .product-name {
+    font-family: 'Syne', sans-serif;
+    font-weight: 700;
+    font-size: 1.4rem;
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+  }
+
+  .product-desc {
+    font-size: 0.9rem;
+    font-weight: 300;
+    color: var(--gray-400);
+    line-height: 1.7;
+    flex: 1;
+  }
+
+  .product-features {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin-top: 0.5rem;
+  }
+
+  .product-features li {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.75rem;
+    color: var(--gray-600);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .product-features li::before {
+    content: '→';
+    color: var(--card-accent, var(--ko-red));
+    font-size: 0.7rem;
+  }
+
+  .product-link {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.75rem;
+    color: var(--card-accent, var(--ko-red));
+    letter-spacing: 0.06em;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-top: 0.5rem;
+    transition: gap 0.2s;
+  }
+
+  .product-card:hover .product-link { gap: 0.7rem; }
+
+  .coming-soon-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(10,10,10,0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .coming-soon-tag {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.72rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 0.4rem 0.8rem;
+    border: 1px solid rgba(255,255,255,0.2);
+    color: rgba(255,255,255,0.5);
+  }
+
+  /* HOW IT WORKS */
+  .how {
+    background: var(--warm-white);
+    color: var(--black);
+    padding: 6rem 3rem;
+  }
+
+  .how .section-label { color: var(--ko-red); }
+
+  .how-steps {
+    margin-top: 3rem;
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 0;
+    position: relative;
+  }
+
+  .how-steps::before {
+    content: '';
+    position: absolute;
+    top: 1.5rem;
+    left: 10%;
+    right: 10%;
+    height: 1px;
+    background: var(--gray-100);
+  }
+
+  .how-step {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    padding: 0 1rem;
+  }
+
+  .how-step-num {
+    width: 3rem;
+    height: 3rem;
+    border-radius: 50%;
+    background: var(--black);
+    color: var(--white);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: 'DM Mono', monospace;
+    font-size: 0.8rem;
+    margin-bottom: 1.25rem;
+    position: relative;
+    z-index: 1;
+  }
+
+  .how-step-num.active {
+    background: var(--ko-red);
+  }
+
+  .how-step-title {
+    font-family: 'Syne', sans-serif;
+    font-weight: 700;
+    font-size: 0.95rem;
+    margin-bottom: 0.5rem;
+    color: var(--black);
+  }
+
+  .how-step-desc {
+    font-size: 0.8rem;
+    color: var(--gray-600);
+    line-height: 1.6;
+  }
+
+  /* KARL CALLOUT */
+  .karl-callout {
+    background: var(--ko-red);
+    padding: 5rem 3rem;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 3rem;
+    align-items: center;
+  }
+
+  .karl-callout-text {
+    font-family: 'Syne', sans-serif;
+    font-weight: 700;
+    font-size: clamp(1.8rem, 3.5vw, 2.8rem);
+    letter-spacing: -0.03em;
+    line-height: 1.2;
+  }
+
+  .karl-callout-sub {
+    font-size: 0.95rem;
+    font-weight: 300;
+    color: rgba(255,255,255,0.75);
+    margin-top: 0.75rem;
+    max-width: 50ch;
+  }
+
+  .karl-greeting {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.78rem;
+    letter-spacing: 0.06em;
+    color: rgba(255,255,255,0.6);
+    border: 1px solid rgba(255,255,255,0.25);
+    padding: 1rem 1.5rem;
+    border-radius: 3px;
+    white-space: nowrap;
+    font-style: italic;
+  }
+
+  /* FOOTER */
+  footer {
+    background: var(--black);
+    border-top: 1px solid rgba(255,255,255,0.06);
+    padding: 3rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .footer-logo {
+    font-family: 'Syne', sans-serif;
+    font-weight: 800;
+    font-size: 1rem;
+    letter-spacing: -0.02em;
+  }
+
+  .footer-logo span { color: var(--ko-red); }
+
+  .footer-links {
+    display: flex;
+    gap: 2rem;
+    list-style: none;
+  }
+
+  .footer-links a {
+    font-size: 0.8rem;
+    color: var(--gray-600);
+    text-decoration: none;
+    transition: color 0.2s;
+  }
+
+  .footer-links a:hover { color: var(--white); }
+
+  .footer-copy {
+    font-family: 'DM Mono', monospace;
+    font-size: 0.72rem;
+    color: var(--gray-600);
+  }
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <a href="#" class="nav-logo">
+    <svg class="nav-logo-icon" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="16" cy="16" r="14" stroke="#c0392b" stroke-width="1.5"/>
+      <circle cx="16" cy="16" r="8" stroke="#c0392b" stroke-width="1"/>
+      <circle cx="16" cy="16" r="2.5" fill="#c0392b"/>
+      <line x1="16" y1="2" x2="16" y2="7" stroke="#c0392b" stroke-width="1.5"/>
+      <line x1="16" y1="25" x2="16" y2="30" stroke="#c0392b" stroke-width="1.5"/>
+      <line x1="2" y1="16" x2="7" y2="16" stroke="#c0392b" stroke-width="1.5"/>
+      <line x1="25" y1="16" x2="30" y2="16" stroke="#c0392b" stroke-width="1.5"/>
+    </svg>
+    <span class="nav-logo-text">Karl<span>Ops</span></span>
+  </a>
+  <ul class="nav-links">
+    <li><a href="#products">Products</a></li>
+    <li><a href="#how">How It Works</a></li>
+    <li><a href="#karl">Meet Karl</a></li>
+    <li><a href="https://app.karlops.com/login" class="nav-cta">Launch App →</a></li>
+  </ul>
+</nav>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="hero-grid-bg"></div>
+  <svg class="hero-reticle" viewBox="0 0 420 420" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="210" cy="210" r="200" stroke="white" stroke-width="1"/>
+    <circle cx="210" cy="210" r="140" stroke="white" stroke-width="0.5"/>
+    <circle cx="210" cy="210" r="80" stroke="white" stroke-width="1"/>
+    <circle cx="210" cy="210" r="25" fill="white"/>
+    <line x1="210" y1="10" x2="210" y2="80" stroke="white" stroke-width="2"/>
+    <line x1="210" y1="340" x2="210" y2="410" stroke="white" stroke-width="2"/>
+    <line x1="10" y1="210" x2="80" y2="210" stroke="white" stroke-width="2"/>
+    <line x1="340" y1="210" x2="410" y2="210" stroke="white" stroke-width="2"/>
+    <line x1="210" y1="130" x2="210" y2="150" stroke="white" stroke-width="1"/>
+    <line x1="210" y1="270" x2="210" y2="290" stroke="white" stroke-width="1"/>
+    <line x1="130" y1="210" x2="150" y2="210" stroke="white" stroke-width="1"/>
+    <line x1="270" y1="210" x2="290" y2="210" stroke="white" stroke-width="1"/>
+  </svg>
+
+  <p class="hero-eyebrow">karlops.com</p>
+  <h1 class="hero-headline">Chaos,<br><em>polished.</em></h1>
+  <p class="hero-sub">One operational system for the person running everything. Karl keeps score while you do the work.</p>
+  <div class="hero-actions">
+    <a href="https://app.karlops.com/login" class="btn-primary">Get Started →</a>
+    <a href="#products" class="btn-ghost">See Products</a>
+  </div>
+  <p class="hero-scroll-hint">scroll to explore</p>
+</section>
+
+<!-- TAGLINE STRIP -->
+<div class="tagline-strip">
+  <div class="tagline-strip-inner">
+    <span class="tagline-item">Capture</span>
+    <span class="tagline-dot">◆</span>
+    <span class="tagline-item">Prioritize</span>
+    <span class="tagline-dot">◆</span>
+    <span class="tagline-item">Work</span>
+    <span class="tagline-dot">◆</span>
+    <span class="tagline-item">Communicate</span>
+    <span class="tagline-dot">◆</span>
+    <span class="tagline-item">Document</span>
+    <span class="tagline-dot">◆</span>
+    <span class="tagline-item">KarlOps</span>
+    <span class="tagline-dot">◆</span>
+    <span class="tagline-item">Capture</span>
+    <span class="tagline-dot">◆</span>
+    <span class="tagline-item">Prioritize</span>
+    <span class="tagline-dot">◆</span>
+    <span class="tagline-item">Work</span>
+    <span class="tagline-dot">◆</span>
+    <span class="tagline-item">Communicate</span>
+    <span class="tagline-dot">◆</span>
+    <span class="tagline-item">Document</span>
+    <span class="tagline-dot">◆</span>
+    <span class="tagline-item">KarlOps</span>
+    <span class="tagline-dot">◆</span>
+  </div>
+</div>
+
+<!-- PREMISE -->
+<section class="premise">
+  <div>
+    <p class="section-label">The Premise</p>
+    <h2 class="section-title">Everything lives in one pool. Constantly re-ranked by what's on fire.</h2>
+    <p class="section-body">KarlOps isn't a project manager. It's a pressure system. Tags do the organizational work. Buckets tell you when. Karl — your AI operator — helps you restack when the day shifts on you.</p>
+    <blockquote class="premise-quote">"Not a hierarchy navigator. A pressure system."</blockquote>
+  </div>
+  <div class="premise-right">
+    <div class="premise-stat">
+      <div class="premise-stat-num">Now</div>
+      <div class="premise-stat-label">Always know what's actually on fire — not what someone filed in a folder</div>
+    </div>
+    <div class="premise-stat">
+      <div class="premise-stat-num">Chat</div>
+      <div class="premise-stat-label">Tell Karl what happened. He captures, tags, and files it — you keep moving</div>
+    </div>
+    <div class="premise-stat">
+      <div class="premise-stat-num">Done</div>
+      <div class="premise-stat-label">Karl generates your reports, status updates, and evidence — in seconds</div>
+    </div>
+  </div>
+</section>
+
+<!-- PRODUCTS -->
+<section class="products" id="products">
+  <div class="products-header">
+    <p class="section-label">The Product Family</p>
+    <h2 class="section-title">One engine.<br>Purpose-built interfaces.</h2>
+  </div>
+
+  <div class="products-grid">
+
+    <!-- KO Command -->
+    <a href="https://app.karlops.com/login" class="product-card" style="--card-accent: #c0392b; --badge-bg: rgba(192,57,43,0.12); --badge-color: #c0392b;">
+      <span class="product-id">KO-01</span>
+      <span class="product-badge">Available Now</span>
+      <h3 class="product-name">KO Command</h3>
+      <p class="product-desc">The full KarlOps experience for consultants, program managers, and project managers running complex delivery. Everything in one pool, re-ranked by pressure.</p>
+      <ul class="product-features">
+        <li>Chat-first capture and prioritization</li>
+        <li>Smart bucket system — Now, Soon, Later, Delegate</li>
+        <li>Karl context bundles and auto-tagging</li>
+        <li>Document generation and encrypted extracts</li>
+        <li>Contact and meeting management</li>
+      </ul>
+      <span class="product-link">Launch KO Command →</span>
+    </a>
+
+    <!-- HR Buster -->
+    <div class="product-card" style="--card-accent: #d4851a; --badge-bg: rgba(212,133,26,0.12); --badge-color: #d4851a; position: relative;">
+      <span class="product-id">KO-02</span>
+      <span class="product-badge">In Development</span>
+      <h3 class="product-name">HR Buster</h3>
+      <p class="product-desc">Purpose-built for high-stakes HR moments. When you're under a PIP, facing a performance review, or building your case — you need evidence, not a system to learn.</p>
+      <ul class="product-features">
+        <li>One-question daily capture: "What did you do today?"</li>
+        <li>Karl maps your activity to requirements automatically</li>
+        <li>Gap analysis — what's covered, what needs more</li>
+        <li>Formal response document generation</li>
+        <li>Advocate-facing reporting</li>
+      </ul>
+      <span class="product-link" style="color: var(--ko-amber);">Join Waitlist →</span>
+    </div>
+
+    <!-- KO Admin -->
+    <div class="product-card" style="--card-accent: #7c3aed; --badge-bg: rgba(124,58,237,0.12); --badge-color: #7c3aed; position: relative;">
+      <span class="product-id">KO-03</span>
+      <span class="product-badge" style="background: rgba(124,58,237,0.12); color: #7c3aed;">Coming Soon</span>
+      <h3 class="product-name">KO Admin</h3>
+      <p class="product-desc">Cross-system administration for teams and organizations running multiple KarlOps instances. One pane of glass for everything that matters.</p>
+      <ul class="product-features">
+        <li>Multi-user workspace management</li>
+        <li>Shared data and reporting</li>
+        <li>Implementation type configuration</li>
+        <li>Enterprise feature gating</li>
+      </ul>
+      <div class="coming-soon-overlay">
+        <span class="coming-soon-tag">On the roadmap</span>
+      </div>
+    </div>
+
+    <!-- Mobile -->
+    <div class="product-card" style="--card-accent: #14b8a6; --badge-bg: rgba(20,184,166,0.12); --badge-color: #14b8a6; position: relative;">
+      <span class="product-id">KO-04</span>
+      <span class="product-badge" style="background: rgba(20,184,166,0.12); color: #14b8a6;">Coming Soon</span>
+      <h3 class="product-name">KO Mobile</h3>
+      <p class="product-desc">KarlOps in your pocket. Capture on the go, check your pressure stack, send Karl a voice note from the parking lot after the meeting.</p>
+      <ul class="product-features">
+        <li>Voice capture to Karl</li>
+        <li>Bucket view and quick triage</li>
+        <li>Full chat with Karl</li>
+        <li>iOS and Android</li>
+      </ul>
+      <div class="coming-soon-overlay">
+        <span class="coming-soon-tag">On the roadmap</span>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- HOW IT WORKS -->
+<section class="how" id="how">
+  <p class="section-label">The Core Loop</p>
+  <h2 class="section-title">Five steps. One operator. No falling through the cracks.</h2>
+  <div class="how-steps">
+    <div class="how-step">
+      <div class="how-step-num active">01</div>
+      <h4 class="how-step-title">Capture</h4>
+      <p class="how-step-desc">Dump it to Karl. Long form, short form, voice, paste. He sorts it.</p>
+    </div>
+    <div class="how-step">
+      <div class="how-step-num">02</div>
+      <h4 class="how-step-title">Prioritize</h4>
+      <p class="how-step-desc">Karl buckets everything. You see what's on fire and what can wait.</p>
+    </div>
+    <div class="how-step">
+      <div class="how-step-num">03</div>
+      <h4 class="how-step-title">Work</h4>
+      <p class="how-step-desc">Move through the pressure stack. Karl tracks what you touch and when.</p>
+    </div>
+    <div class="how-step">
+      <div class="how-step-num">04</div>
+      <h4 class="how-step-title">Communicate</h4>
+      <p class="how-step-desc">Ask Karl for a status update. He drafts it from everything he knows.</p>
+    </div>
+    <div class="how-step">
+      <div class="how-step-num">05</div>
+      <h4 class="how-step-title">Document</h4>
+      <p class="how-step-desc">Generate encrypted extracts. Your audit trail, automatically built.</p>
+    </div>
+  </div>
+</section>
+
+<!-- KARL CALLOUT -->
+<section class="karl-callout" id="karl">
+  <div>
+    <h2 class="karl-callout-text">Meet Karl.<br>He's a bad llama.</h2>
+    <p class="karl-callout-sub">Karl is your AI operational partner. He reads your situation before every response, knows your pressure stack, and keeps you from losing track of the thing that matters most right now. He's opinionated, efficient, and he doesn't sugarcoat it.</p>
+  </div>
+  <div class="karl-greeting">"Stay fit, keep sharp,<br>and make good decisions."<br><br>— Karl</div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <div class="footer-logo">Karl<span>Ops</span></div>
+  <ul class="footer-links">
+    <li><a href="https://app.karlops.com/login">Launch App</a></li>
+    <li><a href="#products">Products</a></li>
+    <li><a href="mailto:hello@karlops.com">Contact</a></li>
+  </ul>
+  <p class="footer-copy">© 2026 KarlOps</p>
+</footer>
+
+</body>
+</html>
