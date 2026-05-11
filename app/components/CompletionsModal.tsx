@@ -36,6 +36,7 @@ interface CompletionsModalProps {
   accessToken: string;
   onClose: () => void;
   onCountChange: (count: number) => void;
+  importDraft?: { title: string; outcome: string; description?: string } | null;
 }
 
 /** Fields shown in the default “essentials” completion editor (matches common quick edits). */
@@ -142,7 +143,7 @@ const DETAIL_MIN_H         = 400;
 
 // ─── COMPONENT ───────────────────────────────────────────────────────────────
 
-export default function CompletionsModal({ userId, accessToken, onClose, onCountChange }: CompletionsModalProps) {
+export default function CompletionsModal({ userId, accessToken, onClose, onCountChange, importDraft }: CompletionsModalProps) {
   const [mode, setMode]               = useState<'empty' | 'edit' | 'add'>('empty');
   const [completions, setCompletions] = useState<Completion[]>([]);
   const [loading, setLoading]         = useState(true);
@@ -419,6 +420,27 @@ export default function CompletionsModal({ userId, accessToken, onClose, onCount
     centerDetailPanel();
     setMode('add');
   };
+
+  useEffect(() => {
+    if (!importDraft?.title?.trim() && !importDraft?.outcome?.trim()) return;
+    setEditId(null);
+    setFormTitle((importDraft.title ?? '').trim().slice(0, 500));
+    setFormOutcome((importDraft.outcome ?? '').trim().slice(0, 8000));
+    setFormDescription((importDraft.description ?? '').trim().slice(0, 8000));
+    setFormCompletedAt(new Date().toISOString().slice(0, 16));
+    setFormTags([]);
+    setFormContextId('');
+    setErr('');
+    setConfirmDelete(false);
+    setSelected(null);
+    setDetailFullForm(true);
+    setDetailPos({
+      x: Math.max(20, Math.round(window.innerWidth / 2 - DETAIL_DEFAULT_W / 2)),
+      y: Math.max(20, Math.round(window.innerHeight / 2 - DETAIL_DEFAULT_H / 2)),
+    });
+    setDetailSize({ w: DETAIL_DEFAULT_W, h: DETAIL_DEFAULT_H });
+    setMode('add');
+  }, [importDraft]);
 
   const handleSave = async () => {
     if (!formTitle.trim()) { setErr('Title is required'); return; }

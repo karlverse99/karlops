@@ -37,6 +37,8 @@ interface MeetingsModalProps {
   accessToken: string;
   onClose: () => void;
   onCountChange: (count: number) => void;
+  /** Open in “add” mode with fields seeded (e.g. from TUO Capture) */
+  importDraft?: { title: string; description?: string; notes?: string } | null;
 }
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
@@ -101,7 +103,7 @@ const ACCENT_BORDER = '#bfdbfe';
 
 // ─── COMPONENT ───────────────────────────────────────────────────────────────
 
-export default function MeetingsModal({ userId, accessToken, onClose, onCountChange }: MeetingsModalProps) {
+export default function MeetingsModal({ userId, accessToken, onClose, onCountChange, importDraft }: MeetingsModalProps) {
   const [mode, setMode]             = useState<'empty' | 'edit' | 'add' | 'complete'>('empty');
   const [meetings, setMeetings]     = useState<Meeting[]>([]);
   const [loading, setLoading]       = useState(true);
@@ -203,6 +205,23 @@ export default function MeetingsModal({ userId, accessToken, onClose, onCountCha
   };
 
   useEffect(() => { loadMeetings(); loadContexts(); loadTags(); loadFieldMeta(); }, []);
+
+  useEffect(() => {
+    if (!importDraft?.title?.trim() && !importDraft?.description?.trim() && !importDraft?.notes?.trim()) return;
+    setEditId(null);
+    setFormTitle((importDraft.title ?? '').trim().slice(0, 500));
+    setFormMeetingDate(new Date().toISOString().slice(0, 16));
+    setFormOutcome('');
+    setFormDescription((importDraft.description ?? '').trim().slice(0, 8000));
+    setFormNotes((importDraft.notes ?? '').trim().slice(0, 8000));
+    setFormAttendees([]);
+    setFormTags([]);
+    setFormContextId('');
+    setErr('');
+    setDeleteConfirm(false);
+    setSelected(null);
+    setMode('add');
+  }, [importDraft]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };

@@ -20,6 +20,8 @@ interface Props {
   accessToken: string;
   onClose: () => void;
   onSaved: () => void;
+  /** Seeds task text when opened from TUO Capture queue */
+  initialRawInput?: string | null;
 }
 
 // ─── CONSTANTS ───────────────────────────────────────────────────────────────
@@ -59,7 +61,7 @@ function BucketPicker({ value, onChange }: { value: string; onChange: (v: string
 
 // ─── MAIN MODAL ───────────────────────────────────────────────────────────────
 
-export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: Props) {
+export default function TaskAddModal({ userId, accessToken, onClose, onSaved, initialRawInput }: Props) {
 
   // ─── Reference data ──────────────────────────────────────────────────────
   const [allTags, setAllTags]     = useState<Tag[]>([]);
@@ -69,7 +71,7 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
   const [loading, setLoading]     = useState(true);
 
   // ─── Form state ──────────────────────────────────────────────────────────
-  const [rawInput, setRawInput]    = useState('');
+  const [rawInput, setRawInput]    = useState(initialRawInput?.trim() ? initialRawInput : '');
   const [multiMode, setMultiMode]  = useState(false);
   const [bucket, setBucket]        = useState('capture');
   const [contextId, setContextId]  = useState('');
@@ -100,6 +102,13 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved }: 
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
+
+  useEffect(() => {
+    if (initialRawInput && initialRawInput.trim()) {
+      setRawInput(initialRawInput.trim());
+      setMultiMode(initialRawInput.includes('\n'));
+    }
+  }, [initialRawInput]);
 
   // ─── Drag/resize ─────────────────────────────────────────────────────────
   const onDragStart = useCallback((e: React.MouseEvent) => {

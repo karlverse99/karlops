@@ -13,6 +13,7 @@ import TemplatesModal from '@/app/components/TemplatesModal';
 import ContactsModal from '@/app/components/ContactsModal';
 import TagManagerModal from '@/app/components/TagManagerModal';
 import DelegateModal from '@/app/components/DelegateModal';
+import TuoCaptureQueueModal from '@/app/components/TuoCaptureQueueModal';
 
 // ─── TYPES ───────────────────────────────────────────────────────────────────
 
@@ -334,6 +335,18 @@ export default function WorkspacePage() {
   const [showTemplates, setShowTemplates]     = useState(false);
   const [showContacts, setShowContacts]       = useState(false);
   const [showTagManager, setShowTagManager]   = useState(false);
+  const [showTuoQueue, setShowTuoQueue]       = useState(false);
+  const [taskAddInitialRaw, setTaskAddInitialRaw] = useState<string | undefined>(undefined);
+  const [meetingsImportDraft, setMeetingsImportDraft] = useState<{
+    title: string;
+    description?: string;
+    notes?: string;
+  } | null>(null);
+  const [completionsImportDraft, setCompletionsImportDraft] = useState<{
+    title: string;
+    outcome: string;
+    description?: string;
+  } | null>(null);
   const [completionCount, setCompletionCount] = useState(0);
   const [meetingCount, setMeetingCount]       = useState(0);
   const [extractCount, setExtractCount]       = useState(0);
@@ -1041,13 +1054,51 @@ export default function WorkspacePage() {
 
       {/* MODALS */}
       {showTaskAdd && koUser && (
-        <TaskAddModal userId={koUser.id} accessToken={accessToken} onClose={() => setShowTaskAdd(false)} onSaved={() => { loadTasks(koUser.id); setShowTaskAdd(false); }} />
+        <TaskAddModal
+          userId={koUser.id}
+          accessToken={accessToken}
+          initialRawInput={taskAddInitialRaw}
+          onClose={() => { setTaskAddInitialRaw(undefined); setShowTaskAdd(false); }}
+          onSaved={() => { loadTasks(koUser.id); setTaskAddInitialRaw(undefined); setShowTaskAdd(false); }}
+        />
       )}
       {showCompletions && koUser && (
-        <CompletionsModal userId={koUser.id} accessToken={accessToken} onClose={() => setShowCompletions(false)} onCountChange={setCompletionCount} />
+        <CompletionsModal
+          userId={koUser.id}
+          accessToken={accessToken}
+          importDraft={completionsImportDraft}
+          onClose={() => { setCompletionsImportDraft(null); setShowCompletions(false); }}
+          onCountChange={setCompletionCount}
+        />
       )}
       {showMeetings && koUser && (
-        <MeetingsModal userId={koUser.id} accessToken={accessToken} onClose={() => setShowMeetings(false)} onCountChange={setMeetingCount} />
+        <MeetingsModal
+          userId={koUser.id}
+          accessToken={accessToken}
+          importDraft={meetingsImportDraft}
+          onClose={() => { setMeetingsImportDraft(null); setShowMeetings(false); }}
+          onCountChange={setMeetingCount}
+        />
+      )}
+      {showTuoQueue && accessToken && (
+        <TuoCaptureQueueModal
+          accessToken={accessToken}
+          tuoAdminUrl={tuoOutboxUrl || undefined}
+          onClose={() => setShowTuoQueue(false)}
+          onProcessed={() => void loadTuoCapturePending(accessToken)}
+          onOpenTask={(raw) => {
+            setTaskAddInitialRaw(raw);
+            setShowTaskAdd(true);
+          }}
+          onOpenMeeting={(draft) => {
+            setMeetingsImportDraft(draft);
+            setShowMeetings(true);
+          }}
+          onOpenCompletion={(draft) => {
+            setCompletionsImportDraft(draft);
+            setShowCompletions(true);
+          }}
+        />
       )}
       {showExtracts && koUser && (
         <ExtractsModal userId={koUser.id} accessToken={accessToken} onClose={() => setShowExtracts(false)} onCountChange={setExtractCount} />
@@ -1089,8 +1140,21 @@ export default function WorkspacePage() {
       )}
 
       {/* HEADER */}
-      <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 1.25rem', height: '44px', borderBottom: '1px solid #1a1a1a', flexShrink: 0, background: '#0d0d0d' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+      <header
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: '0.35rem 1rem',
+          padding: '0.35rem 1.25rem',
+          minHeight: '44px',
+          borderBottom: '1px solid #1a1a1a',
+          flexShrink: 0,
+          background: '#0d0d0d',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap', minWidth: 0, position: 'relative', zIndex: 1 }}>
           <img src="/ko-icon.svg" alt="KO" style={{ width: '28px', height: '28px' }} />
           <span style={{ color: '#ffffff', fontSize: '0.9rem', fontWeight: 700, letterSpacing: '0.02em' }}>KarlOps</span>
           <span style={{ color: '#555', fontSize: '0.7rem' }}>|</span>
@@ -1100,19 +1164,23 @@ export default function WorkspacePage() {
 
           {accessToken ? (
             <>
-              <span style={{ color: '#555', fontSize: '0.7rem' }}>|</span>
-              {tuoCapturePending === null && (
-                <span style={{ color: '#666', fontSize: '0.65rem' }} title="Checking TUO Capture outbox…">TUO · …</span>
-              )}
-              {tuoCapturePending && tuoCapturePending.queryFailed && (
-                <span
-                  style={{ color: '#f97316', fontSize: '0.65rem' }}
-                  title="TUO Supabase replied but tuo_capture_outbox could not be counted (missing migration or wrong project?)."
-                >
-                  TUO · read error
-                </span>
-              )}
-              {tuoCapturePending && !tuoCapturePending.queryFailed && !tuoCapturePending.configured && (() => {
+              {(tuoCapturePending === null ||
+                !!tuoCapturePending?.queryFailed ||
+                !!(tuoCapturePending && !tuoCapturePending.configured)) && (
+                <>
+                  <span style={{ color: '#555', fontSize: '0.7rem' }}>|</span>
+                  {tuoCapturePending === null && (
+                    <span style={{ color: '#666', fontSize: '0.65rem' }} title="Checking TUO Capture outbox…">TUO · …</span>
+                  )}
+                  {tuoCapturePending && tuoCapturePending.queryFailed && (
+                    <span
+                      style={{ color: '#f97316', fontSize: '0.65rem' }}
+                      title="TUO Supabase replied but tuo_capture_outbox could not be counted (missing migration or wrong project?)."
+                    >
+                      TUO · read error
+                    </span>
+                  )}
+                  {tuoCapturePending && !tuoCapturePending.queryFailed && !tuoCapturePending.configured && (() => {
                 const p = tuoCapturePending;
                 let label = 'TUO · not linked';
                 let title =
@@ -1145,65 +1213,16 @@ export default function WorkspacePage() {
                   </span>
                 );
               })()}
-              {tuoCapturePending &&
-                !tuoCapturePending.queryFailed &&
-                tuoCapturePending.configured &&
-                tuoCapturePending.count > 0 &&
-                (tuoOutboxUrl ? (
-                  <a
-                    href={tuoOutboxUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    title="Open TUO Capture outbox (new / seen items)"
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '0.35rem',
-                      color: '#fbbf24',
-                      fontSize: '0.68rem',
-                      fontWeight: 700,
-                      textDecoration: 'none',
-                    }}
-                    onMouseEnter={e => (e.currentTarget.style.textDecoration = 'underline')}
-                    onMouseLeave={e => (e.currentTarget.style.textDecoration = 'none')}
-                  >
-                    <span style={{ color: '#f87171', lineHeight: 0 }} aria-hidden>●</span>
-                    TUO: {tuoCapturePending.count} to review
-                  </a>
-                ) : (
-                  <span
-                    style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', color: '#fbbf24', fontSize: '0.68rem', fontWeight: 700 }}
-                    title="Set NEXT_PUBLIC_TUO_CAPTURE_OUTBOX_URL for a direct link to TUO admin"
-                  >
-                    <span style={{ color: '#f87171', lineHeight: 0 }} aria-hidden>●</span>
-                    TUO: {tuoCapturePending.count} to review
-                  </span>
-                ))}
-              {tuoCapturePending &&
-                !tuoCapturePending.queryFailed &&
-                tuoCapturePending.configured &&
-                tuoCapturePending.count === 0 && (
-                <span
-                  style={{ color: '#6b7280', fontSize: '0.65rem' }}
-                  title={
-                    (tuoCapturePending.totalInTable ?? 0) > 0
-                      ? 'TUO has captures but they are marked processed (or other status). Only “new” and “seen” count here. Open TUO admin to see the archive.'
-                      : 'No items on the TUO work queue (status new or seen).'
-                  }
-                >
-                  {(tuoCapturePending.totalInTable ?? 0) > 0
-                    ? `TUO · ${tuoCapturePending.totalInTable} saved (all processed)`
-                    : 'TUO · queue clear'}
-                </span>
+                </>
               )}
             </>
           ) : null}
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <button onClick={() => setShowTaskAdd(true)} style={{ background: '#0d1a14', border: '1px solid #10b981', color: '#10b981', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }} onMouseEnter={e => (e.currentTarget.style.background = '#0f2a20')} onMouseLeave={e => (e.currentTarget.style.background = '#0d1a14')}>+add task(s)</button>
-            <button onClick={() => setShowCompletions(true)} style={{ background: '#1a0e00', border: '1px solid #4a2a00', color: '#f97316', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }} onMouseEnter={e => (e.currentTarget.style.background = '#2a1800')} onMouseLeave={e => (e.currentTarget.style.background = '#1a0e00')}><span style={{ color: '#f97316' }}>+complete</span><span style={{ color: '#ffffff' }}>({completionCount})</span></button>
-            <button onClick={() => setShowMeetings(true)} style={{ background: '#0a0f1a', border: '1px solid #1a3060', color: '#3b82f6', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }} onMouseEnter={e => (e.currentTarget.style.background = '#0f1a2a')} onMouseLeave={e => (e.currentTarget.style.background = '#0a0f1a')}><span style={{ color: '#3b82f6' }}>+meeting</span><span style={{ color: '#ffffff' }}>({meetingCount})</span></button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap', flexShrink: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <button onClick={() => { setTaskAddInitialRaw(undefined); setShowTaskAdd(true); }} style={{ background: '#0d1a14', border: '1px solid #10b981', color: '#10b981', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }} onMouseEnter={e => (e.currentTarget.style.background = '#0f2a20')} onMouseLeave={e => (e.currentTarget.style.background = '#0d1a14')}>+add task(s)</button>
+            <button onClick={() => { setCompletionsImportDraft(null); setShowCompletions(true); }} style={{ background: '#1a0e00', border: '1px solid #4a2a00', color: '#f97316', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }} onMouseEnter={e => (e.currentTarget.style.background = '#2a1800')} onMouseLeave={e => (e.currentTarget.style.background = '#1a0e00')}><span style={{ color: '#f97316' }}>+complete</span><span style={{ color: '#ffffff' }}>({completionCount})</span></button>
+            <button onClick={() => { setMeetingsImportDraft(null); setShowMeetings(true); }} style={{ background: '#0a0f1a', border: '1px solid #1a3060', color: '#3b82f6', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }} onMouseEnter={e => (e.currentTarget.style.background = '#0f1a2a')} onMouseLeave={e => (e.currentTarget.style.background = '#0a0f1a')}><span style={{ color: '#3b82f6' }}>+meeting</span><span style={{ color: '#ffffff' }}>({meetingCount})</span></button>
             <button onClick={() => setShowExtracts(true)} style={{ background: '#120a1a', border: '1px solid #3a1a5a', color: '#8b5cf6', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }} onMouseEnter={e => (e.currentTarget.style.background = '#1e1030')} onMouseLeave={e => (e.currentTarget.style.background = '#120a1a')}><span style={{ color: '#8b5cf6' }}>+extracts</span><span style={{ color: '#ffffff' }}>({extractCount})</span></button>
             <button onClick={() => { setExtractsV2Lane('run'); setShowExtractsV2(true); }} style={{ background: '#1a1023', border: '1px solid #5b21b6', color: '#c4b5fd', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }} onMouseEnter={e => (e.currentTarget.style.background = '#261436')} onMouseLeave={e => (e.currentTarget.style.background = '#1a1023')}><span style={{ color: '#c4b5fd' }}>+extracts v2</span></button>
             <button onClick={() => setShowTemplates(true)} style={{ background: '#0a1f1d', border: '1px solid #0f3330', color: '#14b8a6', padding: '0.3rem 0.65rem', borderRadius: '4px', fontFamily: 'monospace', fontSize: '0.7rem', cursor: 'pointer' }} onMouseEnter={e => (e.currentTarget.style.background = '#0f2a27')} onMouseLeave={e => (e.currentTarget.style.background = '#0a1f1d')}><span style={{ color: '#14b8a6' }}>+template</span><span style={{ color: '#ffffff' }}>({templateCount})</span></button>
@@ -1214,6 +1233,41 @@ export default function WorkspacePage() {
             open(<span style={{ color: '#fbbf24', fontWeight: 600 }}>{contextFilter ? totalFiltered : totalOpen}</span>)
             {contextFilter && totalOpen !== totalFiltered && <span style={{ color: '#888' }}> / {totalOpen}</span>}
           </span>
+          {accessToken &&
+            tuoCapturePending &&
+            !tuoCapturePending.queryFailed &&
+            tuoCapturePending.configured && (
+              <>
+                <span style={{ color: '#333', fontSize: '0.7rem' }}>|</span>
+                <button
+                  type="button"
+                  onClick={() => setShowTuoQueue(true)}
+                  title="TUO capture queue — file as task, meeting, or completion, or mark processed."
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: '#ffffff',
+                    fontSize: '0.7rem',
+                    fontFamily: 'monospace',
+                    cursor: 'pointer',
+                    padding: 0,
+                  }}
+                  onMouseEnter={e => (e.currentTarget.style.color = '#fbbf24')}
+                  onMouseLeave={e => (e.currentTarget.style.color = '#ffffff')}
+                >
+                  tuo(
+                  <span
+                    style={{
+                      color: tuoCapturePending.count > 0 ? '#fbbf24' : '#888',
+                      fontWeight: 600,
+                    }}
+                  >
+                    {tuoCapturePending.count}
+                  </span>
+                  )
+                </button>
+              </>
+            )}
           <span style={{ color: '#333', fontSize: '0.7rem' }}>|</span>
           <a href="/settings/mfa" style={{ color: '#ffffff', fontSize: '0.7rem', textDecoration: 'none', fontFamily: 'monospace' }} onMouseEnter={e => (e.currentTarget.style.color = '#fbbf24')} onMouseLeave={e => (e.currentTarget.style.color = '#ffffff')}>2FA</a>
           <span style={{ color: '#333', fontSize: '0.7rem' }}>|</span>
