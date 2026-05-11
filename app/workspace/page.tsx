@@ -351,6 +351,8 @@ export default function WorkspacePage() {
     totalInTable: number | null;
     loadError: boolean;
     queryFailed: boolean;
+    authFailed: boolean;
+    tuoEnvHint: { hasUrl: boolean; hasKey: boolean } | null;
   } | null>(null);
 
   const draggedTask                            = useRef<Task | null>(null);
@@ -375,6 +377,8 @@ export default function WorkspacePage() {
           totalInTable: null,
           loadError: true,
           queryFailed: false,
+          authFailed: res.status === 401,
+          tuoEnvHint: null,
         });
         return;
       }
@@ -385,15 +389,26 @@ export default function WorkspacePage() {
           totalInTable: null,
           loadError: false,
           queryFailed: true,
+          authFailed: false,
+          tuoEnvHint: null,
         });
         return;
       }
+      const hint =
+        data.tuoEnvHint &&
+        typeof data.tuoEnvHint === 'object' &&
+        typeof data.tuoEnvHint.hasUrl === 'boolean' &&
+        typeof data.tuoEnvHint.hasKey === 'boolean'
+          ? { hasUrl: data.tuoEnvHint.hasUrl, hasKey: data.tuoEnvHint.hasKey }
+          : null;
       setTuoCapturePending({
         count: Number(data.count) || 0,
         configured: !!data.configured,
         totalInTable: data.totalInTable != null ? Number(data.totalInTable) : null,
         loadError: false,
         queryFailed: false,
+        authFailed: false,
+        tuoEnvHint: hint,
       });
     } catch {
       setTuoCapturePending({
@@ -402,6 +417,8 @@ export default function WorkspacePage() {
         totalInTable: null,
         loadError: true,
         queryFailed: false,
+        authFailed: false,
+        tuoEnvHint: null,
       });
     }
   }, []);
@@ -1095,18 +1112,39 @@ export default function WorkspacePage() {
                   TUO · read error
                 </span>
               )}
-              {tuoCapturePending && !tuoCapturePending.queryFailed && !tuoCapturePending.configured && (
-                <span
-                  style={{ color: '#888', fontSize: '0.65rem' }}
-                  title={
-                    tuoCapturePending.loadError
-                      ? 'Could not load TUO pending count. Check network or sign-in.'
-                      : 'On Vercel: add TUO_SUPABASE_URL and TUO_SUPABASE_SERVICE_ROLE_KEY (TUO project service role) to this KarlOps app.'
+              {tuoCapturePending && !tuoCapturePending.queryFailed && !tuoCapturePending.configured && (() => {
+                const p = tuoCapturePending;
+                let label = 'TUO · not linked';
+                let title =
+                  'On the KarlOps Vercel project: add TUO_SUPABASE_URL (TUO project URL) and TUO_SUPABASE_SERVICE_ROLE_KEY (TUO service_role). Save for Production (and Preview if you use it), then redeploy.';
+                if (p.authFailed) {
+                  label = 'TUO · session';
+                  title = 'The TUO check call returned 401. Refresh the page or sign out and back in.';
+                } else if (p.loadError && !p.tuoEnvHint) {
+                  label = 'TUO · check network';
+                  title = 'Could not reach /api/ko/tuo-capture-pending. Try refresh or inspect blocking extensions.';
+                } else if (p.tuoEnvHint) {
+                  const { hasUrl, hasKey } = p.tuoEnvHint;
+                  if (!hasUrl && !hasKey) {
+                    label = 'TUO · add URL + key on KarlOps';
+                    title =
+                      'Server still sees no TUO_SUPABASE_URL and no TUO_SUPABASE_SERVICE_ROLE_KEY. Names must match exactly (KarlOps project, often Production env). Redeploy after saving.';
+                  } else if (!hasUrl) {
+                    label = 'TUO · add TUO_SUPABASE_URL';
+                    title =
+                      'Key is set but TUO_SUPABASE_URL is empty on the server. Use https://YOUR_REF.supabase.co (no /rest/v1/). Redeploy.';
+                  } else if (!hasKey) {
+                    label = 'TUO · add TUO_SUPABASE_SERVICE_ROLE_KEY';
+                    title =
+                      'URL is set but TUO service role key is missing. Use TUO project Settings → API → service_role (not anon). Name must be TUO_SUPABASE_SERVICE_ROLE_KEY on KarlOps. Redeploy.';
                   }
-                >
-                  TUO · not linked
-                </span>
-              )}
+                }
+                return (
+                  <span style={{ color: '#888', fontSize: '0.65rem' }} title={title}>
+                    {label}
+                  </span>
+                );
+              })()}
               {tuoCapturePending &&
                 !tuoCapturePending.queryFailed &&
                 tuoCapturePending.configured &&

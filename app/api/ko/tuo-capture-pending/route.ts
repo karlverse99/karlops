@@ -28,8 +28,20 @@ export async function GET(req: NextRequest) {
     process.env.TUO_SUPABASE_SERVICE_ROLE_KEY?.trim() ||
     process.env.TUO_SUPABASE_SECRET_KEY?.trim();
 
+  const tuoEnvHint = {
+    hasUrl: Boolean(process.env.TUO_SUPABASE_URL?.trim()),
+    hasKey: Boolean(
+      process.env.TUO_SUPABASE_SERVICE_ROLE_KEY?.trim() || process.env.TUO_SUPABASE_SECRET_KEY?.trim(),
+    ),
+  };
+
   if (!tuoUrl || !tuoKey) {
-    return NextResponse.json({ count: 0, totalInTable: null, configured: false });
+    return NextResponse.json({
+      count: 0,
+      totalInTable: null,
+      configured: false,
+      tuoEnvHint,
+    });
   }
 
   const tuo = createClient(tuoUrl, tuoKey, {
