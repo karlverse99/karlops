@@ -348,6 +348,9 @@ export default function WorkspacePage() {
   const [tuoCapturePending, setTuoCapturePending] = useState<{
     count: number;
     configured: boolean;
+    totalInTable: number | null;
+    loadError: boolean;
+    queryFailed: boolean;
   } | null>(null);
 
   const draggedTask                            = useRef<Task | null>(null);
@@ -365,13 +368,41 @@ export default function WorkspacePage() {
         headers: { Authorization: `Bearer ${sessionToken}` },
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) return;
+      if (!res.ok) {
+        setTuoCapturePending({
+          count: 0,
+          configured: false,
+          totalInTable: null,
+          loadError: true,
+          queryFailed: false,
+        });
+        return;
+      }
+      if (data.error === 'tuo_query_failed') {
+        setTuoCapturePending({
+          count: 0,
+          configured: true,
+          totalInTable: null,
+          loadError: false,
+          queryFailed: true,
+        });
+        return;
+      }
       setTuoCapturePending({
         count: Number(data.count) || 0,
         configured: !!data.configured,
+        totalInTable: data.totalInTable != null ? Number(data.totalInTable) : null,
+        loadError: false,
+        queryFailed: false,
       });
     } catch {
-      setTuoCapturePending({ count: 0, configured: false });
+      setTuoCapturePending({
+        count: 0,
+        configured: false,
+        totalInTable: null,
+        loadError: true,
+        queryFailed: false,
+      });
     }
   }, []);
 
@@ -388,6 +419,7 @@ export default function WorkspacePage() {
       if (initDone.current) return;
       initDone.current = true;
       setAccessToken(session.access_token);
+      void loadTuoCapturePending(session.access_token);
 
       try {
         const res = await fetch('/api/ko/session', {
@@ -416,8 +448,6 @@ export default function WorkspacePage() {
         await loadTemplateCount(session.user.id);
         await loadContactCount(session.user.id);
         setSessionReady(true);
-
-        void loadTuoCapturePending(session.access_token);
 
         setChat([{
           role: 'assistant',
@@ -1051,41 +1081,85 @@ export default function WorkspacePage() {
           <span style={{ color: '#555', fontSize: '0.7rem' }}>|</span>
           <span style={{ color: '#aaa', fontSize: '0.7rem' }}>{koUser?.display_name ?? '...'}</span>
 
-          {tuoCapturePending?.configured && tuoCapturePending.count > 0 && (
+          {accessToken ? (
             <>
               <span style={{ color: '#555', fontSize: '0.7rem' }}>|</span>
-              {tuoOutboxUrl ? (
-                <a
-                  href={tuoOutboxUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  title="Open TUO Capture outbox"
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '0.35rem',
-                    color: '#fbbf24',
-                    fontSize: '0.68rem',
-                    fontWeight: 700,
-                    textDecoration: 'none',
-                  }}
-                  onMouseEnter={e => (e.currentTarget.style.textDecoration = 'underline')}
-                  onMouseLeave={e => (e.currentTarget.style.textDecoration = 'none')}
-                >
-                  <span style={{ color: '#f87171', lineHeight: 0 }} aria-hidden>●</span>
-                  TUO: {tuoCapturePending.count} to review
-                </a>
-              ) : (
+              {tuoCapturePending === null && (
+                <span style={{ color: '#666', fontSize: '0.65rem' }} title="Checking TUO Capture outbox…">TUO · …</span>
+              )}
+              {tuoCapturePending && tuoCapturePending.queryFailed && (
                 <span
-                  style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', color: '#fbbf24', fontSize: '0.68rem', fontWeight: 700 }}
-                  title="Set NEXT_PUBLIC_TUO_CAPTURE_OUTBOX_URL for a link to the TUO admin page"
+                  style={{ color: '#f97316', fontSize: '0.65rem' }}
+                  title="TUO Supabase replied but tuo_capture_outbox could not be counted (missing migration or wrong project?)."
                 >
-                  <span style={{ color: '#f87171', lineHeight: 0 }} aria-hidden>●</span>
-                  TUO: {tuoCapturePending.count} to review
+                  TUO · read error
+                </span>
+              )}
+              {tuoCapturePending && !tuoCapturePending.queryFailed && !tuoCapturePending.configured && (
+                <span
+                  style={{ color: '#888', fontSize: '0.65rem' }}
+                  title={
+                    tuoCapturePending.loadError
+                      ? 'Could not load TUO pending count. Check network or sign-in.'
+                      : 'On Vercel: add TUO_SUPABASE_URL and TUO_SUPABASE_SERVICE_ROLE_KEY (TUO project service role) to this KarlOps app.'
+                  }
+                >
+                  TUO · not linked
+                </span>
+              )}
+              {tuoCapturePending &&
+                !tuoCapturePending.queryFailed &&
+                tuoCapturePending.configured &&
+                tuoCapturePending.count > 0 &&
+                (tuoOutboxUrl ? (
+                  <a
+                    href={tuoOutboxUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title="Open TUO Capture outbox (new / seen items)"
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '0.35rem',
+                      color: '#fbbf24',
+                      fontSize: '0.68rem',
+                      fontWeight: 700,
+                      textDecoration: 'none',
+                    }}
+                    onMouseEnter={e => (e.currentTarget.style.textDecoration = 'underline')}
+                    onMouseLeave={e => (e.currentTarget.style.textDecoration = 'none')}
+                  >
+                    <span style={{ color: '#f87171', lineHeight: 0 }} aria-hidden>●</span>
+                    TUO: {tuoCapturePending.count} to review
+                  </a>
+                ) : (
+                  <span
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', color: '#fbbf24', fontSize: '0.68rem', fontWeight: 700 }}
+                    title="Set NEXT_PUBLIC_TUO_CAPTURE_OUTBOX_URL for a direct link to TUO admin"
+                  >
+                    <span style={{ color: '#f87171', lineHeight: 0 }} aria-hidden>●</span>
+                    TUO: {tuoCapturePending.count} to review
+                  </span>
+                ))}
+              {tuoCapturePending &&
+                !tuoCapturePending.queryFailed &&
+                tuoCapturePending.configured &&
+                tuoCapturePending.count === 0 && (
+                <span
+                  style={{ color: '#6b7280', fontSize: '0.65rem' }}
+                  title={
+                    (tuoCapturePending.totalInTable ?? 0) > 0
+                      ? 'TUO has captures but they are marked processed (or other status). Only “new” and “seen” count here. Open TUO admin to see the archive.'
+                      : 'No items on the TUO work queue (status new or seen).'
+                  }
+                >
+                  {(tuoCapturePending.totalInTable ?? 0) > 0
+                    ? `TUO · ${tuoCapturePending.totalInTable} saved (all processed)`
+                    : 'TUO · queue clear'}
                 </span>
               )}
             </>
-          )}
+          ) : null}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>

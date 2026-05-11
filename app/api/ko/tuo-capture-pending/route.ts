@@ -29,22 +29,26 @@ export async function GET(req: NextRequest) {
     process.env.TUO_SUPABASE_SECRET_KEY?.trim();
 
   if (!tuoUrl || !tuoKey) {
-    return NextResponse.json({ count: 0, configured: false });
+    return NextResponse.json({ count: 0, totalInTable: null, configured: false });
   }
 
   const tuo = createClient(tuoUrl, tuoKey, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
 
-  const { count, error } = await tuo
-    .from('tuo_capture_outbox')
-    .select('*', { count: 'exact', head: true })
-    .in('status', ['new', 'seen']);
+  const [pendingRes, allRes] = await Promise.all([
+    tuo.from('tuo_capture_outbox').select('*', { count: 'exact', head: true }).in('status', ['new', 'seen']),
+    tuo.from('tuo_capture_outbox').select('*', { count: 'exact', head: true }),
+  ]);
 
-  if (error) {
-    console.error('[tuo-capture-pending]', error.message);
-    return NextResponse.json({ count: 0, configured: true, error: 'tuo_query_failed' });
+  if (pendingRes.error) {
+    console.error('[tuo-capture-pending]', pendingRes.error.message);
+    return NextResponse.json({ count: 0, totalInTable: 0, configured: true, error: 'tuo_query_failed' });
   }
 
-  return NextResponse.json({ count: count ?? 0, configured: true });
+  return NextResponse.json({
+    count: pendingRes.count ?? 0,
+    totalInTable: allRes.error ? null : (allRes.count ?? 0),
+    configured: true,
+  });
 }
