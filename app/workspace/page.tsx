@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import TaskDetailModal from '@/app/components/TaskDetailModal';
 import TaskAddModal from '@/app/components/TaskAddModal';
@@ -51,15 +51,6 @@ interface DelegateModalState {
   preselectedTagId?: string | null;
   preselectedName?: string | null;
   mode: 'drop' | 'update';
-}
-
-// ─── TOKEN TRACKING ──────────────────────────────────────────────────────────
-
-interface TokenUsage {
-  input: number;
-  output: number;
-  cache_write: number;
-  cache_read: number;
 }
 
 // ─── CONSTANTS ───────────────────────────────────────────────────────────────
@@ -149,11 +140,6 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-function formatTokens(n: number): string {
-  if (n < 1000) return `${n}`;
-  if (n < 1000000) return `${(n / 1000).toFixed(1)}k`;
-  return `${(n / 1000000).toFixed(2)}M`;
-}
 
 // ─── COMPONENTS: TaskPill ────────────────────────────────────────────────────
 
@@ -359,9 +345,10 @@ export default function WorkspacePage() {
   const [dragOverChat, setDragOverChat]       = useState(false);
   const [queuedFiles, setQueuedFiles]         = useState<QueuedFile[]>([]);
 
-  // ─── Token tracking ────────────────────────────────────────────────────────
-  const [sessionTokens, setSessionTokens]     = useState(0);
-  const [lastCallTokens, setLastCallTokens]   = useState<TokenUsage | null>(null);
+  const [tuoCapturePending, setTuoCapturePending] = useState<{
+    count: number;
+    configured: boolean;
+  } | null>(null);
 
   const draggedTask                            = useRef<Task | null>(null);
   const chatBottomRef                          = useRef<HTMLDivElement>(null);
@@ -371,6 +358,22 @@ export default function WorkspacePage() {
   const splitDragging                          = useRef(false);
   const splitStartX                            = useRef(0);
   const splitStartW                            = useRef(340);
+
+  const loadTuoCapturePending = useCallback(async (sessionToken: string) => {
+    try {
+      const res = await fetch('/api/ko/tuo-capture-pending', {
+        headers: { Authorization: `Bearer ${sessionToken}` },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return;
+      setTuoCapturePending({
+        count: Number(data.count) || 0,
+        configured: !!data.configured,
+      });
+    } catch {
+      setTuoCapturePending({ count: 0, configured: false });
+    }
+  }, []);
 
   // ─── Auth & Init ───────────────────────────────────────────────────────────
 
@@ -414,6 +417,8 @@ export default function WorkspacePage() {
         await loadContactCount(session.user.id);
         setSessionReady(true);
 
+        void loadTuoCapturePending(session.access_token);
+
         setChat([{
           role: 'assistant',
           content: data.is_new_user
@@ -443,6 +448,16 @@ export default function WorkspacePage() {
       }
     });
   }, []);
+
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState !== 'visible') return;
+      const t = accessToken;
+      if (t) void loadTuoCapturePending(t);
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, [accessToken, loadTuoCapturePending]);
 
   // ─── Data loaders ──────────────────────────────────────────────────────────
 
@@ -570,19 +585,6 @@ export default function WorkspacePage() {
    // ─── Unified command response handler ─────────────────────────────────────
 
   const handleCommandResponse = async (data: any) => {
-    // Track tokens if present
-    if (data.usage) {
-      const u = data.usage;
-      const total = (u.input_tokens ?? 0) + (u.output_tokens ?? 0);
-      setSessionTokens(prev => prev + total);
-      setLastCallTokens({
-        input: u.input_tokens ?? 0,
-        output: u.output_tokens ?? 0,
-        cache_write: u.cache_creation_input_tokens ?? 0,
-        cache_read: u.cache_read_input_tokens ?? 0,
-      });
-    }
-
     // Karl executed immediately (quick capture)
     if (data.intent === 'execute' || data.intent === 'capture_task') {
       setPending(null);
@@ -976,8 +978,7 @@ export default function WorkspacePage() {
   const hasFiles      = queuedFiles.length > 0;
   const canSend       = (input.trim() || hasFiles) && sessionReady && !thinking;
 
-  // Token counter color
-  const tokenColor = sessionTokens < 100000 ? '#4ade80' : sessionTokens < 500000 ? '#fbbf24' : '#ef4444';
+  const tuoOutboxUrl = process.env.NEXT_PUBLIC_TUO_CAPTURE_OUTBOX_URL?.trim() || '';
 
   // ─── Render ────────────────────────────────────────────────────────────────
 
@@ -1049,19 +1050,42 @@ export default function WorkspacePage() {
           <span style={{ color: '#aaa', fontSize: '0.7rem' }}>{koUser?.implementation_type ?? '...'}</span>
           <span style={{ color: '#555', fontSize: '0.7rem' }}>|</span>
           <span style={{ color: '#aaa', fontSize: '0.7rem' }}>{koUser?.display_name ?? '...'}</span>
-          
-          {/* TOKEN COUNTER */}
-          <span style={{ color: '#555', fontSize: '0.7rem' }}>|</span>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.68rem' }}>
-            <span style={{ color: '#666' }}>tokens:</span>
-            <span style={{ color: tokenColor, fontWeight: 600 }}>{formatTokens(sessionTokens)}</span>
-            {lastCallTokens && (
-              <span style={{ color: '#444', fontSize: '0.62rem' }}>
-                (last: {formatTokens(lastCallTokens.input + lastCallTokens.output)}
-                {lastCallTokens.cache_read > 0 && <span style={{ color: '#4ade80' }}> ✓{formatTokens(lastCallTokens.cache_read)}</span>})
-              </span>
-            )}
-          </div>
+
+          {tuoCapturePending?.configured && tuoCapturePending.count > 0 && (
+            <>
+              <span style={{ color: '#555', fontSize: '0.7rem' }}>|</span>
+              {tuoOutboxUrl ? (
+                <a
+                  href={tuoOutboxUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title="Open TUO Capture outbox"
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '0.35rem',
+                    color: '#fbbf24',
+                    fontSize: '0.68rem',
+                    fontWeight: 700,
+                    textDecoration: 'none',
+                  }}
+                  onMouseEnter={e => (e.currentTarget.style.textDecoration = 'underline')}
+                  onMouseLeave={e => (e.currentTarget.style.textDecoration = 'none')}
+                >
+                  <span style={{ color: '#f87171', lineHeight: 0 }} aria-hidden>●</span>
+                  TUO: {tuoCapturePending.count} to review
+                </a>
+              ) : (
+                <span
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '0.35rem', color: '#fbbf24', fontSize: '0.68rem', fontWeight: 700 }}
+                  title="Set NEXT_PUBLIC_TUO_CAPTURE_OUTBOX_URL for a link to the TUO admin page"
+                >
+                  <span style={{ color: '#f87171', lineHeight: 0 }} aria-hidden>●</span>
+                  TUO: {tuoCapturePending.count} to review
+                </span>
+              )}
+            </>
+          )}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
