@@ -277,7 +277,7 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved, in
                   <textarea autoFocus value={rawInput} onChange={e => setRawInput(e.target.value)}
                     onKeyDown={e => { if (e.key === 'Enter' && e.metaKey) handleSubmit(); }}
                     placeholder={'Buy olive oil\nBoil water\nCook pasta al dente'}
-                    rows={5} style={{ ...inputStyle, resize: 'vertical' }}
+                    rows={7} style={{ ...inputStyle, resize: 'vertical' }}
                     onFocus={e => (e.target.style.borderColor = ACCENT)}
                     onBlur={e => (e.target.style.borderColor = '#ddd')}
                   />
@@ -310,8 +310,8 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved, in
                     value={notes}
                     onChange={e => setNotes(e.target.value)}
                     placeholder="Optional: handoff, context, or first status line…"
-                    rows={3}
-                    style={{ ...inputStyle, resize: 'vertical', minHeight: '72px' }}
+                    rows={4}
+                    style={{ ...inputStyle, resize: 'vertical', minHeight: '96px' }}
                     onFocus={e => (e.target.style.borderColor = ACCENT)}
                     onBlur={e => (e.target.style.borderColor = '#ddd')}
                   />

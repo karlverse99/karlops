@@ -778,10 +778,10 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
                           top: '100%',
                           right: 0,
                           marginTop: '0.25rem',
-                          background: '#fff',
-                          border: '1px solid #ddd',
+                          background: ACCENT_BG,
+                          border: `1px solid ${ACCENT_BORDER}`,
                           borderRadius: '4px',
-                          boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
+                          boxShadow: '0 4px 12px rgba(0,0,0,0.12)',
                           zIndex: 20,
                           minWidth: '148px',
                         }}
@@ -791,9 +791,9 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
                             downloadStatusMarkdown(String(draft.title ?? ''), draft.notes);
                             setShowExportMenu(false);
                           }}
-                          style={{ padding: '0.5rem 0.75rem', fontSize: '0.72rem', color: '#333', cursor: 'pointer', fontFamily: 'monospace' }}
-                          onMouseEnter={(e) => (e.currentTarget.style.background = ACCENT_BG)}
-                          onMouseLeave={(e) => (e.currentTarget.style.background = '#fff')}
+                          style={{ padding: '0.5rem 0.75rem', fontSize: '0.72rem', color: '#422006', cursor: 'pointer', fontFamily: 'monospace' }}
+                          onMouseEnter={(e) => (e.currentTarget.style.background = `${ACCENT}33`)}
+                          onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                         >
                           Download status (.md)
                         </div>
@@ -802,12 +802,12 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
                           style={{
                             padding: '0.5rem 0.75rem',
                             fontSize: '0.72rem',
-                            color: emailSending ? '#bbb' : '#333',
+                            color: emailSending ? '#bbb' : '#422006',
                             cursor: emailSending ? 'wait' : 'pointer',
                             fontFamily: 'monospace',
                           }}
-                          onMouseEnter={(e) => { if (!emailSending) e.currentTarget.style.background = ACCENT_BG; }}
-                          onMouseLeave={(e) => (e.currentTarget.style.background = '#fff')}
+                          onMouseEnter={(e) => { if (!emailSending) e.currentTarget.style.background = `${ACCENT}33`; }}
+                          onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                         >
                           Email this log
                         </div>
@@ -823,8 +823,8 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
                     value={pendingStatusNote}
                     onChange={(e) => setPendingStatusNote(e.target.value)}
                     placeholder="Add a note or status line…"
-                    rows={2}
-                    style={{ ...inputStyle, resize: 'vertical', minHeight: '44px', fontSize: '0.78rem' }}
+                    rows={3}
+                    style={{ ...inputStyle, resize: 'vertical', minHeight: '59px', fontSize: '0.78rem' }}
                     onFocus={(e) => (e.target.style.borderColor = ACCENT)}
                     onBlur={(e) => (e.target.style.borderColor = '#ddd')}
                   />
@@ -860,8 +860,8 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
                   value={draft.notes ?? ''}
                   onChange={(e) => setDraft((d) => ({ ...d, notes: e.target.value }))}
                   placeholder="Instructions, context, full status trail…"
-                  rows={4}
-                  style={{ ...inputStyle, resize: 'vertical', minHeight: '72px' }}
+                  rows={6}
+                  style={{ ...inputStyle, resize: 'vertical', minHeight: '96px' }}
                   onFocus={(e) => (e.target.style.borderColor = ACCENT)}
                   onBlur={(e) => (e.target.style.borderColor = '#ddd')}
                 />
