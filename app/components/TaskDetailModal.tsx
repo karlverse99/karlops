@@ -426,13 +426,11 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
     setShowExportMenu(false);
     setEmailOk('');
     const { data: { session } } = await supabase.auth.getSession();
-    const defaultTo = session?.user?.email ?? '';
-    const entered = window.prompt(
-      'Recipient email (leave blank to send to your login email):',
-      defaultTo,
-    );
-    if (entered === null) return;
-    const to = entered.trim() || undefined;
+    const loginEmail = session?.user?.email?.trim() ?? '';
+    if (!loginEmail) {
+      setErr('No email on this account — add an email in your KO profile / auth provider.');
+      return;
+    }
     setErr('');
     setEmailSending(true);
     try {
@@ -444,14 +442,13 @@ export default function TaskDetailModal({ taskId, userId, accessToken, onClose, 
         },
         body: JSON.stringify({
           taskId,
-          ...(to ? { to } : {}),
           title: String(draft.title ?? ''),
           notes: draft.notes == null ? '' : String(draft.notes),
         }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(typeof data.error === 'string' ? data.error : 'Send failed');
-      setEmailOk('Email sent.');
+      setEmailOk(`Email sent to ${loginEmail}.`);
       setTimeout(() => setEmailOk(''), 5000);
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : 'Send failed');
