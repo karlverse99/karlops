@@ -35,13 +35,13 @@ const BUCKET_OPTIONS = [
   { key: 'delegate', label: 'Delegated', color: '#8b5cf6' },
 ];
 
-const ACCENT        = '#10b981';
-const ACCENT_BG     = '#f0fdf4';
-const ACCENT_BORDER = '#bbf7d0';
-const DEFAULT_W     = 560;
-const DEFAULT_H     = 660;
-const MIN_W         = 420;
-const MIN_H         = 480;
+const ACCENT        = '#fbbf24';
+const ACCENT_BG     = '#fffbeb';
+const ACCENT_BORDER = '#fde68a';
+const DEFAULT_W     = 680;
+const DEFAULT_H     = 780;
+const MIN_W         = 460;
+const MIN_H         = 520;
 
 // ─── BucketPicker ─────────────────────────────────────────────────────────────
 
@@ -277,7 +277,7 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved, in
                   <textarea autoFocus value={rawInput} onChange={e => setRawInput(e.target.value)}
                     onKeyDown={e => { if (e.key === 'Enter' && e.metaKey) handleSubmit(); }}
                     placeholder={'Buy olive oil\nBoil water\nCook pasta al dente'}
-                    rows={4} style={{ ...inputStyle, resize: 'vertical' }}
+                    rows={5} style={{ ...inputStyle, resize: 'vertical' }}
                     onFocus={e => (e.target.style.borderColor = ACCENT)}
                     onBlur={e => (e.target.style.borderColor = '#ddd')}
                   />
@@ -310,8 +310,8 @@ export default function TaskAddModal({ userId, accessToken, onClose, onSaved, in
                     value={notes}
                     onChange={e => setNotes(e.target.value)}
                     placeholder="Optional: handoff, context, or first status line…"
-                    rows={2}
-                    style={{ ...inputStyle, resize: 'vertical', minHeight: '52px' }}
+                    rows={3}
+                    style={{ ...inputStyle, resize: 'vertical', minHeight: '72px' }}
                     onFocus={e => (e.target.style.borderColor = ACCENT)}
                     onBlur={e => (e.target.style.borderColor = '#ddd')}
                   />
